@@ -4,13 +4,13 @@
 //! clock (a default seed when the player doesn't supply one — the seed is
 //! then *recorded* in `GameStarted`, so the core never sees a clock).
 
-use fforge_core::{
-    league_table, load_log, match_engine, save_log, Command, Event, SeasonTelemetry, Session,
-    WorldGenConfig,
+use fforge_core::{Command, Event, SeasonTelemetry, Session,
+                  WorldGenConfig,
+                  league_table, load_log, match_engine, save_log,
 };
-use fforge_domain::{
-    current_ability, ClubId, GameDate, Lineup, PlayerId, Role, World, FORMATIONS, ROLE_WEIGHTS,
-    XI,
+use fforge_domain::{ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World,
+                    XI,
+                    current_ability,
 };
 use std::io::{self, Write};
 use std::path::Path;
@@ -19,7 +19,7 @@ const SAVE_PATH: &str = "savegame.fml";
 
 fn main() {
     println!("==========================================");
-    println!("   FM SIM — walking skeleton (Phase 1)");
+    println!("   FOOTBALL FORGE — walking skeleton (Phase 1)");
     println!("==========================================");
     loop {
         println!("\n[1] New game   [2] Load game   [0] Quit");
