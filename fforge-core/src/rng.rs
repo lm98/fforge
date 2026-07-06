@@ -125,7 +125,9 @@ mod tests {
     #[test]
     fn derived_streams_are_independent_of_consumption_order() {
         let mut s1 = derive_stream(7, 100);
-        let _burn: u64 = (0..500).map(|_| derive_stream(7, 99).next_u64()).sum();
+        let _burn: u64 = (0..500)
+            .map(|_| derive_stream(7, 99).next_u64())
+            .fold(0u64, |acc, x| acc.wrapping_add(x));
         let mut s2 = derive_stream(7, 100);
         for _ in 0..100 {
             assert_eq!(s1.next_u64(), s2.next_u64());
