@@ -2,6 +2,8 @@
 name = "fforge-core"
 version.workspace = true
 edition.workspace = true
+description = "Core engines for the Football Forge game."
+license = "Apache-2.0"
 
 [dependencies]
 fforge-domain = { path = "../fforge-domain" }

@@ -2,6 +2,8 @@
 name = "fforge-game"
 version.workspace = true
 edition.workspace = true
+description = "Basic CLI implementation for the Football Forge game."
+license = "Apache-2.0"
 
 [[bin]]
 name = "fforge-game"
