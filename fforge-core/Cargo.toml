@@ -1,0 +1,9 @@
+[package]
+name = "fforge-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fforge-domain = { path = "../fforge-domain" }
+serde.workspace = true
+serde_json.workspace = true

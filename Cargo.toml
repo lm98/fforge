@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["fforge-domain"]
+members = [ "fforge-core","fforge-domain"]
 
 [workspace.package]
 version = "0.1.0"
