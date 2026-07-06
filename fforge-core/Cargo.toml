@@ -6,6 +6,6 @@ description = "Core engines for the Football Forge game."
 license = "Apache-2.0"
 
 [dependencies]
-fforge-domain = { path = "../fforge-domain" }
+fforge-domain = { path = "../fforge-domain", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
