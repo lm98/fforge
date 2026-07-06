@@ -19,6 +19,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fforge-game"
+version = "0.1.0"
+dependencies = [
+ "fforge-core",
+ "fforge-domain",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,12 @@
+[package]
+name = "fforge-game"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fforge-game"
+path = "src/main.rs"
+
+[dependencies]
+fforge-domain = { path = "../fforge-domain" }
+fforge-core = { path = "../fforge-core" }
