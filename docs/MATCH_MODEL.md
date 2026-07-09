@@ -105,6 +105,10 @@ fudge factor.
      heads it, with the **aerial duel folded into the header shot's defensive side**: the marking
      defender's Heading/Jumping/Marking/Strength *and* the goalkeeper's **Command of Area**. This is
      where the keeper earns his cross-claiming job.
+
+  Together these two contests implement `ATTRIBUTE_SCHEMA.md` §6 #5 (*Cross → box*), which the schema
+  already writes as a two-stage contest ("Crossing, Vision · then Heading, Jumping, …") — the aerial
+  duel (§6 #7) is the defensive half of stage two rather than a separate resolved step.
 - **Shot type is set by how the ball arrived**, selecting both the attacker's attributes and a base
   chance-quality `q`:
 
@@ -236,3 +240,7 @@ Deliberately unresolved, to settle during the Rust port or Phase 2 calibration:
    harness must pool over league draws — flagged so it isn't silently defaulted to one league.
 5. **`Box` as point vs dwell.** The prototype resolves on arrival; if second-phase box play
    (knock-downs, scrambles) earns its keep, `Box` could become a shallow dwell zone. Deferred.
+6. **Bookmaker-baseline check unimplemented.** `DESIGN.md` §4.1 lists *favourite win-rate vs
+   bookmaker-implied probabilities* as a calibration axis; the prototype only plots win-rate vs
+   strength-gap. Wiring a synthetic-odds (or reference-league) baseline into the harness so the
+   favourite-win curve can be scored against a target is a Phase-2 harness TODO.
