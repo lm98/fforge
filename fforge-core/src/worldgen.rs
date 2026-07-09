@@ -43,7 +43,7 @@ const SQUAD_TEMPLATE: [(Role, usize); 8] = [
 ];
 
 pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDate) {
-    assert!(cfg.num_clubs >= 2 && cfg.num_clubs % 2 == 0);
+    assert!(cfg.num_clubs >= 2 && cfg.num_clubs.is_multiple_of(2));
     let mut rng = derive_stream(seed, WORLDGEN_STREAM);
     let start_date = GameDate::from_year_day(cfg.start_year, 220); // late-summer kickoff
 
@@ -59,7 +59,6 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
     let mut staff = BTreeMap::new();
     let mut club_ids = Vec::with_capacity(cfg.num_clubs);
     let mut next_player = 0u32;
-    let mut next_staff = 0u32;
     let mut used_club_names: Vec<String> = Vec::new();
 
     for (ci, &quality) in qualities.iter().enumerate() {
@@ -78,8 +77,7 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
             }
         }
 
-        let manager_id = StaffId(next_staff);
-        next_staff += 1;
+        let manager_id = StaffId(ci as u32);
         staff.insert(
             manager_id,
             Staff {

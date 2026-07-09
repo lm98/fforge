@@ -1,23 +1,30 @@
-//! The Phase-1 **crude** match engine (DESIGN.md §9, Phase 1).
+//! The Phase-2a event-based possession match engine (`MATCH_MODEL.md`),
+//! behind the same `play_match` call site the Phase-1 crude engine used to
+//! occupy. State space, resolution model, the wide route, and the knob
+//! table are a faithful Rust port of the calibrated Python prototype
+//! (`match_model_prototype.ipynb`, referenced from `MATCH_MODEL.md` §1) —
+//! nothing here is a re-guess of the shape-finding, only its translation.
 //!
-//! Deliberately shallow: XI strength → Poisson goal counts. It exists so the
-//! whole loop runs end-to-end; Phase 2 replaces it with the event-based
-//! possession model behind the same call site. What it *does* already
-//! exercise for real: the role-weighting table (a striker picked at CB rates
-//! as a CB and drags the team down) and derived per-fixture RNG streams.
-//!
-//! Baseline constants target believable aggregates (≈2.6 goals/game, visible
-//! home advantage) but are eyeballed, not calibrated — the calibration
-//! harness is a Phase 2 deliverable alongside the real engine.
+//! Deferred to Phase 2e (behind this same call site, no structural change):
+//! tactics as transition-matrix modifiers, cards & fouls, injuries, set
+//! pieces, substitutions, and the character/hidden attributes.
+
+mod contest;
+mod knobs;
+mod resolve;
+mod stream;
+mod zone;
+
+pub use knobs::Knobs;
+pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, Side};
+pub use zone::Zone;
 
 use crate::rng::Rng;
-use fforge_domain::{
-    current_ability, ClubId, Lineup, PlayerId, Role, World, FORMATIONS, ROLE_WEIGHTS, XI,
-};
+use fforge_domain::{current_ability, ClubId, Lineup, PlayerId, Role, World, FORMATIONS, ROLE_WEIGHTS, XI};
 
-/// Mean CA-in-slot-role over the eleven. Playing out of position is legal and
-/// simply rates at that role's CA — the weighting table is the whole penalty
-/// model, no extra fudge factor.
+/// Mean CA-in-slot-role over the eleven — a squad-quality scalar independent
+/// of any particular match-resolution model. Used for display and by
+/// `ai_pick_lineup`'s formation comparison below.
 pub fn lineup_strength(world: &World, lineup: &Lineup) -> f64 {
     let def = lineup.formation_def();
     let mut sum = 0.0;
@@ -28,19 +35,23 @@ pub fn lineup_strength(world: &World, lineup: &Lineup) -> f64 {
     sum / XI as f64
 }
 
-/// Home λ base > away λ base ⇒ home advantage; totals ≈ 2.6.
-const HOME_BASE: f64 = 1.42;
-const AWAY_BASE: f64 = 1.12;
-/// Sensitivity per rating point of strength difference.
-const DIFF_K: f64 = 0.030;
+/// The result of a simulated match: the score that folds into `GameState`
+/// (via `Event::MatchPlayed`) plus the minute-by-minute trace. The trace
+/// rides alongside the fold, never inside it (`MATCH_MODEL.md` §7) — it is a
+/// Trace, not a fold input, and callers are free to discard it. Nothing here
+/// is persisted by `commands::advance_matchday`; only the score is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchOutcome {
+    pub home_goals: u8,
+    pub away_goals: u8,
+    pub stream: Vec<MatchEvent>,
+}
 
-pub fn simulate_match(home_strength: f64, away_strength: f64, rng: &mut Rng) -> (u8, u8) {
-    let diff = home_strength - away_strength;
-    let lambda_home = (HOME_BASE * (DIFF_K * diff).exp()).clamp(0.15, 6.0);
-    let lambda_away = (AWAY_BASE * (-DIFF_K * diff).exp()).clamp(0.10, 6.0);
-    let hg = rng.poisson(lambda_home).min(9) as u8;
-    let ag = rng.poisson(lambda_away).min(9) as u8;
-    (hg, ag)
+/// Simulate one match: `(lineups, world, rng)` in, score + trace out. A pure
+/// function of its inputs — same seed stream, same outcome, by construction
+/// (`MATCH_MODEL.md` §7).
+pub fn play_match(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
+    resolve::play_match(world, home, away, rng)
 }
 
 /// Deterministic AI team selection: for each formation, greedily fill slots
@@ -86,4 +97,83 @@ fn pick_best(world: &World, pool: &[PlayerId], role: Role) -> (usize, u8) {
         }
     }
     (best_idx, best_ca)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng::derive_stream;
+    use fforge_domain::World;
+
+    fn tiny_world_and_lineups() -> (World, Lineup, Lineup) {
+        let cfg = crate::worldgen::WorldGenConfig { num_clubs: 2, ..Default::default() };
+        let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
+        let clubs = world.competition.clubs.clone();
+        let home = ai_pick_lineup(&world, clubs[0]);
+        let away = ai_pick_lineup(&world, clubs[1]);
+        (world, home, away)
+    }
+
+    #[test]
+    fn same_seed_same_outcome() {
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut r1 = derive_stream(99, 1);
+        let mut r2 = derive_stream(99, 1);
+        let a = play_match(&world, &home, &away, &mut r1);
+        let b = play_match(&world, &home, &away, &mut r2);
+        assert_eq!(a, b, "identical (lineups, world, rng stream) must yield an identical outcome");
+    }
+
+    #[test]
+    fn different_streams_can_diverge() {
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut r1 = derive_stream(1, 1);
+        let mut r2 = derive_stream(2, 1);
+        let a = play_match(&world, &home, &away, &mut r1);
+        let b = play_match(&world, &home, &away, &mut r2);
+        assert_ne!(a.stream, b.stream, "different rng streams should not replay identically");
+    }
+
+    #[test]
+    fn stream_is_never_empty_and_ends_with_a_final_score_consistent_with_shot_events() {
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut rng = derive_stream(42, 1);
+        let outcome = play_match(&world, &home, &away, &mut rng);
+        assert!(!outcome.stream.is_empty(), "a 90-minute match must produce events");
+        let goal_events = outcome
+            .stream
+            .iter()
+            .filter(|e| matches!(e.kind, MatchEventKind::Shot { outcome: ShotOutcome::Goal, .. }))
+            .count();
+        assert_eq!(
+            goal_events,
+            outcome.home_goals as usize + outcome.away_goals as usize,
+            "every goal in the score must have exactly one corresponding Shot{{outcome: Goal}} event"
+        );
+    }
+
+    #[test]
+    fn identical_squads_show_a_structural_home_advantage() {
+        // Same club on both sides of the ball — the only asymmetry left is
+        // home_bias and each half's kickoff. Pooled over many seeds, home
+        // must win more often than away (mirrors the Phase-1 crude-engine
+        // home-advantage invariant, now against the real resolution model).
+        let cfg = crate::worldgen::WorldGenConfig { num_clubs: 2, ..Default::default() };
+        let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
+        let club = world.competition.clubs[0];
+        let lineup = ai_pick_lineup(&world, club);
+
+        let mut home_wins = 0u32;
+        let mut away_wins = 0u32;
+        for seed in 0..200u64 {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &lineup, &lineup, &mut rng);
+            match outcome.home_goals.cmp(&outcome.away_goals) {
+                std::cmp::Ordering::Greater => home_wins += 1,
+                std::cmp::Ordering::Less => away_wins += 1,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+        assert!(home_wins > away_wins, "home_bias must be visible: {home_wins} home wins vs {away_wins} away wins");
+    }
 }

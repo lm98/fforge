@@ -6,7 +6,7 @@
 //! never mutates state — callers apply the returned events through the fold.
 
 use crate::event::Event;
-use crate::match_engine::{ai_pick_lineup, lineup_strength, simulate_match};
+use crate::match_engine::{ai_pick_lineup, play_match};
 use crate::rng::derive_stream;
 use crate::state::{league_table, GameState};
 use fforge_domain::{Lineup, PlayerId, FORMATIONS, XI};
@@ -108,10 +108,13 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
         } else {
             ai_pick_lineup(&state.world, fixture.away)
         };
-        let hs = lineup_strength(&state.world, &home_lineup);
-        let as_ = lineup_strength(&state.world, &away_lineup);
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-        let (hg, ag) = simulate_match(hs, as_, &mut rng);
+        // The minute-by-minute stream is a Trace, not a fold input
+        // (MATCH_MODEL.md §7) — only the score is recorded; it rides
+        // alongside for live-viewing consumers (fforge-game's friendly
+        // viewer) but is never persisted through the event log.
+        let outcome = play_match(&state.world, &home_lineup, &away_lineup, &mut rng);
+        let (hg, ag) = (outcome.home_goals, outcome.away_goals);
         new_results.insert(fixture.id, (hg, ag));
         events.push(Event::MatchPlayed {
             fixture: fixture.id,

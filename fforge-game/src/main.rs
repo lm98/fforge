@@ -129,9 +129,9 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry) {
         }
         header(&session);
         println!(
-            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [0] Quit without saving"
+            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Watch a friendly  [0] Quit without saving"
         );
-        match prompt_choice("> ", &["1", "2", "3", "4", "5", "6", "7", "8", "0"]).as_str() {
+        match prompt_choice("> ", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]).as_str() {
             "1" => squad_screen(&session),
             "2" => table_screen(&session),
             "3" => fixtures_screen(&session),
@@ -143,6 +143,7 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry) {
                 do_save(&session);
                 return;
             }
+            "9" => watch_friendly_flow(&session),
             _ => return,
         }
     }
@@ -173,7 +174,7 @@ fn squad_screen(session: &Session) {
     let world = &s.world;
     let mut players: Vec<_> = world.club_players(s.player_club).collect();
     players.sort_by_key(|p| (p.natural_role, std::cmp::Reverse(headline_ca(p))));
-    println!("\n {:<3} {:<20} {:>3}  {:<4} {:>3}  {}", "Pos", "Name", "Age", "", "CA", "Best role");
+    println!("\n {:<3} {:<20} {:>3}  {:<4} {:>3}  Best role", "Pos", "Name", "Age", "", "CA");
     for p in players {
         let (best, best_ca) = fforge_domain::best_role(&p.attributes, &ROLE_WEIGHTS);
         let alt = if best != p.natural_role {
@@ -383,6 +384,62 @@ fn auto_fill(
             .expect("squad larger than XI");
         chosen.push(best);
     }
+}
+
+// ------------------------------------------------------------------ friendly
+
+/// The Phase 2 "humble text match view" (`DESIGN.md` §9) — a standalone,
+/// unrecorded friendly (no `Command`, no `Event`, no fold mutation) that
+/// proves the event stream can tell a match's story before any graphical
+/// renderer exists. It just prints the stream, unfiltered.
+fn watch_friendly_flow(session: &Session) {
+    let world = &session.state.world;
+    let clubs = world.competition.clubs.clone();
+
+    println!("\nPick the home club:");
+    for (i, &cid) in clubs.iter().enumerate() {
+        println!("[{:>2}] {}", i + 1, world.club(cid).name);
+    }
+    let Some(hi) = prompt_number("Home club: ", 1, clubs.len()) else {
+        return;
+    };
+    println!("\nPick the away club:");
+    for (i, &cid) in clubs.iter().enumerate() {
+        println!("[{:>2}] {}", i + 1, world.club(cid).name);
+    }
+    let Some(ai) = prompt_number("Away club: ", 1, clubs.len()) else {
+        return;
+    };
+    let home_club = clubs[hi - 1];
+    let away_club = clubs[ai - 1];
+    let home_name = world.club(home_club).name.clone();
+    let away_name = world.club(away_club).name.clone();
+
+    let home_lineup = match_engine::ai_pick_lineup(world, home_club);
+    let away_lineup = match_engine::ai_pick_lineup(world, away_club);
+
+    // A friendly is never recorded through Session::execute — no Command, no
+    // Event, no fold mutation — so an ad-hoc wall-clock seed is fine here
+    // (this crate's one sanctioned exception, same as prompt_seed).
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0xF00D);
+    let mut rng = fforge_core::rng::Rng::seed_from(seed);
+    let outcome = match_engine::play_match(world, &home_lineup, &away_lineup, &mut rng);
+
+    println!(
+        "\n{home_name} vs {away_name} — {} raw events, unfiltered (the humble text match view, DESIGN.md §9):\n",
+        outcome.stream.len()
+    );
+    for event in &outcome.stream {
+        let side_name = match event.side {
+            match_engine::Side::Home => home_name.as_str(),
+            match_engine::Side::Away => away_name.as_str(),
+        };
+        println!("{}", event.commentary(side_name));
+    }
+    println!("\nFULL TIME: {home_name} {} - {} {away_name}", outcome.home_goals, outcome.away_goals);
 }
 
 // ------------------------------------------------------------------ advance

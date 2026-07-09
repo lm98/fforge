@@ -3,9 +3,10 @@
 Layer 2 of the fforge workspace: the deterministic simulation core, consuming
 `fforge-domain`. The crate is a pure fold over an append-only event log — `GameState`
 *is* the fold's accumulator, `Session` glues log + state + observers together, and
-`commands::step` is the only place proposals turn into recorded events. Currently
-building the Phase 1 walking skeleton (DESIGN.md §9): a full season loop, league table,
-and a deliberately crude Poisson match engine.
+`commands::step` is the only place proposals turn into recorded events. Phase 1 (full
+season loop, league table) is complete; `match_engine` now runs the Phase 2a
+event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson
+engine behind the same `play_match` call site.
 
 ## Module map
 
@@ -16,10 +17,16 @@ and a deliberately crude Poisson match engine.
 | `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it |
 | `session` | `Session` — owns the log + folded state, routes commands, notifies observers; `save_log`/`load_log` (JSON-lines) |
 | `observer` | `EventObserver` trait, `SeasonTelemetry` — passive event-stream consumers (trace/telemetry spine) |
-| `match_engine` | Phase-1 crude engine: `lineup_strength`, `simulate_match` (Poisson), `ai_pick_lineup` |
+| `match_engine` | Phase-2a engine: `play_match` (`MatchOutcome { home_goals, away_goals, stream }`), `lineup_strength`, `ai_pick_lineup`. Submodules: `zone` (five-zone state + role→zone presence table), `knobs` (the fitted `Knobs` table), `contest` (attribute→contest maps, the logistic resolver, fatigue), `resolve` (the possession loop), `stream` (`MatchEvent` schema + commentary rendering) |
 | `rng` | Seeded xoshiro256** + `derive_stream` — the crate's only source of randomness |
 | `schedule` | `double_round_robin()` — deterministic fixture generation |
 | `worldgen` | `generate()` — seeded new-game world/schedule/start date, recorded once into `GameStarted` |
+
+`match_engine`'s trace (`MatchOutcome::stream`) is a Trace, not a fold input
+(`MATCH_MODEL.md` §7): `commands::advance_matchday` folds only the score into
+`Event::MatchPlayed` and discards the stream; nothing here persists it. Live-viewing
+consumers (e.g. `fforge-game`'s friendly-match viewer) call `play_match` directly,
+outside the recorded fold.
 
 `lib.rs` re-exports the public surface; consumers (`fforge-game`) import from the crate
 root.

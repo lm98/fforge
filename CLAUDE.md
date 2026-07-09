@@ -10,18 +10,22 @@ fforge/
 └── fforge-game     (CLI binary — depends on both)
 ```
 
-`fforge-domain` provides the core domain types of the simulator. `fforge-core` is the primary consumer; it is currently implementing the Phase 1 crude
-Poisson match engine. `fforge-game` wires everything into the CLI.
+`fforge-domain` provides the core domain types of the simulator. `fforge-core` is the primary consumer; it now runs the Phase 2a
+event-based possession match engine (`play_match`, in `fforge-core::match_engine`). `fforge-game` wires everything into the CLI.
 
 ## Design documents
 
-All design decisions originate in two files at the workspace root:
+All design decisions originate in three files at the workspace root:
 
 - **`docs/ATTRIBUTE_SCHEMA.md`** — attribute list, rating scale, role→attribute weight
   table, CA/PA semantics, Character fields. The code in `fforge-domain` is a transcription of this document.
 - **`docs/DESIGN.md`** — project vision, five-layer architecture, simulation subsystem
   specs, LLM agent interface, development phases. Read §3 (architecture) and §9 (phases)
   before adding anything new.
+- **`docs/MATCH_MODEL.md`** — the Phase 2a match engine design record: the five-zone
+  state space, actor-centric resolution model, the wide route, the role→zone presence
+  table, and the calibration knobs/targets. `fforge-core::match_engine` is a Rust
+  transcription of this document (and of the notebook it pins).
 
 When the code and the design docs diverge, treat the design docs as authoritative and
 file the discrepancy as a bug.
@@ -67,6 +71,11 @@ in the latter case).
 
 ## Current phase
 
-Phase 0 (design & data model) is complete. `fforge-core` is the active development
-front, building the Phase 1 walking skeleton. Changes to `fforge-domain` at this stage
-are corrections or clarifications to the Phase 0 deliverable, not new features.
+Phase 0 (design & data model) is complete. Phase 1 (walking skeleton) is complete.
+Phase 2a (the event-based possession match engine, `MATCH_MODEL.md`) is implemented —
+`fforge-core` is the active development front. Deferred to Phase 2e behind the same
+`play_match` call site: tactics, cards/fouls, injuries, set pieces, substitutions, and
+the character/hidden attributes. The knob table is a fitted starting point, not a
+finished calibration; the Rust calibration harness (`MATCH_MODEL.md` §10) is a separate,
+not-yet-built deliverable. Changes to `fforge-domain` at this stage are corrections or
+clarifications to the Phase 0 deliverable, not new features.

@@ -8,7 +8,7 @@ use fforge_domain::{ClubId, Fixture, FixtureId};
 /// sequential in emission order.
 pub fn double_round_robin(clubs: &[ClubId]) -> Vec<Fixture> {
     let n = clubs.len();
-    assert!(n >= 2 && n % 2 == 0, "need an even number of clubs, got {n}");
+    assert!(n >= 2 && n.is_multiple_of(2), "need an even number of clubs, got {n}");
     let rounds = (n - 1) as u8;
     let mut fixtures = Vec::with_capacity(n * (n - 1));
     let mut next_id = 0u32;
