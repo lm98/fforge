@@ -23,7 +23,7 @@ pub mod session;
 pub mod state;
 pub mod worldgen;
 
-pub use commands::{Command, CommandError};
+pub use commands::{player_match_preview, Command, CommandError};
 pub use event::Event;
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use session::{load_log, save_log, Session};

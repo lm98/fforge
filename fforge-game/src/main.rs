@@ -6,7 +6,7 @@
 
 use fforge_core::{Command, Event, SeasonTelemetry, Session,
                   WorldGenConfig,
-                  league_table, load_log, match_engine, save_log,
+                  league_table, load_log, match_engine, player_match_preview, save_log,
 };
 use fforge_domain::{ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World,
                     XI,
@@ -428,14 +428,22 @@ fn watch_friendly_flow(session: &Session) {
     let mut rng = fforge_core::rng::Rng::seed_from(seed);
     let outcome = match_engine::play_match(world, &home_lineup, &away_lineup, &mut rng);
 
+    print_humble_text_view(&home_name, &away_name, &outcome);
+}
+
+/// Prints the humble text match view (`DESIGN.md` §9): the raw event stream,
+/// unfiltered, followed by the final score. Shared by the standalone
+/// friendly viewer and, for the human's own fixture, the main game loop's
+/// matchday advance.
+fn print_humble_text_view(home_name: &str, away_name: &str, outcome: &match_engine::MatchOutcome) {
     println!(
         "\n{home_name} vs {away_name} — {} raw events, unfiltered (the humble text match view, DESIGN.md §9):\n",
         outcome.stream.len()
     );
     for event in &outcome.stream {
         let side_name = match event.side {
-            match_engine::Side::Home => home_name.as_str(),
-            match_engine::Side::Away => away_name.as_str(),
+            match_engine::Side::Home => home_name,
+            match_engine::Side::Away => away_name,
         };
         println!("{}", event.commentary(side_name));
     }
@@ -446,6 +454,10 @@ fn watch_friendly_flow(session: &Session) {
 
 fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
     let md = session.state.current_matchday;
+    // Computed from the pre-advance state, using the same lineup selection
+    // and seed-derived RNG stream `AdvanceMatchday` is about to use, so it
+    // can never disagree with the score actually recorded below.
+    let preview = player_match_preview(&session.state);
     let events: Vec<Event> = match session.execute(Command::AdvanceMatchday, &mut [&mut *telemetry])
     {
         Ok(ev) => ev.to_vec(),
@@ -455,6 +467,13 @@ fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
         }
     };
     let s = &session.state;
+    if let Some(outcome) = &preview
+        && let Some(f) = s
+            .fixtures_of_matchday(md)
+            .find(|f| f.home == s.player_club || f.away == s.player_club)
+    {
+        print_humble_text_view(&s.world.club(f.home).name, &s.world.club(f.away).name, outcome);
+    }
     println!("\nMatchday {md} results:");
     for event in &events {
         if let Event::MatchPlayed {
