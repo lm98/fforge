@@ -8,10 +8,12 @@ place: new/load game, squad/table/fixtures screens, lineup selection, matchday a
 and JSON-lines save/load — matchday advance now runs the Phase 2a possession engine
 under the hood via `fforge-core`, unchanged from this crate's point of view. Also
 implements the Phase 2 "humble text match view" (`DESIGN.md` §9) for the human's own
-fixture during matchday advance. The standalone friendly-match viewer
-(`watch_friendly_flow`) that also rendered this view still exists but is currently
-unreachable from `game_loop`'s menu — the "watch a friendly" option was removed
-(kept `#[allow(dead_code)]` rather than deleted).
+fixture during matchday advance, paced line-by-line (via `crossterm`, this crate's one
+non-workspace dependency) with a skip-to-full-time keypress when run in a real
+terminal — piped/non-tty output (tests, redirects) still gets the whole stream at once.
+The standalone friendly-match viewer (`watch_friendly_flow`) that also rendered this
+view still exists but is currently unreachable from `game_loop`'s menu — the "watch a
+friendly" option was removed (kept `#[allow(dead_code)]` rather than deleted).
 
 ## Function map (`main.rs`)
 
@@ -22,7 +24,7 @@ unreachable from `game_loop`'s menu — the "watch a friendly" option was remove
 | Lineup | `set_lineup_flow`, `auto_fill` | formation + XI picker, submits `Command::SubmitLineup` |
 | Advance | `advance_flow` | calls `fforge_core::player_match_preview` on the pre-advance state to get the human's own match's trace, submits `Command::AdvanceMatchday`, renders that trace via `print_humble_text_view` before printing the matchday's plain results |
 | Friendly (unreachable, `#[allow(dead_code)]`) | `watch_friendly_flow` | picks two clubs, runs `match_engine::play_match` directly (not through `Session::execute` — unrecorded, no `Event`), renders the raw event stream via `print_humble_text_view` — no longer wired into `game_loop`'s menu |
-| Helpers | `print_humble_text_view`, `print_result`, `table_position`, `club_avg_ca`, `ordinal`, `do_save` | small pure/IO utilities used by the screens above |
+| Helpers | `print_humble_text_view`, `key_pressed_within`, `print_result`, `table_position`, `club_avg_ca`, `ordinal`, `do_save` | small pure/IO utilities used by the screens above; `key_pressed_within` polls for a keypress with a timeout (via `crossterm`) so `print_humble_text_view` can pace playback and skip on demand |
 | Input primitives | `read_line`, `prompt_choice`, `prompt_number`, `prompt_seed` | the only functions that touch stdin |
 
 ## Hard constraints — never violate these
@@ -35,6 +37,10 @@ unreachable from `game_loop`'s menu — the "watch a friendly" option was remove
    `watch_friendly_flow`'s ad-hoc RNG seed (a friendly is never recorded — no `Event`,
    nothing for replay to reproduce). Any new randomness or timestamp need must be
    sourced here and passed in as data, never added to `fforge-core`/`fforge-domain`.
+   `print_humble_text_view`'s terminal raw-mode toggling (for the skippable playback
+   delay) is the same kind of edge-only concern — it's always paired
+   (`enable_raw_mode`/`disable_raw_mode`) around the loop so canonical mode is restored
+   before the next `read_line`-based prompt.
 2. **All game-state mutation goes through `Session::execute`.** `main.rs` never mutates
    `GameState` fields directly — it builds a `Command`, calls `execute`, and renders
    whatever `Event`s or error comes back. This keeps the CLI a pure consumer of the
