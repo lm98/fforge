@@ -129,9 +129,9 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry) {
         }
         header(&session);
         println!(
-            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Watch a friendly  [0] Quit without saving"
+            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [0] Quit without saving"
         );
-        match prompt_choice("> ", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]).as_str() {
+        match prompt_choice("> ", &["1", "2", "3", "4", "5", "6", "7", "8", "0"]).as_str() {
             "1" => squad_screen(&session),
             "2" => table_screen(&session),
             "3" => fixtures_screen(&session),
@@ -143,7 +143,6 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry) {
                 do_save(&session);
                 return;
             }
-            "9" => watch_friendly_flow(&session),
             _ => return,
         }
     }
@@ -392,6 +391,10 @@ fn auto_fill(
 /// unrecorded friendly (no `Command`, no `Event`, no fold mutation) that
 /// proves the event stream can tell a match's story before any graphical
 /// renderer exists. It just prints the stream, unfiltered.
+///
+/// Not currently reachable from `game_loop`'s menu — the "watch a friendly"
+/// option was removed — but kept for now rather than deleted.
+#[allow(dead_code)]
 fn watch_friendly_flow(session: &Session) {
     let world = &session.state.world;
     let clubs = world.competition.clubs.clone();

@@ -7,8 +7,11 @@ Layer 5 (per DESIGN.md) of the fforge workspace: the CLI binary, consuming both
 place: new/load game, squad/table/fixtures screens, lineup selection, matchday advance,
 and JSON-lines save/load — matchday advance now runs the Phase 2a possession engine
 under the hood via `fforge-core`, unchanged from this crate's point of view. Also
-implements the Phase 2 "humble text match view" (`DESIGN.md` §9), both as a standalone
-friendly-match viewer and, during matchday advance, for the human's own fixture.
+implements the Phase 2 "humble text match view" (`DESIGN.md` §9) for the human's own
+fixture during matchday advance. The standalone friendly-match viewer
+(`watch_friendly_flow`) that also rendered this view still exists but is currently
+unreachable from `game_loop`'s menu — the "watch a friendly" option was removed
+(kept `#[allow(dead_code)]` rather than deleted).
 
 ## Function map (`main.rs`)
 
@@ -18,7 +21,7 @@ friendly-match viewer and, during matchday advance, for the human's own fixture.
 | Screens | `header`, `squad_screen`, `table_screen`, `fixtures_screen`, `stats_screen`, `season_end_screen` | read-only renders of `Session` state |
 | Lineup | `set_lineup_flow`, `auto_fill` | formation + XI picker, submits `Command::SubmitLineup` |
 | Advance | `advance_flow` | calls `fforge_core::player_match_preview` on the pre-advance state to get the human's own match's trace, submits `Command::AdvanceMatchday`, renders that trace via `print_humble_text_view` before printing the matchday's plain results |
-| Friendly | `watch_friendly_flow` | picks two clubs, runs `match_engine::play_match` directly (not through `Session::execute` — unrecorded, no `Event`), renders the raw event stream via `print_humble_text_view` |
+| Friendly (unreachable, `#[allow(dead_code)]`) | `watch_friendly_flow` | picks two clubs, runs `match_engine::play_match` directly (not through `Session::execute` — unrecorded, no `Event`), renders the raw event stream via `print_humble_text_view` — no longer wired into `game_loop`'s menu |
 | Helpers | `print_humble_text_view`, `print_result`, `table_position`, `club_avg_ca`, `ordinal`, `do_save` | small pure/IO utilities used by the screens above |
 | Input primitives | `read_line`, `prompt_choice`, `prompt_number`, `prompt_seed` | the only functions that touch stdin |
 
