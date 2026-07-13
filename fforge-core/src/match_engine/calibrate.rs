@@ -10,7 +10,7 @@
 //! This module is exploratory-harness plumbing, not simulation logic: it
 //! never feeds back into `Knobs` or the presence tables by itself.
 
-use super::stream::{MatchEventKind, ShotKind, ShotOutcome, Side};
+use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::MatchOutcome;
 use std::collections::BTreeMap;
 
@@ -54,6 +54,10 @@ pub struct StreamTelemetry {
     pub shots: u32,
     pub shots_on_target: u32,
     pub goals_by_kind: BTreeMap<ShotKind, u32>,
+    /// Goals keyed by arrival route (`MATCH_MODEL.md` §5) — what makes the
+    /// wide-origin-goal-share target (cross + cutback, §8) computable,
+    /// distinct from `goals_by_kind`'s coarser Finish/Header/LongShot split.
+    pub goals_by_source: BTreeMap<ShotSource, u32>,
     /// A crude possession proxy: total stream events attributed to each
     /// side (more events ⇒ more time on the ball / advancing it).
     pub home_events: u32,
@@ -85,7 +89,7 @@ impl StreamTelemetry {
                 Side::Home => self.home_events += 1,
                 Side::Away => self.away_events += 1,
             }
-            if let MatchEventKind::Shot { kind, outcome: shot_outcome } = event.kind {
+            if let MatchEventKind::Shot { kind, source, outcome: shot_outcome } = event.kind {
                 self.shots += 1;
                 match event.side {
                     Side::Home => home_shots += 1,
@@ -96,6 +100,7 @@ impl StreamTelemetry {
                 }
                 if shot_outcome == ShotOutcome::Goal {
                     *self.goals_by_kind.entry(kind).or_default() += 1;
+                    *self.goals_by_source.entry(source).or_default() += 1;
                     match event.side {
                         Side::Home => home_goals += 1,
                         Side::Away => away_goals += 1,
@@ -171,6 +176,18 @@ impl StreamTelemetry {
         *self.goals_by_kind.get(&ShotKind::Header).unwrap_or(&0) as f64 / self.goals as f64
     }
 
+    /// Share of goals arriving via `ShotSource::Cross` or `Cutback` — the
+    /// wide-origin-goal-share calibration target (`MATCH_MODEL.md` §8:
+    /// "cross + cutback"), 25-35%.
+    pub fn wide_origin_goal_share(&self) -> f64 {
+        if self.goals == 0 {
+            return 0.0;
+        }
+        let cross = *self.goals_by_source.get(&ShotSource::Cross).unwrap_or(&0);
+        let cutback = *self.goals_by_source.get(&ShotSource::Cutback).unwrap_or(&0);
+        (cross + cutback) as f64 / self.goals as f64
+    }
+
     /// Home share of the possession-proxy event count.
     pub fn home_possession_share(&self) -> f64 {
         let total = self.home_events + self.away_events;
@@ -187,25 +204,26 @@ mod tests {
     use crate::match_engine::stream::MatchEvent;
     use crate::match_engine::Zone;
 
-    fn shot(side: Side, kind: ShotKind, outcome: ShotOutcome) -> MatchEvent {
+    fn shot(side: Side, kind: ShotKind, source: ShotSource, outcome: ShotOutcome) -> MatchEvent {
         MatchEvent {
             minute: 10,
             side,
             zone: Zone::Box,
-            kind: MatchEventKind::Shot { kind, outcome },
+            kind: MatchEventKind::Shot { kind, source, outcome },
         }
     }
 
     #[test]
     fn record_reproduces_hand_counted_aggregates() {
-        // Hand-built trace: home score once (Finish), miss once (Off), home
-        // scores a Header; away score once (LongShot), get one Saved.
+        // Hand-built trace: home score once (through-ball Finish), miss
+        // once (Off), home scores a Header (from a Cross); away score once
+        // (LongShot), get one Saved.
         let stream = vec![
-            shot(Side::Home, ShotKind::Finish, ShotOutcome::Goal),
-            shot(Side::Home, ShotKind::Finish, ShotOutcome::Off),
-            shot(Side::Home, ShotKind::Header, ShotOutcome::Goal),
-            shot(Side::Away, ShotKind::LongShot, ShotOutcome::Goal),
-            shot(Side::Away, ShotKind::LongShot, ShotOutcome::Saved),
+            shot(Side::Home, ShotKind::Finish, ShotSource::Through, ShotOutcome::Goal),
+            shot(Side::Home, ShotKind::Finish, ShotSource::Cutback, ShotOutcome::Off),
+            shot(Side::Home, ShotKind::Header, ShotSource::Cross, ShotOutcome::Goal),
+            shot(Side::Away, ShotKind::LongShot, ShotSource::Long, ShotOutcome::Goal),
+            shot(Side::Away, ShotKind::LongShot, ShotSource::Long, ShotOutcome::Saved),
             MatchEvent {
                 minute: 20,
                 side: Side::Home,
@@ -238,6 +256,10 @@ mod tests {
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::Finish), Some(&1));
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::Header), Some(&1));
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::LongShot), Some(&1));
+        assert_eq!(telemetry.goals_by_source.get(&ShotSource::Through), Some(&1));
+        assert_eq!(telemetry.goals_by_source.get(&ShotSource::Cross), Some(&1));
+        assert_eq!(telemetry.goals_by_source.get(&ShotSource::Long), Some(&1));
+        assert_eq!(telemetry.goals_by_source.get(&ShotSource::Cutback), None); // the Cutback shot was Off, not a goal
         assert_eq!(telemetry.home_events, 4); // 3 home shots + 1 home pass
         assert_eq!(telemetry.away_events, 3); // 2 away shots + 1 away pass
 
@@ -256,6 +278,7 @@ mod tests {
         assert!((telemetry.shot_on_target_rate() - 0.8).abs() < 1e-9);
         assert!((telemetry.conversion_rate() - 0.6).abs() < 1e-9);
         assert!((telemetry.headed_goal_share() - (1.0 / 3.0)).abs() < 1e-9);
+        assert!((telemetry.wide_origin_goal_share() - (1.0 / 3.0)).abs() < 1e-9); // the Cross goal only
         assert!((telemetry.home_possession_share() - (4.0 / 7.0)).abs() < 1e-9);
     }
 }

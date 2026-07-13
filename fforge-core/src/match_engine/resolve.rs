@@ -7,7 +7,7 @@
 use super::MatchOutcome;
 use super::contest::{self, blend, contest_p, fatigue_mult};
 use super::knobs::Knobs;
-use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, Side};
+use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::zone::{self, Zone};
 use crate::rng::Rng;
 use fforge_domain::{Attribute, Attributes, Lineup, Role, World};
@@ -241,6 +241,7 @@ fn weighted_choice<T: Copy>(options: &[(T, f64)], rng: &mut Rng) -> T {
 fn take_shot(
     poss: Side,
     kind: ShotKind,
+    source: ShotSource,
     base_q: f64,
     att: &[XiPlayer],
     def_side: &[XiPlayer],
@@ -298,6 +299,7 @@ fn take_shot(
                     zone: Zone::Box,
                     kind: MatchEventKind::Shot {
                         kind,
+                        source,
                         outcome: ShotOutcome::Goal,
                     },
                 });
@@ -309,6 +311,7 @@ fn take_shot(
                 zone: Zone::Box,
                 kind: MatchEventKind::Shot {
                     kind,
+                    source,
                     outcome: ShotOutcome::Saved,
                 },
             });
@@ -335,7 +338,7 @@ fn take_shot(
             minute: minute_u8,
             side: poss,
             zone: Zone::Box,
-            kind: MatchEventKind::Shot { kind, outcome },
+            kind: MatchEventKind::Shot { kind, source, outcome },
         });
         return (other_side(poss), Zone::Def); // off / blocked → cleared
     }
@@ -414,6 +417,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Through,
                             k.q_through,
                             att,
                             def_side,
@@ -479,6 +483,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Dribble,
                             k.q_dribble,
                             att,
                             def_side,
@@ -499,6 +504,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Cutback,
                             k.q_cutback,
                             att,
                             def_side,
@@ -540,6 +546,7 @@ fn step(
                 take_shot(
                     poss,
                     ShotKind::Header,
+                    ShotSource::Cross,
                     k.q_header,
                     att,
                     def_side,
@@ -564,6 +571,7 @@ fn step(
         Action::LongShot => take_shot(
             poss,
             ShotKind::LongShot,
+            ShotSource::Long,
             k.q_long,
             att,
             def_side,

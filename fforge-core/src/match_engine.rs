@@ -18,7 +18,7 @@ mod zone;
 
 pub use calibrate::{FormationStats, StreamTelemetry};
 pub use knobs::Knobs;
-pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, Side};
+pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 pub use zone::Zone;
 
 use crate::rng::Rng;

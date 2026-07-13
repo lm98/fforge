@@ -84,6 +84,7 @@ fn print_report(report: &CalibReport) {
     println!("shots on target   : {:.1}%", p.shot_on_target_rate() * 100.0);
     println!("conversion        : {:.1}%", p.conversion_rate() * 100.0);
     println!("headed goal share : {:.1}%", p.headed_goal_share() * 100.0);
+    println!("wide-origin share : {:.1}%", p.wide_origin_goal_share() * 100.0);
     println!("home possession   : {:.1}%", p.home_possession_share() * 100.0);
     println!();
     println!("=== Per-formation breakdown ===");
