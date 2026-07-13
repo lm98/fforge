@@ -40,8 +40,11 @@ impl fmt::Display for CommandError {
     }
 }
 
-/// Tag namespace for per-fixture RNG streams (see rng::derive_stream).
-const FIXTURE_STREAM_NS: u64 = 0x4D41_5443_0000_0000; // "MATC"
+/// Tag namespace for per-fixture RNG streams (see rng::derive_stream). Public
+/// so the calibration harness (`fforge-core/src/bin/calibrate.rs`) can derive
+/// the exact same per-fixture stream `advance_matchday` uses without
+/// duplicating the constant.
+pub const FIXTURE_STREAM_NS: u64 = 0x4D41_5443_0000_0000; // "MATC"
 
 pub fn step(state: &GameState, command: Command) -> Result<Vec<Event>, CommandError> {
     if state.season_over() {

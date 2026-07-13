@@ -23,11 +23,28 @@ pub enum Side {
 /// metric. Through-ball, dribbled, and cutback finishes share `Finish`; only
 /// the attacker-attribute selection and chance-quality knob differ between
 /// them internally (§9's stream schema pins exactly these three variants).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShotKind {
     Finish,
     Header,
     LongShot,
+}
+
+/// How the possession *reached* the shot (`MATCH_MODEL.md` §5's arrival
+/// table) — finer-grained than `ShotKind`, which collapses through-ball,
+/// dribble, and cutback finishes into `Finish`. This is what makes the
+/// wide-origin-goal-share calibration target (cross + cutback,
+/// `MATCH_MODEL.md` §8) actually computable from the stream, not just
+/// headed-goal share. A rebound follow-up shot keeps the source of the shot
+/// that created it — the rebound is a continuation of the same attack, not
+/// a new arrival route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShotSource {
+    Through,
+    Dribble,
+    Cutback,
+    Cross,
+    Long,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +77,7 @@ pub enum MatchEventKind {
     Turnover,
     Shot {
         kind: ShotKind,
+        source: ShotSource,
         outcome: ShotOutcome,
     },
     /// A save that was parried into a scrappy rebound (a `Shot` follow-up
@@ -103,7 +121,7 @@ impl MatchEvent {
             }
             MatchEventKind::Clearance => format!("{m}' Cleared."),
             MatchEventKind::Turnover => format!("{m}' Turned over {z}."),
-            MatchEventKind::Shot { kind, outcome } => {
+            MatchEventKind::Shot { kind, outcome, .. } => {
                 let k = match kind {
                     ShotKind::Finish => "shot",
                     ShotKind::Header => "header",
@@ -141,18 +159,22 @@ mod tests {
             MatchEventKind::Turnover,
             MatchEventKind::Shot {
                 kind: ShotKind::Finish,
+                source: ShotSource::Through,
                 outcome: ShotOutcome::Goal,
             },
             MatchEventKind::Shot {
                 kind: ShotKind::Header,
+                source: ShotSource::Cross,
                 outcome: ShotOutcome::Saved,
             },
             MatchEventKind::Shot {
                 kind: ShotKind::LongShot,
+                source: ShotSource::Long,
                 outcome: ShotOutcome::Off,
             },
             MatchEventKind::Shot {
                 kind: ShotKind::Finish,
+                source: ShotSource::Cutback,
                 outcome: ShotOutcome::Blocked,
             },
             MatchEventKind::Save { parried: true },

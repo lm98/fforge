@@ -209,6 +209,19 @@ stable. **Calibrate on the mean pooled over many league draws**, and watch the p
 report prints; never tune against one league. (This is a synthetic-data artifact of small leagues
 with random squads, not a model defect — but the Rust harness must average the same way.)
 
+**Rust harness result (the deliverable this section deferred):** `fforge-core/src/match_engine/calibrate.rs`
+(`StreamTelemetry`) + `fforge-core/src/bin/calibrate.rs` (`cargo run --bin calibrate -- --seeds N`) now run
+this table against real `worldgen` + `ai_pick_lineup`, not the notebook's own synthetic squad
+generator. Diagnosis (pooled, 12+ seeds): the resolution loop is a faithful port (`resolve.rs`'s
+`notebook_parity` test reproduces ~2.5-2.9 gpm on notebook-equivalent inputs run through the same
+loop) and shots/game, on-target rate, and wide-origin share all landed on target against real
+inputs — but conversion sat at ~7% against real `worldgen`'s attribute distribution, versus the
+notebook's own ~10%. Re-tuning `b_beat` (-1.7 → -1.05, the beat-the-keeper stage only — it doesn't
+touch on-target rate or shot volume, confirmed by sweep) closes it: goals/game ~2.5-2.6, H/D/A
+~43/26/31%, conversion ~10%, wide-origin share ~27%, all pooled over 16 seeds. `knobs.rs`'s default
+`Knobs` now reflects this real-`worldgen`-calibrated point, not the notebook's original fitted
+values verbatim (`b_beat` is the one field that differs; see `knobs.rs`'s doc comment).
+
 ## 9. Event-stream schema mapping
 
 The action alphabet **is** the stream's event-kind alphabet — the humble text match view of Phase 2
@@ -217,9 +230,12 @@ downstream consumers (commentary, stats, journalist agent, future viewer) read t
 
 - `Pass`, `TakeOn`, `Cross` (first-class, carrying delivery outcome), `AerialDuel`, `Clearance`,
   `Turnover`.
-- `Shot { kind: Finish | Header | LongShot, outcome: Goal | Saved | Off | Blocked }` — the `kind`
-  discriminant is what makes headed vs cutback vs long-range goals countable for the goal-source-mix
-  metric and narratable for commentary.
+- `Shot { kind: Finish | Header | LongShot, source: Through | Dribble | Cutback | Cross | Long,
+  outcome: Goal | Saved | Off | Blocked }` — `kind` is what's narratable for commentary (headed vs
+  long-range); `source` is the finer arrival route `kind` collapses (through-ball, dribble, and
+  cutback all share `Finish`), and is what makes the wide-origin-goal-share metric (cross + cutback,
+  §8) actually computable, not just headed-goal share. A rebound follow-up keeps the `source` of the
+  shot that created it.
 - `Goal`, `Save` (with parry/collect), and zone-entry context so a beat can say *where* on the pitch
   it happened.
 
@@ -230,8 +246,16 @@ expensive-as-a-retrofit call from `DESIGN.md` §9 — the same shape as the narr
 
 Deliberately unresolved, to settle during the Rust port or Phase 2 calibration:
 
-1. **Presence table → formation coupling.** Starting weights are global; they should eventually be
-   derived from the chosen formation/tactics. The table's *shape* is fixed here; the numbers move.
+1. **Presence table → formation coupling.** *Partially settled.* The raw per-role presence numbers
+   (§6) stay global and unedited — reinventing them per formation would be new shape-finding work
+   this doc reserves for real calibration, not a mechanical Rust addition. Instead
+   `resolve::formation_p_wide` derives each side's effective `p_wide` from its own XI's actual
+   `AttC`/`AttW` presence share (using the existing table), scaled relative to the reference shape
+   `p_wide` was fitted against — a lineup shaped like the reference gets the fitted constant back
+   exactly; a winger-less 3-5-2 routes less into `AttW`. Measured effect (`calibrate.rs`,
+   12 seeds/4560 matches): pooled gpm moved by <0.01 — real but small. The rest of the presence
+   table (who resolves a contest once a zone is reached) is still global; deriving *that* per
+   formation, if ever warranted, remains open.
 2. **Support-term weight (`support`).** Kept small; whether it should scale with zone (more team
    dependence in build-up than in the box) is a calibration-taste question.
 3. **Long-shot home for the action.** Currently an `AttC` action resolving in place; whether `AttW`

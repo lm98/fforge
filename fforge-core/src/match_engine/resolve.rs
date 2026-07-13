@@ -7,7 +7,7 @@
 use super::MatchOutcome;
 use super::contest::{self, blend, contest_p, fatigue_mult};
 use super::knobs::Knobs;
-use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, Side};
+use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::zone::{self, Zone};
 use crate::rng::Rng;
 use fforge_domain::{Attribute, Attributes, Lineup, Role, World};
@@ -39,19 +39,77 @@ struct TeamMeans {
     cross_atk: f64,
     finish_atk: f64,
     header_atk: f64,
+    /// This side's `Mid` → `AttC`/`AttW` lateral-split probability
+    /// (`MATCH_MODEL.md` §10 item 1's formation-coupling): `Knobs::p_wide`
+    /// scaled by how this XI's actual role shape compares to the reference
+    /// shape the knob was fitted against (see `formation_p_wide`).
+    p_wide: f64,
 }
 
-fn team_means(xi: &[XiPlayer]) -> TeamMeans {
+fn team_means(xi: &[XiPlayer], k: &Knobs) -> TeamMeans {
     let n = xi.len() as f64;
     let mean =
         |w: &[(Attribute, f64)]| xi.iter().map(|p| contest::score(&p.attrs, w)).sum::<f64>() / n;
+    let roles: Vec<Role> = xi.iter().map(|p| p.role).collect();
     TeamMeans {
         pass_atk: mean(contest::PASS_ATK),
         takeon_atk: mean(contest::TAKEON_ATK),
         cross_atk: mean(contest::CROSS_ATK),
         finish_atk: mean(contest::FINISH_ATK),
         header_atk: mean(contest::HEADER_ATK),
+        p_wide: formation_p_wide(&roles, k),
     }
+}
+
+/// The role shape the global presence table and every `Knobs` split
+/// probability (including `p_wide`) were fitted against — the notebook's
+/// fixed calibration XI (`resolve::notebook_parity`'s `FIXED_XI`), not any
+/// of the four real `FORMATIONS`. A lineup shaped exactly like this one
+/// gets `k.p_wide` back unchanged; every other shape scales relative to it.
+const REFERENCE_XI_ROLES: [Role; 11] = [
+    Role::Gk,
+    Role::Cb,
+    Role::Cb,
+    Role::Fb,
+    Role::Fb,
+    Role::Dm,
+    Role::Cm,
+    Role::Am,
+    Role::W,
+    Role::W,
+    Role::St,
+];
+
+/// Share of this role set's total `AttC` + `AttW` attacking presence
+/// (`MATCH_MODEL.md` §6's existing, unedited table) that sits in `AttW` — a
+/// team's structural wide-outlet strength, purely a function of who's on
+/// the pitch.
+fn wide_presence_share(roles: &[Role]) -> f64 {
+    let (mut attc, mut attw) = (0u32, 0u32);
+    for &role in roles {
+        attc += zone::attacking_presence(role, Zone::AttC);
+        attw += zone::attacking_presence(role, Zone::AttW);
+    }
+    let total = attc + attw;
+    if total == 0 {
+        0.5
+    } else {
+        attw as f64 / total as f64
+    }
+}
+
+/// `MATCH_MODEL.md` §10 item 1 ("presence table → formation coupling"):
+/// couple the `Mid` → `AttC`/`AttW` lateral split to the formation actually
+/// fielded, using only the already-fitted presence table and `p_wide` knob
+/// — no new shape-finding numbers, which the design doc reserves for real
+/// calibration (`match_engine.rs`'s own doc comment: nothing here re-guesses
+/// the shape-finding). A winger-less back three routes less of its play
+/// into a zone it has no specialist for, same as a wide-heavy 4-3-3 routes
+/// more.
+fn formation_p_wide(roles: &[Role], k: &Knobs) -> f64 {
+    let reference = wide_presence_share(&REFERENCE_XI_ROLES);
+    let team = wide_presence_share(roles);
+    (k.p_wide * team / reference).clamp(0.0, 1.0)
 }
 
 fn side_index(s: Side) -> usize {
@@ -183,6 +241,7 @@ fn weighted_choice<T: Copy>(options: &[(T, f64)], rng: &mut Rng) -> T {
 fn take_shot(
     poss: Side,
     kind: ShotKind,
+    source: ShotSource,
     base_q: f64,
     att: &[XiPlayer],
     def_side: &[XiPlayer],
@@ -240,6 +299,7 @@ fn take_shot(
                     zone: Zone::Box,
                     kind: MatchEventKind::Shot {
                         kind,
+                        source,
                         outcome: ShotOutcome::Goal,
                     },
                 });
@@ -251,6 +311,7 @@ fn take_shot(
                 zone: Zone::Box,
                 kind: MatchEventKind::Shot {
                     kind,
+                    source,
                     outcome: ShotOutcome::Saved,
                 },
             });
@@ -277,7 +338,11 @@ fn take_shot(
             minute: minute_u8,
             side: poss,
             zone: Zone::Box,
-            kind: MatchEventKind::Shot { kind, outcome },
+            kind: MatchEventKind::Shot {
+                kind,
+                source,
+                outcome,
+            },
         });
         return (other_side(poss), Zone::Def); // off / blocked → cleared
     }
@@ -341,7 +406,7 @@ fn step(
                     if rng.f64() < k.p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < k.p_wide {
+                            if rng.f64() < tm_att.p_wide {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -356,6 +421,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Through,
                             k.q_through,
                             att,
                             def_side,
@@ -406,7 +472,7 @@ fn step(
                     if rng.f64() < k.p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < k.p_wide {
+                            if rng.f64() < tm_att.p_wide {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -421,6 +487,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Dribble,
                             k.q_dribble,
                             att,
                             def_side,
@@ -441,6 +508,7 @@ fn step(
                         take_shot(
                             poss,
                             ShotKind::Finish,
+                            ShotSource::Cutback,
                             k.q_cutback,
                             att,
                             def_side,
@@ -482,6 +550,7 @@ fn step(
                 take_shot(
                     poss,
                     ShotKind::Header,
+                    ShotSource::Cross,
                     k.q_header,
                     att,
                     def_side,
@@ -506,6 +575,7 @@ fn step(
         Action::LongShot => take_shot(
             poss,
             ShotKind::LongShot,
+            ShotSource::Long,
             k.q_long,
             att,
             def_side,
@@ -526,10 +596,20 @@ pub fn play_match(
     away_lineup: &Lineup,
     rng: &mut Rng,
 ) -> MatchOutcome {
-    let k = Knobs::default();
     let home = build_xi(world, home_lineup);
     let away = build_xi(world, away_lineup);
-    let tm = [team_means(&home), team_means(&away)];
+    simulate(&home, &away, rng, &Knobs::default())
+}
+
+/// The possession loop over two already-built XIs, independent of
+/// `World`/`Lineup`/formation selection — the seam the port-parity harness
+/// (`MATCH_MODEL.md` §10 diagnosis) needs to feed notebook-equivalent test
+/// inputs straight through the real Rust resolution loop. Takes `k`
+/// explicitly (rather than defaulting internally) so that harness can pin
+/// the notebook's own fitted snapshot independent of whatever
+/// `Knobs::default()` currently is in production.
+fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> MatchOutcome {
+    let tm = [team_means(home, k), team_means(away, k)];
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
@@ -544,12 +624,12 @@ pub fn play_match(
             let (next_poss, next_zone) = step(
                 poss,
                 zone,
-                &home,
-                &away,
+                home,
+                away,
                 &tm,
                 minute,
                 rng,
-                &k,
+                k,
                 &mut goals,
                 &mut stream,
             );
@@ -593,5 +673,172 @@ mod tests {
             );
             assert_eq!(picked, Action::TakeOn);
         }
+    }
+
+    #[test]
+    fn formation_p_wide_is_unchanged_for_the_reference_shape() {
+        let k = Knobs::default();
+        let p = formation_p_wide(&REFERENCE_XI_ROLES, &k);
+        assert!(
+            (p - k.p_wide).abs() < 1e-9,
+            "the reference shape must reproduce the fitted knob exactly: got {p}, knob {}",
+            k.p_wide
+        );
+    }
+
+    #[test]
+    fn formation_p_wide_drops_for_a_winger_less_back_three() {
+        let k = Knobs::default();
+        // 3-5-2: no W at all — the weakest structural wide outlet among the
+        // four real FORMATIONS (MATCH_MODEL.md §10 item 1's premise).
+        let three_five_two = fforge_domain::FORMATIONS[3].slots;
+        assert_eq!(fforge_domain::FORMATIONS[3].name, "3-5-2");
+        let p = formation_p_wide(&three_five_two, &k);
+        assert!(
+            p < k.p_wide,
+            "a winger-less shape must route less often into AttW than the fitted knob: got {p}, knob {}",
+            k.p_wide
+        );
+    }
+
+    #[test]
+    fn formation_p_wide_stays_a_probability_for_every_real_formation() {
+        let k = Knobs::default();
+        for formation in fforge_domain::FORMATIONS {
+            let p = formation_p_wide(&formation.slots, &k);
+            assert!(
+                (0.0..=1.0).contains(&p),
+                "{}: formation_p_wide {p} out of [0,1]",
+                formation.name
+            );
+        }
+    }
+}
+
+/// Port-parity harness (`MATCH_MODEL.md` §10 diagnosis): does `simulate` —
+/// the possession loop, unchanged from the notebook port — reproduce the
+/// notebook's own ~2.5-2.9 goals/match when fed the notebook's *own*
+/// synthetic-squad generator instead of this crate's `worldgen`? A pass here
+/// means the whole gap between real-worldgen gpm (~1.7-2.0) and the
+/// notebook's fitted ~2.6-2.7 is an input-distribution effect (real
+/// `worldgen::gen_player` + `ai_pick_lineup`'s formation mix), not a bug in
+/// this loop — the decisive port-faithfulness-vs-input-distribution check
+/// the calibration plan calls for before any knob or presence-table edit.
+#[cfg(test)]
+mod notebook_parity {
+    use super::*;
+    use crate::rng::derive_stream;
+    use crate::schedule::double_round_robin;
+    use fforge_domain::{ClubId, NUM_ATTRIBUTES, ROLE_WEIGHTS, XI};
+
+    /// Verbatim port of the notebook's `gen_player`: base ~ N(club_q, 6)
+    /// clamp [25,92]; per attribute, weight 0 -> uniform[8,22], else
+    /// N(base + (w-3.0)*4.0, 4.5) clamp [15,96]. Deliberately *not* this
+    /// crate's `worldgen::gen_player` (which models age/PA/youth-discount
+    /// and uses different shape constants) — parity is meaningless if this
+    /// generator drifts from the notebook's.
+    fn notebook_gen_player(rng: &mut Rng, role: Role, club_q: f64) -> Attributes {
+        let base = rng.normal(club_q, 6.0).clamp(25.0, 92.0);
+        let mut values = [0u8; NUM_ATTRIBUTES];
+        for attr in Attribute::ALL {
+            let w = ROLE_WEIGHTS.weight(role, attr);
+            let v = if w == 0 {
+                rng.range_i32(8, 22) as f64
+            } else {
+                rng.normal(base + (w as f64 - 3.0) * 4.0, 4.5)
+            };
+            values[attr.index()] = v.clamp(15.0, 96.0) as u8;
+        }
+        Attributes::new(values)
+    }
+
+    /// The notebook's fixed calibration XI: one of each outfield archetype
+    /// in a shape the global presence table was fitted against, not any of
+    /// the four real `FORMATIONS` (`MATCH_MODEL.md` §10 item 1's premise).
+    const FIXED_XI: [Role; XI] = [
+        Role::Gk,
+        Role::Cb,
+        Role::Cb,
+        Role::Fb,
+        Role::Fb,
+        Role::Dm,
+        Role::Cm,
+        Role::Am,
+        Role::W,
+        Role::W,
+        Role::St,
+    ];
+
+    fn build_fixed_xi(rng: &mut Rng, club_q: f64) -> Vec<XiPlayer> {
+        FIXED_XI
+            .iter()
+            .map(|&role| XiPlayer {
+                role,
+                attrs: notebook_gen_player(rng, role, club_q),
+            })
+            .collect()
+    }
+
+    /// Tag namespace for this harness's derived streams — distinct from any
+    /// real gameplay tag (`commands::FIXTURE_STREAM_NS`, `worldgen`'s), and
+    /// unrelated to the seeds used elsewhere in the test suite.
+    const PARITY_NS: u64 = 0x4E42_5052_0000_0000; // "NBPR"
+
+    #[test]
+    fn port_reproduces_notebook_gpm_on_notebook_equivalent_inputs() {
+        const NUM_LEAGUES: u64 = 8;
+        const NUM_CLUBS: usize = 20;
+
+        // The notebook's own fitted b_beat, pinned independent of
+        // `Knobs::default()`: the Rust-side calibration harness re-tuned
+        // b_beat against real `worldgen`'s attribute distribution
+        // (`knobs.rs`'s doc comment), so `Knobs::default()` no longer *is*
+        // the notebook's snapshot. This test's whole point is checking the
+        // loop against what the notebook actually reported, not against
+        // whatever production is calibrated to today.
+        let notebook_knobs = Knobs {
+            b_beat: -1.7,
+            ..Knobs::default()
+        };
+
+        let mut total_goals = 0u32;
+        let mut total_matches = 0u32;
+
+        for league in 0..NUM_LEAGUES {
+            // Club quality anchors: linspace(48, 74), mirroring the
+            // notebook's `run_batch` synthetic-league sweep.
+            let qualities: Vec<f64> = (0..NUM_CLUBS)
+                .map(|i| 48.0 + 26.0 * i as f64 / (NUM_CLUBS - 1) as f64)
+                .collect();
+
+            let mut gen_rng = derive_stream(league, PARITY_NS);
+            let teams: Vec<Vec<XiPlayer>> = qualities
+                .iter()
+                .map(|&q| build_fixed_xi(&mut gen_rng, q))
+                .collect();
+
+            let club_ids: Vec<ClubId> = (0..NUM_CLUBS as u16).map(ClubId).collect();
+            let fixtures = double_round_robin(&club_ids);
+
+            for fixture in &fixtures {
+                let home = &teams[fixture.home.0 as usize];
+                let away = &teams[fixture.away.0 as usize];
+                let mut match_rng = derive_stream(league, PARITY_NS | (fixture.id.0 as u64 + 1));
+                let outcome = simulate(home, away, &mut match_rng, &notebook_knobs);
+                total_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
+                total_matches += 1;
+            }
+        }
+
+        let gpm = total_goals as f64 / total_matches as f64;
+        assert!(
+            (2.3..=3.1).contains(&gpm),
+            "pooled gpm {gpm} over {total_matches} notebook-equivalent-input matches falls \
+             outside the ~2.5-2.9 band the notebook itself reads (~2.6-2.7 target/fitted). That \
+             means the gap versus real-worldgen gpm (~1.7-2.0) is NOT purely an input-distribution \
+             effect — diff this loop against the notebook cell-by-cell (kickoff alternation, the \
+             minute += delta step count, the take_shot rebound loop, turnover mirroring, the \
+             action-selection weights) before touching any knob or presence table."
+        );
     }
 }
