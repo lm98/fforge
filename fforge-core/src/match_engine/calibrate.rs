@@ -10,8 +10,8 @@
 //! This module is exploratory-harness plumbing, not simulation logic: it
 //! never feeds back into `Knobs` or the presence tables by itself.
 
-use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::MatchOutcome;
+use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use std::collections::BTreeMap;
 
 /// Per-formation usage seen by `StreamTelemetry::record` — one increment per
@@ -89,7 +89,12 @@ impl StreamTelemetry {
                 Side::Home => self.home_events += 1,
                 Side::Away => self.away_events += 1,
             }
-            if let MatchEventKind::Shot { kind, source, outcome: shot_outcome } = event.kind {
+            if let MatchEventKind::Shot {
+                kind,
+                source,
+                outcome: shot_outcome,
+            } = event.kind
+            {
                 self.shots += 1;
                 match event.side {
                     Side::Home => home_shots += 1,
@@ -201,15 +206,19 @@ impl StreamTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::match_engine::stream::MatchEvent;
     use crate::match_engine::Zone;
+    use crate::match_engine::stream::MatchEvent;
 
     fn shot(side: Side, kind: ShotKind, source: ShotSource, outcome: ShotOutcome) -> MatchEvent {
         MatchEvent {
             minute: 10,
             side,
             zone: Zone::Box,
-            kind: MatchEventKind::Shot { kind, source, outcome },
+            kind: MatchEventKind::Shot {
+                kind,
+                source,
+                outcome,
+            },
         }
     }
 
@@ -219,11 +228,36 @@ mod tests {
         // once (Off), home scores a Header (from a Cross); away score once
         // (LongShot), get one Saved.
         let stream = vec![
-            shot(Side::Home, ShotKind::Finish, ShotSource::Through, ShotOutcome::Goal),
-            shot(Side::Home, ShotKind::Finish, ShotSource::Cutback, ShotOutcome::Off),
-            shot(Side::Home, ShotKind::Header, ShotSource::Cross, ShotOutcome::Goal),
-            shot(Side::Away, ShotKind::LongShot, ShotSource::Long, ShotOutcome::Goal),
-            shot(Side::Away, ShotKind::LongShot, ShotSource::Long, ShotOutcome::Saved),
+            shot(
+                Side::Home,
+                ShotKind::Finish,
+                ShotSource::Through,
+                ShotOutcome::Goal,
+            ),
+            shot(
+                Side::Home,
+                ShotKind::Finish,
+                ShotSource::Cutback,
+                ShotOutcome::Off,
+            ),
+            shot(
+                Side::Home,
+                ShotKind::Header,
+                ShotSource::Cross,
+                ShotOutcome::Goal,
+            ),
+            shot(
+                Side::Away,
+                ShotKind::LongShot,
+                ShotSource::Long,
+                ShotOutcome::Goal,
+            ),
+            shot(
+                Side::Away,
+                ShotKind::LongShot,
+                ShotSource::Long,
+                ShotOutcome::Saved,
+            ),
             MatchEvent {
                 minute: 20,
                 side: Side::Home,
@@ -256,7 +290,10 @@ mod tests {
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::Finish), Some(&1));
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::Header), Some(&1));
         assert_eq!(telemetry.goals_by_kind.get(&ShotKind::LongShot), Some(&1));
-        assert_eq!(telemetry.goals_by_source.get(&ShotSource::Through), Some(&1));
+        assert_eq!(
+            telemetry.goals_by_source.get(&ShotSource::Through),
+            Some(&1)
+        );
         assert_eq!(telemetry.goals_by_source.get(&ShotSource::Cross), Some(&1));
         assert_eq!(telemetry.goals_by_source.get(&ShotSource::Long), Some(&1));
         assert_eq!(telemetry.goals_by_source.get(&ShotSource::Cutback), None); // the Cutback shot was Off, not a goal

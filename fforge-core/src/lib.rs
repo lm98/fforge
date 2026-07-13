@@ -23,12 +23,12 @@ pub mod session;
 pub mod state;
 pub mod worldgen;
 
-pub use commands::{player_match_preview, Command, CommandError, FIXTURE_STREAM_NS};
+pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
 pub use event::Event;
 pub use observer::{EventObserver, SeasonTelemetry};
-pub use session::{load_log, save_log, Session};
-pub use state::{league_table, GameState, TableRow};
-pub use worldgen::{generate, WorldGenConfig};
+pub use session::{Session, load_log, save_log};
+pub use state::{GameState, TableRow, league_table};
+pub use worldgen::{WorldGenConfig, generate};
 
 /// Convenience: assemble the opening event for a new game.
 pub fn new_game(seed: u64, cfg: &WorldGenConfig, player_club: fforge_domain::ClubId) -> Vec<Event> {
@@ -107,30 +107,30 @@ mod tests {
         assert_eq!(session.state.champion, Some(table[0].club));
         // Points must be internally consistent.
         let total_pts: u32 = table.iter().map(|r| r.points()).sum();
-        let (w, d): (u32, u32) = table.iter().fold((0, 0), |(w, d), r| (w + r.won, d + r.drawn));
+        let (w, d): (u32, u32) = table
+            .iter()
+            .fold((0, 0), |(w, d), r| (w + r.won, d + r.drawn));
         assert_eq!(total_pts, w * 3 + d);
     }
 
     #[test]
     fn aggregates_are_in_a_believable_ballpark() {
-        // Phase-2a engine (MATCH_MODEL.md), knobs fitted in the Python
-        // prototype against a fixed reference XI — not the formation mix
-        // `ai_pick_lineup` actually fields. The calibration harness
+        // Phase-2a engine (MATCH_MODEL.md). The calibration harness
         // (`match_engine::calibrate::StreamTelemetry`, `bin/calibrate.rs`,
-        // and `resolve.rs`'s `notebook_parity` test) measured the ~1.7-2.0
-        // goals/match this suite sees pooled against notebook-equivalent
-        // inputs run through the same Rust resolution loop: parity holds
-        // (loop is a faithful port), so the gap is not a port bug. Coupling
-        // `p_wide` to each side's actual wide-presence share
-        // (`resolve::formation_p_wide`, `MATCH_MODEL.md` §10 item 1) fixed
-        // the formation-shape mismatch but moved pooled gpm by <0.01 —
-        // formation mix is real but small. The dominant remaining gap is
-        // conversion (~7% here vs the notebook's ~10%, present even in the
-        // best-performing formation), i.e. real worldgen's attribute
-        // distribution, not routing — open for a future calibration pass.
-        // This stays a wide sanity band that only needs to catch gross
-        // regressions/bugs; the harness is the place to chase the real
-        // number.
+        // and `resolve.rs`'s `notebook_parity` test) diagnosed the original
+        // ~1.7-2.0 goals/match this suite used to see: parity against
+        // notebook-equivalent inputs held (loop is a faithful port, not a
+        // port bug), coupling `p_wide` to each formation's actual
+        // wide-presence share (`resolve::formation_p_wide`, `MATCH_MODEL.md`
+        // §10 item 1) fixed the formation-shape mismatch but moved pooled
+        // gpm by <0.01, and the dominant gap turned out to be conversion
+        // (~7% vs the notebook's ~10%) — a `b_beat` re-tune against real
+        // `worldgen`'s attribute distribution (`knobs.rs`'s doc comment)
+        // closed it: this suite now reads ~2.5-2.6 goals/match, in line
+        // with the notebook's own ~2.6 target. This stays a wide sanity
+        // band that only needs to catch gross regressions/bugs going
+        // forward; the harness is the place to re-chase the real number if
+        // Phase 2e (tactics, cards, subs) moves it again.
         let mut telemetry = SeasonTelemetry::default();
         for seed in 0..10u64 {
             let session = run_full_season(seed);

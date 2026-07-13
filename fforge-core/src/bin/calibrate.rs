@@ -14,9 +14,9 @@
 //!
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
-use fforge_core::match_engine::{ai_pick_lineup, play_match, StreamTelemetry};
+use fforge_core::match_engine::{StreamTelemetry, ai_pick_lineup, play_match};
 use fforge_core::rng::derive_stream;
-use fforge_core::{worldgen, WorldGenConfig, FIXTURE_STREAM_NS};
+use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
 use fforge_domain::FORMATIONS;
 
 struct CalibReport {
@@ -47,7 +47,10 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
         per_seed_gpm.push(seed_goals as f64 / seed_matches as f64);
     }
 
-    CalibReport { per_seed_gpm, pooled }
+    CalibReport {
+        per_seed_gpm,
+        pooled,
+    }
 }
 
 fn mean(xs: &[f64]) -> f64 {
@@ -66,10 +69,22 @@ fn print_report(report: &CalibReport) {
     let p = &report.pooled;
     let gpm_mean = mean(&report.per_seed_gpm);
     let gpm_sd = stdev(&report.per_seed_gpm, gpm_mean);
-    let gpm_min = report.per_seed_gpm.iter().cloned().fold(f64::INFINITY, f64::min);
-    let gpm_max = report.per_seed_gpm.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let gpm_min = report
+        .per_seed_gpm
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let gpm_max = report
+        .per_seed_gpm
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
 
-    println!("=== Calibration report ({} seeds pooled, {} matches) ===", report.per_seed_gpm.len(), p.matches);
+    println!(
+        "=== Calibration report ({} seeds pooled, {} matches) ===",
+        report.per_seed_gpm.len(),
+        p.matches
+    );
     println!();
     println!(
         "goals/match      : {gpm_mean:.2}  (sd {gpm_sd:.2}, range {gpm_min:.2}-{gpm_max:.2} across seeds)"
@@ -81,11 +96,20 @@ fn print_report(report: &CalibReport) {
         p.away_win_rate() * 100.0
     );
     println!("shots/match       : {:.2}", p.shots_per_match());
-    println!("shots on target   : {:.1}%", p.shot_on_target_rate() * 100.0);
+    println!(
+        "shots on target   : {:.1}%",
+        p.shot_on_target_rate() * 100.0
+    );
     println!("conversion        : {:.1}%", p.conversion_rate() * 100.0);
     println!("headed goal share : {:.1}%", p.headed_goal_share() * 100.0);
-    println!("wide-origin share : {:.1}%", p.wide_origin_goal_share() * 100.0);
-    println!("home possession   : {:.1}%", p.home_possession_share() * 100.0);
+    println!(
+        "wide-origin share : {:.1}%",
+        p.wide_origin_goal_share() * 100.0
+    );
+    println!(
+        "home possession   : {:.1}%",
+        p.home_possession_share() * 100.0
+    );
     println!();
     println!("=== Per-formation breakdown ===");
     println!(
@@ -93,10 +117,7 @@ fn print_report(report: &CalibReport) {
         "formation", "uses", "gpm", "shots/match"
     );
     for (idx, stats) in &p.by_formation {
-        let name = FORMATIONS
-            .get(*idx as usize)
-            .map(|f| f.name)
-            .unwrap_or("?");
+        let name = FORMATIONS.get(*idx as usize).map(|f| f.name).unwrap_or("?");
         println!(
             "{:<10} {:>10} {:>10.2} {:>14.2}",
             name,
@@ -109,11 +130,12 @@ fn print_report(report: &CalibReport) {
     println!("=== Formation usage histogram ===");
     let total_uses: u32 = p.by_formation.values().map(|s| s.uses).sum();
     for (idx, stats) in &p.by_formation {
-        let name = FORMATIONS
-            .get(*idx as usize)
-            .map(|f| f.name)
-            .unwrap_or("?");
-        let share = if total_uses == 0 { 0.0 } else { stats.uses as f64 / total_uses as f64 * 100.0 };
+        let name = FORMATIONS.get(*idx as usize).map(|f| f.name).unwrap_or("?");
+        let share = if total_uses == 0 {
+            0.0
+        } else {
+            stats.uses as f64 / total_uses as f64 * 100.0
+        };
         println!("{name:<10} {:>6.1}%  ({} uses)", share, stats.uses);
     }
 }

@@ -338,7 +338,11 @@ fn take_shot(
             minute: minute_u8,
             side: poss,
             zone: Zone::Box,
-            kind: MatchEventKind::Shot { kind, source, outcome },
+            kind: MatchEventKind::Shot {
+                kind,
+                source,
+                outcome,
+            },
         });
         return (other_side(poss), Zone::Def); // off / blocked → cleared
     }
@@ -594,16 +598,18 @@ pub fn play_match(
 ) -> MatchOutcome {
     let home = build_xi(world, home_lineup);
     let away = build_xi(world, away_lineup);
-    simulate(&home, &away, rng)
+    simulate(&home, &away, rng, &Knobs::default())
 }
 
 /// The possession loop over two already-built XIs, independent of
 /// `World`/`Lineup`/formation selection — the seam the port-parity harness
 /// (`MATCH_MODEL.md` §10 diagnosis) needs to feed notebook-equivalent test
-/// inputs straight through the real Rust resolution loop.
-fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng) -> MatchOutcome {
-    let k = Knobs::default();
-    let tm = [team_means(home, &k), team_means(away, &k)];
+/// inputs straight through the real Rust resolution loop. Takes `k`
+/// explicitly (rather than defaulting internally) so that harness can pin
+/// the notebook's own fitted snapshot independent of whatever
+/// `Knobs::default()` currently is in production.
+fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> MatchOutcome {
+    let tm = [team_means(home, k), team_means(away, k)];
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
@@ -623,7 +629,7 @@ fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng) -> MatchOutcome
                 &tm,
                 minute,
                 rng,
-                &k,
+                k,
                 &mut goals,
                 &mut stream,
             );
@@ -783,6 +789,18 @@ mod notebook_parity {
         const NUM_LEAGUES: u64 = 8;
         const NUM_CLUBS: usize = 20;
 
+        // The notebook's own fitted b_beat, pinned independent of
+        // `Knobs::default()`: the Rust-side calibration harness re-tuned
+        // b_beat against real `worldgen`'s attribute distribution
+        // (`knobs.rs`'s doc comment), so `Knobs::default()` no longer *is*
+        // the notebook's snapshot. This test's whole point is checking the
+        // loop against what the notebook actually reported, not against
+        // whatever production is calibrated to today.
+        let notebook_knobs = Knobs {
+            b_beat: -1.7,
+            ..Knobs::default()
+        };
+
         let mut total_goals = 0u32;
         let mut total_matches = 0u32;
 
@@ -806,7 +824,7 @@ mod notebook_parity {
                 let home = &teams[fixture.home.0 as usize];
                 let away = &teams[fixture.away.0 as usize];
                 let mut match_rng = derive_stream(league, PARITY_NS | (fixture.id.0 as u64 + 1));
-                let outcome = simulate(home, away, &mut match_rng);
+                let outcome = simulate(home, away, &mut match_rng, &notebook_knobs);
                 total_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
                 total_matches += 1;
             }

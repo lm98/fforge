@@ -22,7 +22,9 @@ pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, 
 pub use zone::Zone;
 
 use crate::rng::Rng;
-use fforge_domain::{current_ability, ClubId, Lineup, PlayerId, Role, World, FORMATIONS, ROLE_WEIGHTS, XI};
+use fforge_domain::{
+    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
+};
 
 /// Mean CA-in-slot-role over the eleven — a squad-quality scalar independent
 /// of any particular match-resolution model. Used for display and by
@@ -108,7 +110,10 @@ mod tests {
     use fforge_domain::World;
 
     fn tiny_world_and_lineups() -> (World, Lineup, Lineup) {
-        let cfg = crate::worldgen::WorldGenConfig { num_clubs: 2, ..Default::default() };
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
         let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
         let clubs = world.competition.clubs.clone();
         let home = ai_pick_lineup(&world, clubs[0]);
@@ -123,7 +128,10 @@ mod tests {
         let mut r2 = derive_stream(99, 1);
         let a = play_match(&world, &home, &away, &mut r1);
         let b = play_match(&world, &home, &away, &mut r2);
-        assert_eq!(a, b, "identical (lineups, world, rng stream) must yield an identical outcome");
+        assert_eq!(
+            a, b,
+            "identical (lineups, world, rng stream) must yield an identical outcome"
+        );
     }
 
     #[test]
@@ -133,7 +141,10 @@ mod tests {
         let mut r2 = derive_stream(2, 1);
         let a = play_match(&world, &home, &away, &mut r1);
         let b = play_match(&world, &home, &away, &mut r2);
-        assert_ne!(a.stream, b.stream, "different rng streams should not replay identically");
+        assert_ne!(
+            a.stream, b.stream,
+            "different rng streams should not replay identically"
+        );
     }
 
     #[test]
@@ -141,11 +152,22 @@ mod tests {
         let (world, home, away) = tiny_world_and_lineups();
         let mut rng = derive_stream(42, 1);
         let outcome = play_match(&world, &home, &away, &mut rng);
-        assert!(!outcome.stream.is_empty(), "a 90-minute match must produce events");
+        assert!(
+            !outcome.stream.is_empty(),
+            "a 90-minute match must produce events"
+        );
         let goal_events = outcome
             .stream
             .iter()
-            .filter(|e| matches!(e.kind, MatchEventKind::Shot { outcome: ShotOutcome::Goal, .. }))
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    MatchEventKind::Shot {
+                        outcome: ShotOutcome::Goal,
+                        ..
+                    }
+                )
+            })
             .count();
         assert_eq!(
             goal_events,
@@ -160,7 +182,10 @@ mod tests {
         // home_bias and each half's kickoff. Pooled over many seeds, home
         // must win more often than away (mirrors the Phase-1 crude-engine
         // home-advantage invariant, now against the real resolution model).
-        let cfg = crate::worldgen::WorldGenConfig { num_clubs: 2, ..Default::default() };
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
         let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
         let club = world.competition.clubs[0];
         let lineup = ai_pick_lineup(&world, club);
@@ -176,6 +201,9 @@ mod tests {
                 std::cmp::Ordering::Equal => {}
             }
         }
-        assert!(home_wins > away_wins, "home_bias must be visible: {home_wins} home wins vs {away_wins} away wins");
+        assert!(
+            home_wins > away_wins,
+            "home_bias must be visible: {home_wins} home wins vs {away_wins} away wins"
+        );
     }
 }

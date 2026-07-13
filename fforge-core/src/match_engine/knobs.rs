@@ -1,14 +1,24 @@
-//! The calibration knob table (`MATCH_MODEL.md` §8), transcribed verbatim
-//! from the fitted `Knobs` dataclass in `match_model_prototype.ipynb`
-//! (the throwaway Python shape-finder — this Rust struct is the port
-//! target, not a re-guess). Field names and values match the notebook
-//! 1:1 so the two stay diffable against each other.
+//! The calibration knob table (`MATCH_MODEL.md` §8). Field names and every
+//! value except `b_beat` are transcribed verbatim from the fitted `Knobs`
+//! dataclass in `match_model_prototype.ipynb` (the throwaway Python
+//! shape-finder — this Rust struct is the port target, not a re-guess), so
+//! the two stay diffable against each other.
 //!
-//! The notebook's own `report()` over this default table reads: goals/game
-//! 2.69 (target ~2.6), home/draw/away 41/28/31% (target ~45/26/29%),
-//! shots/game 27.6 (target ~25), wide-origin goal share 25% (target
-//! 25–35%) — a fitted starting point, not a finished calibration; the Rust
-//! calibration harness (`MATCH_MODEL.md` §10) is a separate deliverable.
+//! `b_beat` (beat-the-keeper bias) is the one Rust-side re-tune, landed by
+//! the calibration harness (`bin/calibrate.rs`, `MATCH_MODEL.md` §10):
+//! real `worldgen`'s attribute distribution differs enough from the
+//! notebook's own synthetic squad generator that the notebook's fitted
+//! -1.7 under-converted against real inputs (~7% vs the ~10% target) while
+//! every other aggregate — shots/game, on-target rate, wide-origin share —
+//! already landed on target. `b_beat` only gates the second of the two
+//! chained shot sigmoids (beat-the-keeper, given on-target), so raising it
+//! moves conversion without disturbing the already-correct on-target rate
+//! or shot volume — confirmed empirically (`bin/calibrate.rs -- --seeds
+//! 16`): shots/game stayed ~25.6, on-target stayed ~33.2%, across the whole
+//! sweep. Pooled over 16 seeds at -1.05: goals/game 2.58 (target ~2.6),
+//! home/draw/away 43/26/31% (target ~45/26/29%), conversion 10.1% (target
+//! ~10%), wide-origin goal share 26.7% (target 25–35%) — this is now a
+//! finished, real-`worldgen`-calibrated point, not just the notebook's.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Knobs {
@@ -102,7 +112,7 @@ impl Default for Knobs {
             k_ontarget: 0.9,
             k_gk: 0.9,
             b_ontarget: -0.9,
-            b_beat: -1.7,
+            b_beat: -1.05,
             p_off_frac: 0.5,
             p_rebound: 0.08,
             q_rebound: -0.6,
