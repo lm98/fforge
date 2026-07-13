@@ -1,6 +1,6 @@
 [package]
 name = "fforge-game"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 description = "Basic CLI implementation for the Football Forge game."
 license = "Apache-2.0"
@@ -10,6 +10,6 @@ name = "fforge-game"
 path = "src/main.rs"
 
 [dependencies]
-fforge-domain = { path = "../fforge-domain", version = "0.1.0" }
-fforge-core = { path = "../fforge-core", version = "0.1.0" }
+fforge-domain = { path = "../fforge-domain", version = "0.2.0" }
+fforge-core = { path = "../fforge-core", version = "0.2.0" }
 crossterm = "0.28"

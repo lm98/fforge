@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "fforge-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fforge-domain",
  "serde",
@@ -60,14 +60,14 @@ dependencies = [
 
 [[package]]
 name = "fforge-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "fforge-game"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm",
  "fforge-core",
