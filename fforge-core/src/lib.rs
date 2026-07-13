@@ -23,7 +23,7 @@ pub mod session;
 pub mod state;
 pub mod worldgen;
 
-pub use commands::{player_match_preview, Command, CommandError};
+pub use commands::{player_match_preview, Command, CommandError, FIXTURE_STREAM_NS};
 pub use event::Event;
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use session::{load_log, save_log, Session};
@@ -114,14 +114,18 @@ mod tests {
     #[test]
     fn aggregates_are_in_a_believable_ballpark() {
         // Phase-2a engine (MATCH_MODEL.md), knobs fitted in the Python
-        // prototype against its own synthetic squad generator — not this
-        // crate's worldgen. Real worldgen's attribute distribution differs
-        // slightly (this crate models age/PA/youth discount; the notebook's
-        // squad generator doesn't), so the pooled reading here (~1.7-2.0
-        // goals/match) sits a bit under the notebook's fitted ~2.6 target.
-        // Closing that gap is exactly what the deferred Rust calibration
-        // harness (MATCH_MODEL.md §10) re-tunes; this stays a wide sanity
-        // band that only needs to catch gross regressions/bugs.
+        // prototype against a fixed reference XI — not the formation mix
+        // `ai_pick_lineup` actually fields. The calibration harness
+        // (`match_engine::calibrate::StreamTelemetry`, `bin/calibrate.rs`,
+        // and `resolve.rs`'s `notebook_parity` test) measured the ~1.7-2.0
+        // goals/match this suite sees pooled against notebook-equivalent
+        // inputs run through the same Rust resolution loop: parity holds
+        // (loop is a faithful port), so the gap is the formation mix + real
+        // worldgen's input distribution, not a port bug — some FORMATIONS
+        // starve the wide/central zones the global presence table assumes
+        // (`MATCH_MODEL.md` §10 item 1). This stays a wide sanity band that
+        // only needs to catch gross regressions/bugs; the harness is the
+        // place to chase the real number.
         let mut telemetry = SeasonTelemetry::default();
         for seed in 0..10u64 {
             let session = run_full_season(seed);

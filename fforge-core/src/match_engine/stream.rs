@@ -23,7 +23,7 @@ pub enum Side {
 /// metric. Through-ball, dribbled, and cutback finishes share `Finish`; only
 /// the attacker-attribute selection and chance-quality knob differ between
 /// them internally (§9's stream schema pins exactly these three variants).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShotKind {
     Finish,
     Header,

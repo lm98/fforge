@@ -9,12 +9,14 @@
 //! tactics as transition-matrix modifiers, cards & fouls, injuries, set
 //! pieces, substitutions, and the character/hidden attributes.
 
+mod calibrate;
 mod contest;
 mod knobs;
 mod resolve;
 mod stream;
 mod zone;
 
+pub use calibrate::{FormationStats, StreamTelemetry};
 pub use knobs::Knobs;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, Side};
 pub use zone::Zone;
