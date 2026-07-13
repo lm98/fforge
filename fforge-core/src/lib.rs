@@ -120,12 +120,17 @@ mod tests {
         // and `resolve.rs`'s `notebook_parity` test) measured the ~1.7-2.0
         // goals/match this suite sees pooled against notebook-equivalent
         // inputs run through the same Rust resolution loop: parity holds
-        // (loop is a faithful port), so the gap is the formation mix + real
-        // worldgen's input distribution, not a port bug — some FORMATIONS
-        // starve the wide/central zones the global presence table assumes
-        // (`MATCH_MODEL.md` §10 item 1). This stays a wide sanity band that
-        // only needs to catch gross regressions/bugs; the harness is the
-        // place to chase the real number.
+        // (loop is a faithful port), so the gap is not a port bug. Coupling
+        // `p_wide` to each side's actual wide-presence share
+        // (`resolve::formation_p_wide`, `MATCH_MODEL.md` §10 item 1) fixed
+        // the formation-shape mismatch but moved pooled gpm by <0.01 —
+        // formation mix is real but small. The dominant remaining gap is
+        // conversion (~7% here vs the notebook's ~10%, present even in the
+        // best-performing formation), i.e. real worldgen's attribute
+        // distribution, not routing — open for a future calibration pass.
+        // This stays a wide sanity band that only needs to catch gross
+        // regressions/bugs; the harness is the place to chase the real
+        // number.
         let mut telemetry = SeasonTelemetry::default();
         for seed in 0..10u64 {
             let session = run_full_season(seed);

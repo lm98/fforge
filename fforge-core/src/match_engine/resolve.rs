@@ -39,19 +39,77 @@ struct TeamMeans {
     cross_atk: f64,
     finish_atk: f64,
     header_atk: f64,
+    /// This side's `Mid` → `AttC`/`AttW` lateral-split probability
+    /// (`MATCH_MODEL.md` §10 item 1's formation-coupling): `Knobs::p_wide`
+    /// scaled by how this XI's actual role shape compares to the reference
+    /// shape the knob was fitted against (see `formation_p_wide`).
+    p_wide: f64,
 }
 
-fn team_means(xi: &[XiPlayer]) -> TeamMeans {
+fn team_means(xi: &[XiPlayer], k: &Knobs) -> TeamMeans {
     let n = xi.len() as f64;
     let mean =
         |w: &[(Attribute, f64)]| xi.iter().map(|p| contest::score(&p.attrs, w)).sum::<f64>() / n;
+    let roles: Vec<Role> = xi.iter().map(|p| p.role).collect();
     TeamMeans {
         pass_atk: mean(contest::PASS_ATK),
         takeon_atk: mean(contest::TAKEON_ATK),
         cross_atk: mean(contest::CROSS_ATK),
         finish_atk: mean(contest::FINISH_ATK),
         header_atk: mean(contest::HEADER_ATK),
+        p_wide: formation_p_wide(&roles, k),
     }
+}
+
+/// The role shape the global presence table and every `Knobs` split
+/// probability (including `p_wide`) were fitted against — the notebook's
+/// fixed calibration XI (`resolve::notebook_parity`'s `FIXED_XI`), not any
+/// of the four real `FORMATIONS`. A lineup shaped exactly like this one
+/// gets `k.p_wide` back unchanged; every other shape scales relative to it.
+const REFERENCE_XI_ROLES: [Role; 11] = [
+    Role::Gk,
+    Role::Cb,
+    Role::Cb,
+    Role::Fb,
+    Role::Fb,
+    Role::Dm,
+    Role::Cm,
+    Role::Am,
+    Role::W,
+    Role::W,
+    Role::St,
+];
+
+/// Share of this role set's total `AttC` + `AttW` attacking presence
+/// (`MATCH_MODEL.md` §6's existing, unedited table) that sits in `AttW` — a
+/// team's structural wide-outlet strength, purely a function of who's on
+/// the pitch.
+fn wide_presence_share(roles: &[Role]) -> f64 {
+    let (mut attc, mut attw) = (0u32, 0u32);
+    for &role in roles {
+        attc += zone::attacking_presence(role, Zone::AttC);
+        attw += zone::attacking_presence(role, Zone::AttW);
+    }
+    let total = attc + attw;
+    if total == 0 {
+        0.5
+    } else {
+        attw as f64 / total as f64
+    }
+}
+
+/// `MATCH_MODEL.md` §10 item 1 ("presence table → formation coupling"):
+/// couple the `Mid` → `AttC`/`AttW` lateral split to the formation actually
+/// fielded, using only the already-fitted presence table and `p_wide` knob
+/// — no new shape-finding numbers, which the design doc reserves for real
+/// calibration (`match_engine.rs`'s own doc comment: nothing here re-guesses
+/// the shape-finding). A winger-less back three routes less of its play
+/// into a zone it has no specialist for, same as a wide-heavy 4-3-3 routes
+/// more.
+fn formation_p_wide(roles: &[Role], k: &Knobs) -> f64 {
+    let reference = wide_presence_share(&REFERENCE_XI_ROLES);
+    let team = wide_presence_share(roles);
+    (k.p_wide * team / reference).clamp(0.0, 1.0)
 }
 
 fn side_index(s: Side) -> usize {
@@ -341,7 +399,7 @@ fn step(
                     if rng.f64() < k.p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < k.p_wide {
+                            if rng.f64() < tm_att.p_wide {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -406,7 +464,7 @@ fn step(
                     if rng.f64() < k.p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < k.p_wide {
+                            if rng.f64() < tm_att.p_wide {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -537,7 +595,7 @@ pub fn play_match(
 /// inputs straight through the real Rust resolution loop.
 fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng) -> MatchOutcome {
     let k = Knobs::default();
-    let tm = [team_means(home), team_means(away)];
+    let tm = [team_means(home, &k), team_means(away, &k)];
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
@@ -600,6 +658,45 @@ mod tests {
                 &mut rng,
             );
             assert_eq!(picked, Action::TakeOn);
+        }
+    }
+
+    #[test]
+    fn formation_p_wide_is_unchanged_for_the_reference_shape() {
+        let k = Knobs::default();
+        let p = formation_p_wide(&REFERENCE_XI_ROLES, &k);
+        assert!(
+            (p - k.p_wide).abs() < 1e-9,
+            "the reference shape must reproduce the fitted knob exactly: got {p}, knob {}",
+            k.p_wide
+        );
+    }
+
+    #[test]
+    fn formation_p_wide_drops_for_a_winger_less_back_three() {
+        let k = Knobs::default();
+        // 3-5-2: no W at all — the weakest structural wide outlet among the
+        // four real FORMATIONS (MATCH_MODEL.md §10 item 1's premise).
+        let three_five_two = fforge_domain::FORMATIONS[3].slots;
+        assert_eq!(fforge_domain::FORMATIONS[3].name, "3-5-2");
+        let p = formation_p_wide(&three_five_two, &k);
+        assert!(
+            p < k.p_wide,
+            "a winger-less shape must route less often into AttW than the fitted knob: got {p}, knob {}",
+            k.p_wide
+        );
+    }
+
+    #[test]
+    fn formation_p_wide_stays_a_probability_for_every_real_formation() {
+        let k = Knobs::default();
+        for formation in fforge_domain::FORMATIONS {
+            let p = formation_p_wide(&formation.slots, &k);
+            assert!(
+                (0.0..=1.0).contains(&p),
+                "{}: formation_p_wide {p} out of [0,1]",
+                formation.name
+            );
         }
     }
 }
