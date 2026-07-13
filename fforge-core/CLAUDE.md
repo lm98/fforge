@@ -14,7 +14,7 @@ engine behind the same `play_match` call site.
 |---|---|
 | `event` | `Event` enum — the append-only log's payload types |
 | `state` | `GameState` — pure fold (`apply`/`replay`), `TableRow`, `league_table()` |
-| `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it |
+| `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it; `player_match_preview()` — a pure query, re-deriving the same lineup selection and RNG stream `advance_matchday` is about to use, for live-viewing the human's own fixture before it's recorded |
 | `session` | `Session` — owns the log + folded state, routes commands, notifies observers; `save_log`/`load_log` (JSON-lines) |
 | `observer` | `EventObserver` trait, `SeasonTelemetry` — passive event-stream consumers (trace/telemetry spine) |
 | `match_engine` | Phase-2a engine: `play_match` (`MatchOutcome { home_goals, away_goals, stream }`), `lineup_strength`, `ai_pick_lineup`. Submodules: `zone` (five-zone state + role→zone presence table), `knobs` (the fitted `Knobs` table), `contest` (attribute→contest maps, the logistic resolver, fatigue), `resolve` (the possession loop), `stream` (`MatchEvent` schema + commentary rendering) |
@@ -25,8 +25,12 @@ engine behind the same `play_match` call site.
 `match_engine`'s trace (`MatchOutcome::stream`) is a Trace, not a fold input
 (`MATCH_MODEL.md` §7): `commands::advance_matchday` folds only the score into
 `Event::MatchPlayed` and discards the stream; nothing here persists it. Live-viewing
-consumers (e.g. `fforge-game`'s friendly-match viewer) call `play_match` directly,
-outside the recorded fold.
+consumers reach the trace two ways: `fforge-game`'s friendly viewer calls `play_match`
+directly (unrecorded, no `Event` at all), while its main game loop calls
+`commands::player_match_preview` on the pre-advance `GameState` to get the human's own
+fixture's trace, then executes `Command::AdvanceMatchday` as normal — same inputs, same
+RNG derivation, so the previewed trace's score can never disagree with what gets
+recorded.
 
 `lib.rs` re-exports the public surface; consumers (`fforge-game`) import from the crate
 root.

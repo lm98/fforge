@@ -12,3 +12,4 @@ path = "src/main.rs"
 [dependencies]
 fforge-domain = { path = "../fforge-domain", version = "0.1.0" }
 fforge-core = { path = "../fforge-core", version = "0.1.0" }
+crossterm = "0.28"

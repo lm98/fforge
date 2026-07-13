@@ -92,6 +92,37 @@ fn effective_player_lineup(state: &GameState) -> Lineup {
     ai_pick_lineup(&state.world, state.player_club)
 }
 
+/// The player's own fixture for the upcoming matchday, simulated exactly as
+/// `advance_matchday` is about to simulate it (same lineup selection, same
+/// seed-derived RNG stream) — a pure query, computed from `state` and
+/// discarded by the caller, that never mutates anything or produces an
+/// `Event`. Because it re-derives from the same inputs `advance_matchday`
+/// consumes, its score can never disagree with what `Command::AdvanceMatchday`
+/// actually records. Live-viewing consumers (fforge-game's main game loop)
+/// call this *before* executing `AdvanceMatchday` to render the humble text
+/// match view (`DESIGN.md` §9) for the human's own match. `None` if the
+/// player's club has a bye this matchday.
+pub fn player_match_preview(
+    state: &GameState,
+) -> Option<crate::match_engine::MatchOutcome> {
+    let md = state.current_matchday;
+    let fixture = state
+        .fixtures_of_matchday(md)
+        .find(|f| f.home == state.player_club || f.away == state.player_club)?;
+    let home_lineup = if fixture.home == state.player_club {
+        effective_player_lineup(state)
+    } else {
+        ai_pick_lineup(&state.world, fixture.home)
+    };
+    let away_lineup = if fixture.away == state.player_club {
+        effective_player_lineup(state)
+    } else {
+        ai_pick_lineup(&state.world, fixture.away)
+    };
+    let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
+    Some(play_match(&state.world, &home_lineup, &away_lineup, &mut rng))
+}
+
 fn advance_matchday(state: &GameState) -> Vec<Event> {
     let md = state.current_matchday;
     let mut events = Vec::new();
