@@ -16,7 +16,10 @@ mod resolve;
 mod stream;
 mod zone;
 
-pub use calibrate::{FormationStats, StreamTelemetry};
+pub use calibrate::{
+    DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, StreamTelemetry,
+    elo_expected,
+};
 pub use knobs::Knobs;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 pub use zone::Zone;
