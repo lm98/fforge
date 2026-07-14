@@ -80,8 +80,10 @@ Five layers, with a hard rule: **lower layers know nothing about higher ones.**
 - **Calibration harness (build early):** run thousands of simulated seasons; check emergent
   statistics against reality — goals/game (~2.6), home advantage, favorite win rates vs
   bookmaker-implied probabilities, scoreline distributions. This is an eval pipeline. *(The Phase-2a
-  prototype covers all of these except the bookmaker-implied comparison: it plots win-rate vs
-  strength-gap but has no odds baseline yet — a harness TODO, `MATCH_MODEL.md` §10.)*
+  harness covers all of these, including the bookmaker-implied comparison: since there are no real
+  odds in a synthetic world, it scores the empirical expected-points-vs-strength-gap curve against
+  a documented Elo-expected-score reference curve — a favourite-discrimination check, not a fit
+  target; see `MATCH_MODEL.md` §10.)*
 - **The match event stream is a shared, design-once artifact** (like the valuation function):
   four consumers will depend on it — text commentary, stats aggregation, the journalist agent, and
   the eventual graphical viewer. Design its schema for *narratability* — the minute-by-minute beats

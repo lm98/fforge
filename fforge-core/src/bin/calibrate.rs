@@ -14,7 +14,9 @@
 //!
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
-use fforge_core::match_engine::{StreamTelemetry, ai_pick_lineup, play_match};
+use fforge_core::match_engine::{
+    ELO_SCALE_S, StreamTelemetry, ai_pick_lineup, lineup_strength, play_match,
+};
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
 use fforge_domain::FORMATIONS;
@@ -36,12 +38,20 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
         for fixture in &schedule {
             let home_lineup = ai_pick_lineup(&world, fixture.home);
             let away_lineup = ai_pick_lineup(&world, fixture.away);
+            let home_strength = lineup_strength(&world, &home_lineup);
+            let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
             let outcome = play_match(&world, &home_lineup, &away_lineup, &mut rng);
 
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
             seed_matches += 1;
-            pooled.record(&outcome, home_lineup.formation, away_lineup.formation);
+            pooled.record(
+                &outcome,
+                home_lineup.formation,
+                away_lineup.formation,
+                home_strength,
+                away_strength,
+            );
         }
 
         per_seed_gpm.push(seed_goals as f64 / seed_matches as f64);
@@ -109,6 +119,27 @@ fn print_report(report: &CalibReport) {
     println!(
         "home possession   : {:.1}%",
         p.home_possession_share() * 100.0
+    );
+    println!();
+    println!("=== Expected points vs strength gap (bookmaker-baseline axis) ===");
+    println!(
+        "reference: Elo expected-score curve, S = {ELO_SCALE_S:.0} (MATCH_MODEL.md §10 item 6) \
+         — a discrimination check, not a fit target; home-advantage level is validated by H/D/A above."
+    );
+    let deviation = p.score_against_reference(ELO_SCALE_S);
+    println!(
+        "{:>8} {:>8} {:>10} {:>10} {:>10}",
+        "gap", "matches", "empirical", "reference", "deviation"
+    );
+    for bin in &deviation.per_bin {
+        println!(
+            "{:>8.1} {:>8} {:>10.3} {:>10.3} {:>+10.3}",
+            bin.gap, bin.matches, bin.empirical, bin.reference, bin.deviation
+        );
+    }
+    println!(
+        "max |deviation| : {:.3}   match-weighted mean |deviation| : {:.3}",
+        deviation.max_abs_deviation, deviation.weighted_mean_abs_deviation
     );
     println!();
     println!("=== Per-formation breakdown ===");

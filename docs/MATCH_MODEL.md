@@ -264,7 +264,19 @@ Deliberately unresolved, to settle during the Rust port or Phase 2 calibration:
    harness must pool over league draws — flagged so it isn't silently defaulted to one league.
 5. **`Box` as point vs dwell.** The prototype resolves on arrival; if second-phase box play
    (knock-downs, scrambles) earns its keep, `Box` could become a shallow dwell zone. Deferred.
-6. **Bookmaker-baseline check unimplemented.** `DESIGN.md` §4.1 lists *favourite win-rate vs
-   bookmaker-implied probabilities* as a calibration axis; the prototype only plots win-rate vs
-   strength-gap. Wiring a synthetic-odds (or reference-league) baseline into the harness so the
-   favourite-win curve can be scored against a target is a Phase-2 harness TODO.
+6. **Bookmaker-baseline check implemented.** `DESIGN.md` §4.1 lists *favourite win-rate vs
+   bookmaker-implied probabilities* as a calibration axis. There are no real odds in a synthetic
+   world, so the harness compares against a **reference win-probability curve** instead: draws mean
+   `E(win) ≠ E(points)`, so the comparison is against **expected points share**
+   `(wins + 0.5·draws)/matches`, not P(home win). `StreamTelemetry::record` (`calibrate.rs`) bins
+   each match by `home_strength - away_strength` (`lineup_strength`, ~2-CA-point bins) and tracks
+   per-bin match/win/draw/loss counts; `expected_points_curve` reports the empirical curve.
+   `calibrate::elo_expected(gap, s)` is the reference — the Elo expected-score curve, with
+   `ELO_SCALE_S = 40` a documented, plausibility-picked constant (not fitted); `score_against_
+   reference` reports per-bin deviation plus max/mean-weighted deviation. This is a
+   **discrimination** check (does the favourite-vs-underdog slope look sane) — it validates the
+   *slope*, not the *intercept*; the home-advantage *level* is already covered by the H/D/A
+   aggregate. `bin/calibrate.rs` prints the table; `favourite_discrimination_regression_guard`
+   (`calibrate.rs`, pooled over 8 seeds) is the regression guard, asserting monotonic
+   non-decreasing expected points and a bounded max deviation from the reference — a sibling to the
+   goals-per-match sanity band, not a precise-fit assertion.
