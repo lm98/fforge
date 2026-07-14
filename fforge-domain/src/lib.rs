@@ -18,8 +18,8 @@ pub use attributes::{Attribute, Attributes, DevCategory, Rating, MAX_RATING, NUM
 pub use character::Character;
 pub use date::GameDate;
 pub use entities::{
-    Club, ClubId, Competition, CompetitionId, Fixture, FixtureId, Player, PlayerId, Staff,
-    StaffId, StaffRole, World,
+    Club, ClubId, Competition, CompetitionId, DevProfile, Fixture, FixtureId, Player, PlayerId,
+    Staff, StaffId, StaffRole, World,
 };
 pub use formation::{FormationDef, Lineup, FORMATIONS, XI};
 pub use role::{Role, RoleWeights, NUM_ROLES, ROLE_WEIGHTS};

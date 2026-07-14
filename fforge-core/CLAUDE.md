@@ -6,7 +6,10 @@ Layer 2 of the fforge workspace: the deterministic simulation core, consuming
 `commands::step` is the only place proposals turn into recorded events. Phase 1 (full
 season loop, league table) is complete; `match_engine` now runs the Phase 2a
 event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson
-engine behind the same `play_match` call site.
+engine behind the same `play_match` call site. Phase 3 player development
+(`DEVELOPMENT_MODEL.md`) is implemented in the `development` module — a monthly
+`Event::DevelopmentTick` records resolved attribute deltas the fold integer-adds,
+and `Command::StartNextSeason` rolls the developed world into a fresh season.
 
 ## Module map
 
@@ -18,6 +21,7 @@ engine behind the same `play_match` call site.
 | `session` | `Session` — owns the log + folded state, routes commands, notifies observers; `save_log`/`load_log` (JSON-lines) |
 | `observer` | `EventObserver` trait, `SeasonTelemetry` — passive event-stream consumers (trace/telemetry spine) |
 | `match_engine` | Phase-2a engine: `play_match` (`MatchOutcome { home_goals, away_goals, stream }`), `lineup_strength`, `ai_pick_lineup`. Submodules: `zone` (five-zone state + role→zone presence table), `knobs` (the fitted `Knobs` table), `contest` (attribute→contest maps, the logistic resolver, fatigue), `resolve` (the possession loop), `stream` (`MatchEvent` schema + commentary rendering) |
+| `development` | Phase-3 growth engine (`DEVELOPMENT_MODEL.md` §2–§5): the `DevKnobs` table (sibling of `match_engine::Knobs`), the per-category age envelope, PA-scaled targets, `resolve_dev_profile`/`resolve_coaching` (worldgen edge), and `tick_changes` — the growth math producing a `DevelopmentTick`'s resolved deltas. All RNG/math lives here; `apply` only integer-adds via `apply_attr_step` |
 | `rng` | Seeded xoshiro256** + `derive_stream` — the crate's only source of randomness |
 | `schedule` | `double_round_robin()` — deterministic fixture generation |
 | `worldgen` | `generate()` — seeded new-game world/schedule/start date, recorded once into `GameStarted` |

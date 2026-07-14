@@ -33,6 +33,32 @@ id_newtype!(StaffId, u32);
 id_newtype!(FixtureId, u32);
 id_newtype!(CompetitionId, u16);
 
+/// Per-player development trajectory parameters (DEVELOPMENT_MODEL.md §2.3),
+/// resolved **once** at worldgen from `Character` + seeded noise and carried in
+/// the `World` snapshot `GameStarted` records — never re-derived (the monthly
+/// tick records resolved deltas, not inputs). Stored as fixed-point integers so
+/// the domain stays float-free (exact serialization/hashing, `Eq` derivable),
+/// converted to `f64` at use in `fforge-core`'s development engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevProfile {
+    /// Growth efficiency E (§2.3) in thousandths: `723` = 0.723. ~200..1900.
+    pub efficiency_milli: u16,
+    /// Bloomer phase φ in hundredths of a year (§2.3): `183` = +1.83 yr (late
+    /// bloomer), `-50` = −0.50 yr (early peaker).
+    pub bloomer_phase_centi: i16,
+}
+
+impl DevProfile {
+    #[inline]
+    pub fn efficiency(&self) -> f64 {
+        self.efficiency_milli as f64 / 1000.0
+    }
+    #[inline]
+    pub fn bloomer_phase(&self) -> f64 {
+        self.bloomer_phase_centi as f64 / 100.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Player {
     pub id: PlayerId,
@@ -43,6 +69,8 @@ pub struct Player {
     pub natural_role: Role,
     pub attributes: Attributes,
     pub character: Character,
+    /// Resolved-once development trajectory (§2.3). See `DevProfile`.
+    pub development: DevProfile,
 }
 
 impl Player {
@@ -71,6 +99,17 @@ pub struct Club {
     pub name: String,
     /// Squad membership. Finances/budget arrive with Phase 4.
     pub players: Vec<PlayerId>,
+    /// Club coaching/academy quality (DEVELOPMENT_MODEL.md §3), a per-club
+    /// growth multiplier resolved once at worldgen, in thousandths: `1050` =
+    /// 1.05. The "good academy develops players faster" lever.
+    pub coaching_milli: u16,
+}
+
+impl Club {
+    #[inline]
+    pub fn coaching(&self) -> f64 {
+        self.coaching_milli as f64 / 1000.0
+    }
 }
 
 /// A single league competition. Cups and multi-league worlds are later

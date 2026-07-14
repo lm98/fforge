@@ -5,13 +5,17 @@
 //! only consumes them. `replay(events)` is therefore save-loading, bug
 //! reproduction, and (later) counterfactual branch points, all in one.
 
+use crate::development::apply_attr_step;
 use crate::event::Event;
-use fforge_domain::{ClubId, Fixture, FixtureId, GameDate, Lineup, World};
+use fforge_domain::{ClubId, Fixture, FixtureId, GameDate, Lineup, PlayerId, World};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
     pub seed: u64,
+    /// The world snapshot — **mutated by development** (`DevelopmentTick` folds
+    /// attribute steps into it). Its `GameStarted` form is only the starting
+    /// point; current attributes are the fold's running result.
     pub world: World,
     pub player_club: ClubId,
     pub schedule: Vec<Fixture>,
@@ -25,6 +29,13 @@ pub struct GameState {
     /// The lineup most recently used, reused as the default next time.
     pub last_lineup: Option<Lineup>,
     pub champion: Option<ClubId>,
+    /// Appearances accrued since the last `DevelopmentTick` — the playing-time
+    /// window feeding development (`DEVELOPMENT_MODEL.md` §3). Folded from each
+    /// `MatchPlayed`'s XIs; reset on each tick.
+    pub appearances_since_tick: BTreeMap<PlayerId, u32>,
+    /// Matches each club played in the current development window — the
+    /// denominator for the appeared/benched/absent share. Reset on each tick.
+    pub club_matches_since_tick: BTreeMap<ClubId, u32>,
 }
 
 impl GameState {
@@ -55,6 +66,8 @@ impl GameState {
                     pending_lineup: None,
                     last_lineup: None,
                     champion: None,
+                    appearances_since_tick: BTreeMap::new(),
+                    club_matches_since_tick: BTreeMap::new(),
                 }
             }
             other => panic!("event log must start with GameStarted, found {other:?}"),
@@ -78,9 +91,19 @@ impl GameState {
                 fixture,
                 home_goals,
                 away_goals,
+                home_xi,
+                away_xi,
                 ..
             } => {
                 self.results.insert(*fixture, (*home_goals, *away_goals));
+                // Accrue the playing-time window (DEVELOPMENT_MODEL.md §3).
+                for &pid in home_xi.iter().chain(away_xi) {
+                    *self.appearances_since_tick.entry(pid).or_default() += 1;
+                }
+                if let Some(fx) = self.schedule.iter().find(|f| f.id == *fixture) {
+                    *self.club_matches_since_tick.entry(fx.home).or_default() += 1;
+                    *self.club_matches_since_tick.entry(fx.away).or_default() += 1;
+                }
             }
             Event::MatchdayAdvanced { new_date, .. } => {
                 if let Some(lineup) = self.pending_lineup.take() {
@@ -89,8 +112,33 @@ impl GameState {
                 self.date = *new_date;
                 self.current_matchday += 1;
             }
+            Event::DevelopmentTick { changes, .. } => {
+                // Pure integer add, clamped — no RNG, no growth math (invariant
+                // 2). All of that produced these deltas in `commands::step`.
+                for step in changes {
+                    apply_attr_step(&mut self.world, step);
+                }
+                // The window resets: appearances are per-tick.
+                self.appearances_since_tick.clear();
+                self.club_matches_since_tick.clear();
+            }
             Event::SeasonEnded { champion } => {
                 self.champion = Some(*champion);
+            }
+            Event::SeasonStarted {
+                start_date,
+                schedule,
+            } => {
+                self.schedule = schedule.clone();
+                self.last_matchday = schedule.iter().map(|f| f.matchday).max().unwrap_or(0);
+                self.date = *start_date;
+                self.current_matchday = 1;
+                self.results.clear();
+                self.pending_lineup = None;
+                self.champion = None;
+                // `world` (developed) and `last_lineup` carry over; the
+                // appearance window is managed by the offseason ticks that
+                // precede this event.
             }
         }
     }
