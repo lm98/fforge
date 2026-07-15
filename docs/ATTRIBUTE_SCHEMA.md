@@ -7,8 +7,10 @@ every attribute earns its place by feeding a match action or modifying a named s
 is decoration.
 
 Scope: the attribute set, CA/PA semantics, the role→attribute weighting, and the attribute→action
-coverage map. The resolution *math* (how a pass or shot is computed) is Phase 2; the growth *math*
-(age-curve parameters) is Phase 3. This file fixes the *shape* those phases build on.
+coverage map. The resolution *math* (how a pass or shot is computed) is Phase 2, pinned in
+`MATCH_MODEL.md`; the growth *math* (age-curve parameters) is Phase 3, pinned in
+`DEVELOPMENT_MODEL.md`. This file fixes the *shape* those phases build on; where a §-level decision
+below has since been resolved there, it is marked **[resolved]** with the pointer.
 
 ---
 
@@ -125,7 +127,11 @@ later if calibration or design demands it:
   natural v-next addition.
 - **Natural Fitness** (recovery between matches, physical-aging resistance) — folded into the
   development/fatigue system, parameterized by Professionalism/Injury-proneness for now. Split out
-  in Phase 3 if recovery modeling needs it.
+  in Phase 3 if recovery modeling needs it. **[resolved: not split — `DEVELOPMENT_MODEL.md` §4.]**
+  Phase 3's monthly loop never touches between-match recovery, so the attribute's only Phase-3 job
+  (physical-aging resistance) is already covered by Professionalism; adding it now would violate the
+  lean-and-add rule. Revisit at **Phase 2e**, when fatigue/recovery is modeled and it earns a genuine
+  second consumer.
 - **Flair** — dropped as a mechanical attribute; a candidate *persona* trait (Phase 5).
 - **Role variants** (§5) — refinements on the archetypes, layered later.
 
@@ -155,7 +161,12 @@ where `w[role][i]` is the importance weight from §5. Consequences, both intende
 - **Exactly how PA gates per-attribute growth is a Phase-3 decision.** The schema commitment here
   is only: PA is stored, hidden, same scale as CA, and caps collective growth. *Lean:* gate on a
   best-role-peak-CA measure (keeps PA/CA directly comparable). *Alternative:* a position-agnostic
-  "attribute budget." Not decided now.
+  "attribute budget." **[resolved: best-role-peak-CA gate — `DEVELOPMENT_MODEL.md` §2.2.]** The lean
+  was taken: growth targets are scaled so a fully-realized player's peak best-role CA equals PA
+  exactly, reusing this section's role weights, so "PA = peak best-role CA" holds as one comparable
+  scale. The attribute-budget alternative was rejected for severing PA from role. (`fforge-core`
+  realizes it with a role-shaped per-attribute ceiling so per-attribute growth keeps role shape —
+  `DEVELOPMENT_MODEL.md` §2.2's implementation note.)
 
 ---
 
@@ -263,7 +274,10 @@ Determination/Professionalism → development (not a match), PA → development 
 ## 7. Development categories → age-curve shapes
 
 The category tag on each performance attribute (§2) selects its age-curve family. **Curve
-*parameters* are Phase 3**; the qualitative commitment now:
+*parameters* are Phase 3** — **[resolved: filled in `DEVELOPMENT_MODEL.md` §2.1]**, one
+`EnvParams` (maturation logistic minus aging logistic) per `DevCategory`, and since **re-fit against
+real `worldgen`** by the career-arc harness (`DEVELOPMENT_MODEL.md` §6, the `b_beat`-style re-tune).
+The qualitative commitment this section fixes, which the fitted numbers honour:
 
 - **Physical** (Speed, Stamina, Strength, Agility, Jumping): rise early, **peak ~24–27**, then
   decline — steepest in Speed/Agility, gentler in Strength/Jumping.
@@ -347,4 +361,4 @@ Genuinely unresolved within the schema (distinct from later-phase math):
 3. **Card rates from Aggression alone, or a separate hidden discipline factor?** (§3) — resolvable
    only once the foul/card contest is calibrated (Phase 2), but flagged here.
 4. **Best-role-peak-CA vs. attribute-budget** as the PA growth-gate (§4) — a Phase-3 call, noted so
-   it isn't silently defaulted.
+   it isn't silently defaulted. **[resolved: best-role-peak-CA — `DEVELOPMENT_MODEL.md` §2.2.]**
