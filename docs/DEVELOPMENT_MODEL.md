@@ -328,6 +328,49 @@ early-30s decline from a mid-career start (a ~−4 CA/yr Speed slope over 3 seas
 `development_ages_veterans_and_respects_pa` test) — the `b_beat`-style single-field re-tune this model
 expected. The from-youth env-consistent slope stays gentler still.
 
+**Full real-`worldgen` re-fit banked (career-arc harness).** The harness (`fforge-core::career_arc`,
+`bin/career_arc`) is now built: it drives the real worldgen → AI-lineup → match → monthly-development
+pipeline over many seeds, each a decade-plus, and reads the metrics above off the developed world (per
+player: category composites and best-role CA vs age), reporting **per-seed spread**, not just the pooled
+mean (the `MATCH_MODEL.md` §8 noisy-estimator lesson). Running it (8 seeds × 16 seasons) moved four
+knob groups off their scratchpad points — the shift §6 predicted, the development analogue of `b_beat`:
+
+| Knob group | scratchpad → re-fit | What the real distribution showed |
+|---|---|---|
+| `env_phys` | `lmax` 0.55→0.60, `d` 28.5→27.0, `w` 2.6→2.3 | physical-composite peak read ~27 and overall CA peak ~31 (both late) because worldgen seeds players *below* target and they climb past the envelope peak; earlier/steeper decline lands physical peak ~26, CA peak ~29, veteran (30→35) physical slope ~−2.7 CA/yr |
+| `plast_mid` / `plast_width` | (24.5, 2.5) → (23.5, 2.2) | the scratchpad window never closes hard enough (`plast(30)≈0.10`), so over a decade+ every prospect crawls to PA and no one falls short; the tighter window freezes an unrealized gap past the mid-20s |
+| `e_sigma` / `e_min` | 0.34→0.42, 0.20→0.15 | a narrower `E` spread realized potential too uniformly (wonderkid hit rate ~0.75 vs the ~0.56 target); a fatter low tail spreads prospect outcomes into range |
+
+Re-fit readings (8 seeds × 16 seasons; per-seed sd in parentheses): physical peak **~26.1** (0.2),
+technical onset **~26.9** (0.2), mental onset **~26.7** (0.3), overall CA peak **~29.4** (0.2), PA
+attainment mean **~0.88** (0.01) with p10 **~0.80** and a **~11%** sub-0.80 tail, veteran physical slope
+**~−2.7** (0.1), veteran mental slope **~+0.04** (0.01), wonderkid hit rate **~0.65** (0.07).
+
+**Two structural findings the harness surfaced (real-`worldgen` shifts, not knob failures).** Both are
+consequences of worldgen seeding squads *near their plateau* rather than on the young envelope the
+scratchpad assumed (`gen_player` shapes attributes around club quality, not `env_c(15)`):
+
+1. **Technical and mental plateau-onset collapse to a mid-20s wash.** For a category worldgen already
+   seeds near-plateau, the composite barely climbs, so "first age reaching 98% of career max" fires
+   early and is insensitive to the envelope's late peak — pushing `env_ment` *later* even moved its
+   onset *earlier*. The clean phys < tech < ment maturation *ordering* the from-youth cohort produced
+   does **not** survive; onset for the two flat categories is ~27 for both. What survives — and what
+   §7 actually cares about for squad-building — is the **aging character**: physicals peak and decline
+   hard (~−2.7 CA/yr) while mental holds (~flat), a wide, robust split. The regression guard
+   (`career_arcs_are_in_a_believable_ballpark`) therefore pins the veteran-slope split and loose age
+   bands, **not** an age ordering.
+2. **Hard wonderkid flops (<0.75 PA) are ~0 — an attainment floor, not a dead mechanism.** Worldgen's
+   youth discount is only ~2 CA/yr, so a prospect starts at CA ≈ 0.76–0.85 of PA, and pre-peak players
+   never decline — peak-CA/PA is *floored* above 0.75 by construction. The notebook's ~4% flop assumed
+   from-youth low-on-envelope seeding (CA far below PA), which real worldgen does not do. The genuine
+   underperformance signal on the real distribution is the **sub-0.80 tail** (~11%, p10 ~0.80), which
+   the plasticity re-fit restored; a true <0.75 flop rate would require worldgen to seed prospects
+   further below PA (a worldgen change, out of scope for this knob re-fit).
+
+These are banked exactly as the `K_DEC` note above: the design shape is unchanged; the numbers are the
+notebook's point, and the real distribution moved them — which is the whole reason §6 asked for the
+harness.
+
 **Market-pathology hooks (Phase 4, noted now).** The same harness feeds the transfer-market pathology
 checks `DESIGN.md` §4.3 wants — talent-inflation and wonderkid-hoarding are development×market
 interactions, and a development engine that produces a sane PA-attainment distribution is the

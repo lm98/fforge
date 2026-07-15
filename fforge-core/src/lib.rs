@@ -13,6 +13,7 @@
 //! (`MATCH_MODEL.md`); only its score folds into `GameState` — the
 //! minute-by-minute trace rides alongside, never inside, the fold.
 
+pub mod career_arc;
 pub mod commands;
 pub mod development;
 pub mod event;

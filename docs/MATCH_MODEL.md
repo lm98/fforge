@@ -172,10 +172,17 @@ fn play_match(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> Mat
 // MatchOutcome { score: (u8, u8), stream: Vec<MatchEvent> }
 ```
 
-- **The fold boundary does not move.** Only `MatchPlayed { home_goals, away_goals }` is folded into
-  `GameState` (as today) — the crude engine is swapped for this one behind the same call site in
-  `commands::advance_matchday`, and replay never re-simulates (`event.rs`'s record-outcomes-not-inputs
-  rule). The RNG is the existing per-fixture derived stream (`derive_stream(seed, FIXTURE_STREAM_NS | fixture.id)`).
+- **The fold boundary does not move.** Only `MatchPlayed`'s score (`home_goals, away_goals`) is the
+  match engine's fold output (as today) — the crude engine is swapped for this one behind the same
+  call site in `commands::advance_matchday`, and replay never re-simulates (`event.rs`'s
+  record-outcomes-not-inputs rule). The RNG is the existing per-fixture derived stream
+  (`derive_stream(seed, FIXTURE_STREAM_NS | fixture.id)`).
+- **`MatchPlayed` also records the two XIs (`home_xi`/`away_xi`) — for a *different* consumer, not
+  the match engine.** Phase 3 development needs each match's participants as its playing-time signal,
+  so the resolved lineups ride in the recorded event (the same record-the-outcome rule the score
+  follows — see `DEVELOPMENT_MODEL.md` §3, "playing-time data source"). The match engine neither
+  reads them back nor changes because of them; they are appearances first-class, folded by
+  `GameState` into the per-tick window development consumes. The stream boundary below is unaffected.
 - **The minute-by-minute stream is a Trace, not a fold input** (the decision reached this session):
   it rides alongside via an `EventObserver`, persisted to SQLite **only for matches that matter**
   (the human's matches now; journalist-agent matches later) — bulk AI matches store the score only.

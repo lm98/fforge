@@ -93,6 +93,12 @@ Five layers, with a hard rule: **lower layers know nothing about higher ones.**
 
 ### 4.2 Player development
 
+> **Phase 3 implementation detail lives in `DEVELOPMENT_MODEL.md`** — the pinned design record for the
+> monthly development engine (the PA-scaled age-envelope the attributes track, per-`DevCategory` curve
+> parameters, PA-gating on best-role peak CA, the once-resolved per-player noise for flops/late
+> bloomers, the append-only `DevelopmentTick` seam, and the career-arc calibration harness with its
+> re-fit knob table). This section is the high-level commitment; that note is the settled shape.
+
 - **CA/PA model:** current ability split across attributes + a hidden potential ceiling.
 - Development is a trajectory from CA toward PA, modulated by an age curve, training focus,
   playing time, coaching quality, and noise, with **diminishing returns near PA**.
@@ -344,7 +350,11 @@ The meta-principle: **thin vertical slice first, then deepen.**
   character/hidden attributes), all landing behind the same `play_match` call site. 2a is settled and
   calibrated in a Python scratchpad; the Rust port is the next step.
 - **Phase 3 — Player development.** CA/PA, age curves, training, diminishing returns; validate
-  over decade-long runs.
+  over decade-long runs. **Pinned in `DEVELOPMENT_MODEL.md`** (the six deferred development decisions
+  resolved: PA-gating, the `DevCategory` curve parameters, the event-log seam, in-scope inputs,
+  Natural Fitness, validation targets). Settled and implemented in Rust (`fforge-core::development`,
+  a monthly `DevelopmentTick`); the career-arc harness (`fforge-core::career_arc`) is built and has
+  re-fit the knob table against real `worldgen`, exactly as the match engine's `b_beat` was re-fit.
 - **Phase 4 — Transfer market.** Club decision AI, the shared valuation function, windows;
   stress-test for pathologies. Resolve the sequential-vs-simultaneous ordering question here.
 - **Phase 5 — LLM narrative layer + feedback loop.** Agents, propose/dispose, the validation

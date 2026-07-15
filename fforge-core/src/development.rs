@@ -94,9 +94,14 @@ impl EnvParams {
 }
 
 /// The development knob table (`DEVELOPMENT_MODEL.md` §2–§3), sibling of
-/// `match_engine::Knobs`. Every value is the fitted `dev_shape` scratchpad point
-/// (`DEVELOPMENT_MODEL.md` §6), to be re-fit against real `worldgen` by the
-/// career-arc harness — not a finished calibration.
+/// `match_engine::Knobs`. Values began as the fitted `dev_shape` scratchpad
+/// point (`DEVELOPMENT_MODEL.md` §6); several have since been **re-fit against
+/// real `worldgen`** by the career-arc harness (`crate::career_arc`), exactly as
+/// `b_beat` was re-fit for the match engine — the fields carrying a re-fit note
+/// below (`env_phys`, `plast_*`, `e_sigma`/`e_min`, and the earlier `k_dec`) are
+/// the ones the real distribution moved. See `DEVELOPMENT_MODEL.md` §6 for the
+/// banked readings and the two structural findings (near-plateau seeding, the
+/// attainment floor) the harness surfaced.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DevKnobs {
     // --- per-category age envelopes (§2.1) ---
@@ -184,12 +189,20 @@ impl Default for DevKnobs {
     fn default() -> Self {
         DevKnobs {
             // §2.1 fitted envelope parameters (g, s, lmax, d, w).
+            // Physical re-fit against real `worldgen` (career-arc harness, §6):
+            // the scratchpad's (lmax 0.55, d 28.5, w 2.6) put the emergent
+            // physical-composite peak at ~27 and the overall CA peak at ~31 —
+            // both late — because worldgen seeds players below their target and
+            // they climb past the envelope peak. Pulling decline earlier and
+            // steeper (d 28.5→27.0, w 2.6→2.3, lmax 0.55→0.60) lands the physical
+            // peak at ~26, the CA peak at ~29, and a ~−2.7 CA/yr veteran
+            // (30→35) physical slope — the §6 targets.
             env_phys: EnvParams {
                 g: 15.0,
                 s: 3.0,
-                lmax: 0.55,
-                d: 28.5,
-                w: 2.6,
+                lmax: 0.60,
+                d: 27.0,
+                w: 2.3,
             },
             env_tech: EnvParams {
                 g: 17.5,
@@ -220,15 +233,29 @@ impl Default for DevKnobs {
             // mid-career start; a from-youth env-consistent career declines
             // gentler still. (A harness re-fit target, DEVELOPMENT_MODEL.md §6.)
             k_dec: 0.30,
-            plast_mid: 24.5,
-            plast_width: 2.5,
+            // Plasticity window re-fit against real `worldgen` (career-arc
+            // harness, §6): the scratchpad's (24.5, 2.5) never closes hard enough
+            // — at age 30 `plast` is still ~0.10, so over a decade+ even a
+            // low-`E` prospect crawls to PA and *nobody* falls short. Tightening
+            // to (23.5, 2.2) freezes an unrealized gap past the mid-20s, giving
+            // the real sub-0.80 attainment tail (~11%, p10 ~0.80) the flat
+            // notebook cohort produced from-youth. (Hard flops <0.75 stay ~0 on
+            // real worldgen — an attainment *floor*, not a knob; see §6.)
+            plast_mid: 23.5,
+            plast_width: 2.2,
             ceil_spread: 4.5,
             ceil_floor: 8.0,
             e_base: 0.72,
             e_det: 0.011,
             e_prof: 0.008,
-            e_sigma: 0.34,
-            e_min: 0.20,
+            // E spread widened (0.34→0.42) and floor deepened (0.20→0.15) in the
+            // real-`worldgen` re-fit (career-arc harness, §6): the scratchpad's
+            // narrower spread realized potential too uniformly (wonderkid hit
+            // rate ~0.75 vs the ~0.56 target, no shortfall tail). A fatter low
+            // tail of `E`, together with the tighter plasticity window above,
+            // spreads prospect outcomes into the believable §6 range.
+            e_sigma: 0.42,
+            e_min: 0.15,
             e_max: 1.9,
             prof_aging_coeff: 0.3,
             phi_sigma: 1.8,
