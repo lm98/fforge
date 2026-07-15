@@ -129,6 +129,18 @@ already delivers the shape and is preferred for having one fewer constant.) Beca
 never exceed `(PA/NORM)·env`, **CA is structurally incapable of overshooting PA** — the cap is a
 property of the target, not a clamp bolted on after.
 
+**Implementation note (25 attributes vs the 3-composite scratchpad).** The `dev_shape` scratchpad
+validated the shape on three category *composites*; the literal `target_i = (PA/NORM)·env_c` applied
+per-attribute would scale every attribute of a category to the *same* level and so **flatten role
+shape** across the 25 real attributes (a centre-back's Finishing would grow to his Tackling, breaking
+the position-relative-CA property the whole schema rests on). `fforge-core::development` therefore
+keeps the role-weighted `NORM` exactly as specified but multiplies it by a **role-shaped per-attribute
+ceiling** — `ceiling_i = pa_base + (w_i−3)·spread`, with `pa_base` solved so best-role CA at the
+ceiling equals PA, mirroring `worldgen`'s own weight shaping. Attributes the best role weights at 0
+earn no headroom (they never develop). This is the faithful realization of this section's stated
+intent ("growth steered toward the attributes the role values"); the §2 pseudocode above is the
+single-composite simplification and should be read through this note.
+
 ### 2.3 Noise — wonderkids who flop, and late bloomers
 
 Three independent noise sources, each resolved **once per player** except the last, give the career-
@@ -171,6 +183,17 @@ real cost — the "invest in youth vs buy ready-made" tension `DESIGN.md` §4.2 
 ally of the §4.3 market stabilizer "players wanting minutes." Ready-made players are near their
 plateau (little headroom, closed window); youth are pure headroom gated on minutes and `E`. That is
 the whole decision, and it is present with just age + playing time + PA.
+
+**Playing-time data source (implementation sub-decision, resolved).** Two options: record each
+match's participants in the event schema, or re-derive past lineups at tick time. We take the first —
+`Event::MatchPlayed` carries the two XIs (`home_xi`/`away_xi`), the *resolved outcome* the fold reads.
+Re-deriving is not replay-safe: a past matchday's effective lineup depends on transient
+`pending_lineup` state that is not reconstructable at tick time, and it would duplicate the selection
+logic. Recording the XIs (while `Event` was being extended for `DevelopmentTick` anyway) makes
+appearances first-class and drift-proof. `GameState` folds them into a per-tick window
+(`appearances_since_tick` / `club_matches_since_tick`, reset each tick); the coarse
+appeared/benched/absent multiplier reads that window. This is exactly the record-outcomes rule
+(`event.rs`), the same one `MatchPlayed`'s score already follows.
 
 **Character attributes feeding development now:** **Determination** and **Professionalism**, via `E`
 (§2.3) — precisely the two `ATTRIBUTE_SCHEMA.md` §2 flags as "development-rate drivers the game needs
@@ -296,6 +319,14 @@ is a noisy estimator, and scratchpad `worldgen` is not the Rust `worldgen`'s att
 numbers are the notebook's fitted point, expected to shift on the real distribution exactly as
 `b_beat` did for the match engine. The knobs (`ENV` params, `K`, `K_DEC`, plasticity `(24.5, 2.5)`,
 `E` mean/spread, `φ` spread) group into a `DevKnobs` table, the sibling of `match_engine::Knobs`.
+
+**First real-`worldgen` re-fit already banked (`K_DEC`).** The scratchpad fitted `K_DEC = 1.0` on
+env-consistent-from-youth careers. The Rust engine instead starts from `worldgen`'s mid-career squads,
+which seed veterans *above* the aging envelope; at `K_DEC = 1.0` the proportional pull crashed their
+physicals ~20 pts in a few seasons. `DevKnobs::default` ships `K_DEC = 0.30`, which gives a believable
+early-30s decline from a mid-career start (a ~−4 CA/yr Speed slope over 3 seasons in `fforge-core`'s
+`development_ages_veterans_and_respects_pa` test) — the `b_beat`-style single-field re-tune this model
+expected. The from-youth env-consistent slope stays gentler still.
 
 **Market-pathology hooks (Phase 4, noted now).** The same harness feeds the transfer-market pathology
 checks `DESIGN.md` §4.3 wants — talent-inflation and wonderkid-hoarding are development×market

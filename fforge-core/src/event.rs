@@ -14,9 +14,23 @@
 //!    history. Live play produces these events via `step`; replay just eats
 //!    them. This is exactly how recorded agent `Decision`s will enter in
 //!    Phase 5 — human lineups (`LineupSubmitted`) already follow the pattern.
+//!    `DevelopmentTick` (Phase 3, `DEVELOPMENT_MODEL.md` §5) is the newest
+//!    application of the same rule: it records the resolved sparse attribute
+//!    deltas, *not* the seed, so the growth model can evolve without rewriting a
+//!    recorded career — the fold only integer-adds the deltas.
 
-use fforge_domain::{ClubId, Fixture, FixtureId, GameDate, Lineup, World};
+use fforge_domain::{Attribute, ClubId, Fixture, FixtureId, GameDate, Lineup, PlayerId, World};
 use serde::{Deserialize, Serialize};
+
+/// One resolved attribute step in a `DevelopmentTick` (`DEVELOPMENT_MODEL.md`
+/// §5): a `delta` (usually ±1, occasionally more for fast youth growth) applied
+/// to one player's one attribute. The fold adds it, clamped to 0..=100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttrStep {
+    pub player: PlayerId,
+    pub attr: Attribute,
+    pub delta: i8,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
@@ -32,16 +46,42 @@ pub enum Event {
     /// The human manager's resolved, validated team-sheet decision for the
     /// upcoming matchday.
     LineupSubmitted { matchday: u8, lineup: Lineup },
-    /// A simulated result. (The rich minute-by-minute match event stream is
-    /// the Phase 2 artifact; this scoreline is the walking-skeleton stub.)
+    /// A simulated result. Carries the two participating XIs (`home_xi` /
+    /// `away_xi`) as the *resolved outcome* the fold consumes: appearances feed
+    /// the Phase-3 playing-time development input (`DEVELOPMENT_MODEL.md` §3),
+    /// recorded here rather than re-derived at tick time — a past matchday's
+    /// effective lineup depends on transient `pending_lineup` state that is not
+    /// otherwise reconstructable, so recording it is the replay-safe source.
+    /// (The rich minute-by-minute match event stream stays a Trace, not a fold
+    /// input, `MATCH_MODEL.md` §7.)
     MatchPlayed {
         fixture: FixtureId,
         matchday: u8,
         home_goals: u8,
         away_goals: u8,
+        home_xi: Vec<PlayerId>,
+        away_xi: Vec<PlayerId>,
     },
     /// The calendar advanced past a matchday.
     MatchdayAdvanced { matchday: u8, new_date: GameDate },
+    /// A monthly player-development tick (`DEVELOPMENT_MODEL.md` §5). Carries the
+    /// resolved sparse attribute changes; the fold integer-adds them (clamped)
+    /// and never re-runs growth math. Bounded (sparse, monthly, integer-
+    /// quantized); replay reconstructs identical attribute histories by folding
+    /// `changes`. Emitted by the calendar advance when a 30-day period boundary
+    /// is crossed.
+    DevelopmentTick {
+        date: GameDate,
+        changes: Vec<AttrStep>,
+    },
     /// Season complete.
     SeasonEnded { champion: ClubId },
+    /// A fresh season begins on the (developed) world (`DEVELOPMENT_MODEL.md`
+    /// §5 multi-season continuity): a new fixture schedule and start date. The
+    /// world snapshot carries over — this only resets the season's calendar,
+    /// results, and champion.
+    SeasonStarted {
+        start_date: GameDate,
+        schedule: Vec<Fixture>,
+    },
 }

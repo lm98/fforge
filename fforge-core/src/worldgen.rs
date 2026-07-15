@@ -3,6 +3,7 @@
 //! fold never re-derives it, so worldgen can evolve freely without breaking
 //! saves (the record-resolved-values principle).
 
+use crate::development::{resolve_coaching, resolve_dev_profile, DevKnobs};
 use crate::rng::{derive_stream, Rng};
 use crate::schedule::double_round_robin;
 use fforge_domain::{
@@ -45,6 +46,7 @@ const SQUAD_TEMPLATE: [(Role, usize); 8] = [
 pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDate) {
     assert!(cfg.num_clubs >= 2 && cfg.num_clubs.is_multiple_of(2));
     let mut rng = derive_stream(seed, WORLDGEN_STREAM);
+    let dev_knobs = DevKnobs::default();
     let start_date = GameDate::from_year_day(cfg.start_year, 220); // late-summer kickoff
 
     // Club quality anchors, evenly spread then shuffled: a league with a
@@ -71,11 +73,12 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
             for _ in 0..count {
                 let id = PlayerId(next_player);
                 next_player += 1;
-                let player = gen_player(&mut rng, id, role, quality, start_date);
+                let player = gen_player(&mut rng, id, role, quality, start_date, &dev_knobs);
                 squad.push(id);
                 players.insert(id, player);
             }
         }
+        let coaching_milli = resolve_coaching(&mut rng, quality, &dev_knobs);
 
         let manager_id = StaffId(ci as u32);
         staff.insert(
@@ -94,6 +97,7 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
                 id: club_id,
                 name,
                 players: squad,
+                coaching_milli,
             },
         );
     }
@@ -117,7 +121,14 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
     )
 }
 
-fn gen_player(rng: &mut Rng, id: PlayerId, role: Role, club_quality: f64, today: GameDate) -> Player {
+fn gen_player(
+    rng: &mut Rng,
+    id: PlayerId,
+    role: Role,
+    club_quality: f64,
+    today: GameDate,
+    dev_knobs: &DevKnobs,
+) -> Player {
     // Age ~ triangular 16..=36, centered mid-20s.
     let age = 16 + ((rng.f64() + rng.f64()) * 10.0) as i32;
     let birth = today
@@ -161,6 +172,11 @@ fn gen_player(rng: &mut Rng, id: PlayerId, role: Role, club_quality: f64, today:
         leadership: rng.range_i32(10, 90) as u8,
     };
 
+    // Once-resolved development trajectory (DEVELOPMENT_MODEL.md §2.3), derived
+    // from character + seeded noise and recorded in the World snapshot.
+    let development =
+        resolve_dev_profile(rng, character.determination, character.professionalism, dev_knobs);
+
     Player {
         id,
         name: person_name(rng),
@@ -168,6 +184,7 @@ fn gen_player(rng: &mut Rng, id: PlayerId, role: Role, club_quality: f64, today:
         natural_role: role,
         attributes,
         character,
+        development,
     }
 }
 
