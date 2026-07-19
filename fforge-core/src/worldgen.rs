@@ -32,8 +32,10 @@ impl Default for WorldGenConfig {
 
 const WORLDGEN_STREAM: u64 = 0x574F_524C_4447_454E; // "WORLDGEN"
 
-/// Squad template: role → headcount. 24 players per club.
-const SQUAD_TEMPLATE: [(Role, usize); 8] = [
+/// Squad template: role → headcount. 24 players per club. Also the
+/// `depth_gap` target `club_ai::UtilityPolicy::need` reads (`TRANSFER_MODEL.md`
+/// §6) — reused rather than re-encoded, so the two can never drift apart.
+pub(crate) const SQUAD_TEMPLATE: [(Role, usize); 8] = [
     (Role::Gk, 3),
     (Role::Cb, 4),
     (Role::Fb, 4),

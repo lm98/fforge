@@ -14,6 +14,7 @@
 //! minute-by-minute trace rides alongside, never inside, the fold.
 
 pub mod career_arc;
+pub mod club_ai;
 pub mod commands;
 pub mod development;
 pub mod event;
@@ -27,6 +28,7 @@ pub mod state;
 pub mod valuation;
 pub mod worldgen;
 
+pub use club_ai::{ClubObservation, ClubPolicy, TransferDecision, UtilityKnobs, UtilityPolicy, observe};
 pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
 pub use development::{DEV_STREAM_NS, DevKnobs};
 pub use event::{AttrStep, Event};

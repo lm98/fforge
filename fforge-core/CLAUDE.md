@@ -12,14 +12,19 @@ engine behind the same `play_match` call site. Phase 3 player development
 and `Command::StartNextSeason` rolls the developed world into a fresh season. Phase 4's
 event-log seam (`TRANSFER_MODEL.md` §4) is implemented — six events
 (`TransferCompleted`, `PlayerReleased`, `ContractRenewed`, `YouthIntake`,
-`PlayerRetired`, `FinanceTick`) and their `state::apply` fold arms — but only the
-seam: no decision logic, clearing loop, or valuation call site produces them yet.
+`PlayerRetired`, `FinanceTick`) and their `state::apply` fold arms. The Layer-3 club
+decision AI (`TRANSFER_MODEL.md` §6, §6.1) is implemented in `club_ai` — a
+`ClubPolicy` trait and its v1 `UtilityPolicy` implementation, producing
+`TransferDecision`s from a `ClubObservation`. Both are decisions/records only: no
+clearing loop (§5) resolves a `Bid`/`List` into an actual transfer, and nothing here
+emits the Phase-4 events yet.
 
 ## Module map
 
 | Module | Owns |
 |---|---|
 | `event` | `Event` enum — the append-only log's payload types, including the Phase-4 transfer/contract/finance/pool events (`TRANSFER_MODEL.md` §4) |
+| `club_ai` | Phase-4 Layer-3 club decision AI (`TRANSFER_MODEL.md` §6, §6.1): the `ClubPolicy` trait (`ClubObservation` in, `Vec<TransferDecision>` out — the Gym-shaped seam `ai_pick_lineup`'s doc comment anticipated), `UtilityPolicy` (`need(club, role)` = depth + quality-vs-own-reputation-target + succession risk from `valuation::project_ca`; buy shortlists ranked by `need · (value − asking_price)`; sell lists from §6's first two triggers), and `observe()` (builds a `ClubObservation` off `World` + the `value_all` cache — the only place in this module that reads `World`). Squad bounds `[18, 30]`, `≥2` GK, cash and wage headroom are hard stabilizers, not utility terms. Decisions only — no clearing loop, no events |
 | `state` | `GameState` — pure fold (`apply`/`replay`), `TableRow`, `league_table()`. The six Phase-4 fold arms are pure integer operations only (no RNG, no math beyond addition, no engine calls) and keep club rosters sorted after mutation, so replay-path equality holds |
 | `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it; `player_match_preview()` — a pure query, re-deriving the same lineup selection and RNG stream `advance_matchday` is about to use, for live-viewing the human's own fixture before it's recorded |
 | `session` | `Session` — owns the log + folded state, routes commands, notifies observers; `save_log`/`load_log` (JSON-lines) |
