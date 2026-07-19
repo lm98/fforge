@@ -23,6 +23,7 @@ pub mod rng;
 pub mod schedule;
 pub mod session;
 pub mod state;
+pub mod valuation;
 pub mod worldgen;
 
 pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
@@ -31,6 +32,7 @@ pub use event::{AttrStep, Event};
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use session::{Session, load_log, save_log};
 pub use state::{GameState, TableRow, league_table};
+pub use valuation::{MarketContext, ValueKnobs, project_ca, value, value_all};
 pub use worldgen::{WorldGenConfig, generate};
 
 /// Convenience: assemble the opening event for a new game.
