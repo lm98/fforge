@@ -417,6 +417,7 @@ mod tests {
                 wage: Money(1_000),
                 expires: TODAY.add_days(4 * 365), // full-value (3+ yr) contract
             }),
+            retired: false,
         }
     }
 

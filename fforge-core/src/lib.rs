@@ -17,6 +17,7 @@ pub mod career_arc;
 pub mod commands;
 pub mod development;
 pub mod event;
+pub mod finance;
 pub mod match_engine;
 pub mod observer;
 pub mod rng;

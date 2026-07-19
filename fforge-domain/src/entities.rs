@@ -115,6 +115,12 @@ pub struct Player {
     /// contract belongs with the employee, so a transfer moves the player
     /// between `Club.players` and there is exactly one place to update.
     pub contract: Option<Contract>,
+    /// Set by `Event::PlayerRetired` (`TRANSFER_MODEL.md` §4, §8.2). Retired
+    /// players stay in `World.players` (the log references them in historical
+    /// `MatchPlayed` XIs) but leave every roster; this is the marker that lets
+    /// a future consumer exclude them from development/the market without
+    /// confusing them with an ordinary out-of-contract free agent.
+    pub retired: bool,
 }
 
 impl Player {

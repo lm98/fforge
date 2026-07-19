@@ -7,6 +7,7 @@
 
 use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
+use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::match_engine::{ai_pick_lineup, play_match};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
@@ -243,10 +244,11 @@ fn start_next_season(state: &GameState) -> Vec<Event> {
     events
 }
 
-/// Emit a `DevelopmentTick` for every 30-day period boundary in `(old, new]`.
-/// A working copy of the world is developed forward so successive ticks (only
-/// possible across the multi-month offseason gap) compound correctly, exactly
-/// as the fold will replay them. `first_apps`/`first_club_matches` are the
+/// Emit a `DevelopmentTick` (and, riding the same boundary, a `FinanceTick`,
+/// `TRANSFER_MODEL.md` §4) for every 30-day period in `(old, new]`. A working
+/// copy of the world is developed forward so successive ticks (only possible
+/// across the multi-month offseason gap) compound correctly, exactly as the
+/// fold will replay them. `first_apps`/`first_club_matches` are the
 /// playing-time window for the *first* tick; later ticks in the same span see
 /// an empty window (the fold resets it on each tick).
 fn dev_ticks_between(
@@ -262,6 +264,7 @@ fn dev_ticks_between(
         return Vec::new();
     }
     let knobs = DevKnobs::default();
+    let finance_knobs = FinanceKnobs::default();
     let mut work_world: World = state.world.clone();
     let empty_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
     let empty_club_matches: BTreeMap<ClubId, u32> = BTreeMap::new();
@@ -291,6 +294,14 @@ fn dev_ticks_between(
         events.push(Event::DevelopmentTick {
             date: tick_date,
             changes,
+        });
+        // FinanceTick rides the same boundary crossing: resolved
+        // revenue-minus-wages deltas off the same working snapshot, so a
+        // multi-period offseason gap prices each tick against a consistent
+        // world rather than re-deriving from the pre-offseason one.
+        events.push(Event::FinanceTick {
+            date: tick_date,
+            deltas: finance_deltas(&work_world, &finance_knobs),
         });
     }
     events

@@ -209,6 +209,7 @@ fn gen_player(
         character,
         development,
         contract,
+        retired: false,
     }
 }
 
