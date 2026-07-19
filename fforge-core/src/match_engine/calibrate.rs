@@ -376,6 +376,7 @@ mod tests {
     use super::*;
     use crate::match_engine::Zone;
     use crate::match_engine::stream::MatchEvent;
+    use fforge_domain::PlayerId;
 
     fn shot(side: Side, kind: ShotKind, source: ShotSource, outcome: ShotOutcome) -> MatchEvent {
         MatchEvent {
@@ -387,6 +388,8 @@ mod tests {
                 source,
                 outcome,
             },
+            actor: PlayerId(0),
+            opponent: None,
         }
     }
 
@@ -431,12 +434,16 @@ mod tests {
                 side: Side::Home,
                 zone: Zone::Mid,
                 kind: MatchEventKind::Pass { success: true },
+                actor: PlayerId(0),
+                opponent: None,
             },
             MatchEvent {
                 minute: 21,
                 side: Side::Away,
                 zone: Zone::Mid,
                 kind: MatchEventKind::Pass { success: true },
+                actor: PlayerId(0),
+                opponent: None,
             },
         ];
         let outcome = MatchOutcome {

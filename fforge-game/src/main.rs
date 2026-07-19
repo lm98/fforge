@@ -435,14 +435,19 @@ fn watch_friendly_flow(session: &Session) {
     let mut rng = fforge_core::rng::Rng::seed_from(seed);
     let outcome = match_engine::play_match(world, &home_lineup, &away_lineup, &mut rng);
 
-    print_humble_text_view(&home_name, &away_name, &outcome);
+    print_humble_text_view(world, &home_name, &away_name, &outcome);
 }
 
 /// Prints the humble text match view (`DESIGN.md` §9): the raw event stream,
 /// unfiltered, followed by the final score. Shared by the standalone
 /// friendly viewer and, for the human's own fixture, the main game loop's
 /// matchday advance.
-fn print_humble_text_view(home_name: &str, away_name: &str, outcome: &match_engine::MatchOutcome) {
+fn print_humble_text_view(
+    world: &fforge_domain::World,
+    home_name: &str,
+    away_name: &str,
+    outcome: &match_engine::MatchOutcome,
+) {
     println!(
         "\n{home_name} vs {away_name} — {} raw events, unfiltered (the humble text match view, DESIGN.md §9):",
         outcome.stream.len()
@@ -463,7 +468,11 @@ fn print_humble_text_view(home_name: &str, away_name: &str, outcome: &match_engi
             match_engine::Side::Home => home_name,
             match_engine::Side::Away => away_name,
         };
-        let line = event.commentary(side_name);
+        // The name lookup lives here — this crate owns the `World` and is the
+        // only one allowed to touch stdout; `commentary` stays name-resolved
+        // and I/O-free (MATCH_MODEL.md §9).
+        let actor = world.player(event.actor).name.as_str();
+        let line = event.commentary(side_name, actor);
         if interactive {
             // Raw mode turns off the terminal's own \n -> \r\n translation.
             print!("{line}\r\n");
@@ -524,7 +533,12 @@ fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
             .fixtures_of_matchday(md)
             .find(|f| f.home == s.player_club || f.away == s.player_club)
     {
-        print_humble_text_view(&s.world.club(f.home).name, &s.world.club(f.away).name, outcome);
+        print_humble_text_view(
+            &s.world,
+            &s.world.club(f.home).name,
+            &s.world.club(f.away).name,
+            outcome,
+        );
     }
     println!("\nMatchday {md} results:");
     for event in &events {

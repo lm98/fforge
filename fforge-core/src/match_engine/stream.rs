@@ -8,6 +8,7 @@
 //! event-sourced `GameState` fold.
 
 use super::zone::Zone;
+use fforge_domain::PlayerId;
 
 /// Which side an event belongs to. Distinct from `fforge_domain::ClubId` —
 /// the stream is home/away-relative; a caller maps it to real clubs via the
@@ -89,35 +90,60 @@ pub enum MatchEventKind {
 
 /// One beat in the minute-by-minute stream. `zone` is the zone-entry context
 /// (`MATCH_MODEL.md` §9) so a beat can say *where* on the pitch it happened.
+///
+/// `actor` names the on-ball player the resolver already sampled from the
+/// `side`-relative fielding XI's zone presence table (`MATCH_MODEL.md` §6) —
+/// it is always a member of `side`'s eleven. `opponent` names the single
+/// contesting player for the beats that resolve a two-player contest (a
+/// take-on/tackle, the aerial duel inside a headed shot, a keeper's save);
+/// it is `None` where there is genuinely no single opponent (a pass into
+/// space, a cross that finds no one, a cleared ball, a shot with no
+/// individual duel). This is `MATCH_MODEL.md` §9's identity enrichment
+/// (`TRANSFER_MODEL.md` §12 item 1, P4.0): the stream was designed for
+/// narratability but carried no player identity, blocking the journalist
+/// agent that cannot write "*Rossi scored at 73'*" from an anonymous stream.
+/// No new sampling — these are the actor/defender the resolver drew anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchEvent {
     pub minute: u8,
     pub side: Side,
     pub zone: Zone,
     pub kind: MatchEventKind,
+    /// The on-ball player, always in `side`'s fielding XI.
+    pub actor: PlayerId,
+    /// The single contesting player, when the beat resolves one (take-on,
+    /// tackle, aerial duel, save); `None` otherwise.
+    pub opponent: Option<PlayerId>,
 }
 
 impl MatchEvent {
     /// A pure, presentation-agnostic rendering — the humble text match view
     /// (`DESIGN.md` §9) is just this, printed in order. No I/O here; callers
-    /// (`fforge-game`, the only crate allowed to touch stdout) print it.
-    pub fn commentary(&self, side_name: &str) -> String {
+    /// (`fforge-game`, the only crate allowed to touch stdout) resolve the
+    /// `side`/`actor` display names from the `World` and pass them in — this
+    /// crate never looks a `PlayerId` up (it holds no `World`) and never
+    /// touches stdout. `actor` is the resolved name of `self.actor`.
+    pub fn commentary(&self, side_name: &str, actor: &str) -> String {
         let m = self.minute;
         let z = self.zone.label();
         match self.kind {
-            MatchEventKind::Pass { success: true } => format!("{m}' {side_name} pick a pass {z}."),
+            MatchEventKind::Pass { success: true } => {
+                format!("{m}' {actor} ({side_name}) picks a pass {z}.")
+            }
             MatchEventKind::Pass { success: false } => {
-                format!("{m}' {side_name} pass cut out {z}.")
+                format!("{m}' {actor} ({side_name}) pass cut out {z}.")
             }
             MatchEventKind::TakeOn { success: true } => {
-                format!("{m}' {side_name} beat their marker {z}.")
+                format!("{m}' {actor} ({side_name}) beats their marker {z}.")
             }
             MatchEventKind::TakeOn { success: false } => {
-                format!("{m}' {side_name} dispossessed {z}.")
+                format!("{m}' {actor} ({side_name}) dispossessed {z}.")
             }
-            MatchEventKind::Cross { success: true } => format!("{m}' {side_name} whip in a cross."),
+            MatchEventKind::Cross { success: true } => {
+                format!("{m}' {actor} ({side_name}) whips in a cross.")
+            }
             MatchEventKind::Cross { success: false } => {
-                format!("{m}' {side_name} cross doesn't find a man.")
+                format!("{m}' {actor} ({side_name}) cross doesn't find a man.")
             }
             MatchEventKind::Clearance => format!("{m}' Cleared."),
             MatchEventKind::Turnover => format!("{m}' Turned over {z}."),
@@ -128,10 +154,12 @@ impl MatchEvent {
                     ShotKind::LongShot => "effort from distance",
                 };
                 match outcome {
-                    ShotOutcome::Goal => format!("{m}' GOAL! {side_name} score with a {k}!"),
-                    ShotOutcome::Saved => format!("{m}' {side_name} {k} — saved!"),
-                    ShotOutcome::Off => format!("{m}' {side_name} {k} — off target."),
-                    ShotOutcome::Blocked => format!("{m}' {side_name} {k} — blocked."),
+                    ShotOutcome::Goal => {
+                        format!("{m}' GOAL! {actor} ({side_name}) scores with a {k}!")
+                    }
+                    ShotOutcome::Saved => format!("{m}' {actor} ({side_name}) {k} — saved!"),
+                    ShotOutcome::Off => format!("{m}' {actor} ({side_name}) {k} — off target."),
+                    ShotOutcome::Blocked => format!("{m}' {actor} ({side_name}) {k} — blocked."),
                 }
             }
             MatchEventKind::Save { parried: true } => {
@@ -186,8 +214,10 @@ mod tests {
                 side: Side::Home,
                 zone: Zone::AttW,
                 kind,
+                actor: PlayerId(7),
+                opponent: Some(PlayerId(3)),
             };
-            assert!(!event.commentary("Home").is_empty());
+            assert!(!event.commentary("Home", "Rossi").is_empty());
         }
     }
 }

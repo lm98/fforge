@@ -10,9 +10,13 @@ use super::knobs::Knobs;
 use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::zone::{self, Zone};
 use crate::rng::Rng;
-use fforge_domain::{Attribute, Attributes, Lineup, Role, World};
+use fforge_domain::{Attribute, Attributes, Lineup, PlayerId, Role, World};
 
 struct XiPlayer {
+    /// The domain identity of this eleven's player, carried so the emitted
+    /// stream can name who did what (`MATCH_MODEL.md` §9 / `TRANSFER_MODEL.md`
+    /// §12 item 1) — it is only propagated into events, never sampled on.
+    pid: PlayerId,
     role: Role,
     attrs: Attributes,
 }
@@ -24,6 +28,7 @@ fn build_xi(world: &World, lineup: &Lineup) -> Vec<XiPlayer> {
         .iter()
         .enumerate()
         .map(|(slot, &pid)| XiPlayer {
+            pid,
             role: def.slots[slot],
             attrs: world.player(pid).attributes.clone(),
         })
@@ -264,6 +269,14 @@ fn take_shot(
 
     // Up to two rebound follow-ups, mirroring the notebook's bounded retry.
     for _ in 0..3 {
+        // The aerial duel is a headed shot's two-player contest (§9): the
+        // header's defender is its named opponent. A finish/long-range effort
+        // or a rebounded knock-down has no single duelling opponent — the
+        // keeper it faces is named on the `Save` beat that resolves it.
+        let shot_opponent = match kind {
+            ShotKind::Header => Some(defender.pid),
+            ShotKind::Finish | ShotKind::LongShot => None,
+        };
         let (atk, d_block, d_gk) = match kind {
             ShotKind::Header => (
                 blend(
@@ -302,6 +315,8 @@ fn take_shot(
                         source,
                         outcome: ShotOutcome::Goal,
                     },
+                    actor: shooter.pid,
+                    opponent: shot_opponent,
                 });
                 return (other_side(poss), Zone::Mid); // conceding side kicks off
             }
@@ -314,6 +329,8 @@ fn take_shot(
                     source,
                     outcome: ShotOutcome::Saved,
                 },
+                actor: shooter.pid,
+                opponent: shot_opponent,
             });
             let rebound = rng.f64() < k.p_rebound;
             stream.push(MatchEvent {
@@ -321,6 +338,11 @@ fn take_shot(
                 side: poss,
                 zone: Zone::Box,
                 kind: MatchEventKind::Save { parried: rebound },
+                // The save is the shooter-vs-keeper contest; the keeper is
+                // the named opponent (the beat's `side` is the attacking
+                // side, so `actor` stays the shooter).
+                actor: shooter.pid,
+                opponent: Some(gk.pid),
             });
             if rebound {
                 kind = ShotKind::Finish;
@@ -343,6 +365,8 @@ fn take_shot(
                 source,
                 outcome,
             },
+            actor: shooter.pid,
+            opponent: shot_opponent,
         });
         return (other_side(poss), Zone::Def); // off / blocked → cleared
     }
@@ -389,6 +413,10 @@ fn step(
                 side: poss,
                 zone,
                 kind: MatchEventKind::Pass { success },
+                // A pass is played into space/to a teammate — no single
+                // named opponent, even when it is cut out (§9).
+                actor: actor.pid,
+                opponent: None,
             });
             if !success {
                 return turnover(poss, zone);
@@ -463,6 +491,10 @@ fn step(
                 side: poss,
                 zone,
                 kind: MatchEventKind::TakeOn { success },
+                // A take-on (and its failure, the tackle) is the dribbler-vs-
+                // marker contest: the sampled defender is the named opponent.
+                actor: actor.pid,
+                opponent: Some(defender.pid),
             });
             if !success {
                 return turnover(poss, zone);
@@ -545,6 +577,10 @@ fn step(
                 side: poss,
                 zone,
                 kind: MatchEventKind::Cross { success },
+                // The delivery itself has no single duelling opponent — the
+                // aerial duel it sets up is the following headed `Shot`'s.
+                actor: actor.pid,
+                opponent: None,
             });
             if success {
                 take_shot(
@@ -568,6 +604,11 @@ fn step(
                     side: poss,
                     zone,
                     kind: MatchEventKind::Clearance,
+                    // A cleared cross belongs to the attacking beat (its
+                    // `side` is the crossing side); it is not a duel, so the
+                    // crosser stays the actor and there is no named opponent.
+                    actor: actor.pid,
+                    opponent: None,
                 });
                 turnover(poss, zone)
             }
@@ -772,7 +813,11 @@ mod notebook_parity {
     fn build_fixed_xi(rng: &mut Rng, club_q: f64) -> Vec<XiPlayer> {
         FIXED_XI
             .iter()
-            .map(|&role| XiPlayer {
+            .enumerate()
+            .map(|(slot, &role)| XiPlayer {
+                // Synthetic identities: the parity harness has no `World`, so
+                // any distinct ids suffice — nothing here reads them back.
+                pid: PlayerId(slot as u32),
                 role,
                 attrs: notebook_gen_player(rng, role, club_q),
             })
