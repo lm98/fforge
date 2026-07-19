@@ -20,8 +20,10 @@ end to end: `market::resolve_window` runs §5's simultaneous, deferred-acceptanc
 clearing loop over `club_ai`'s decisions and folds winning bids into
 `Event::TransferCompleted`; `commands::advance_matchday` fires it on the §7 window
 boundaries (summer/winter), the same tick mechanism development and finance use —
-no new command. Deferred beyond v1: human transfer decisions (§10), loans,
-negotiation rounds, transfer clauses.
+no new command. The player pool closes at both ends (`TRANSFER_MODEL.md` §8) via
+the `pool` module: annual youth intake and age/CA-driven retirement, both firing
+at the summer window alongside the market. Deferred beyond v1: human transfer
+decisions (§10), loans, negotiation rounds, transfer clauses.
 
 ## Module map
 
@@ -39,6 +41,7 @@ negotiation rounds, transfer clauses.
 | `valuation` | Phase-4 centralized value function (`TRANSFER_MODEL.md` §2): `value` / `value_all` (the §2.7 per-window `BTreeMap<PlayerId, Money>` cache), `project_ca` (runs `development::attr_rate` forward, jitter off, minutes/coaching neutral), `project_ca_batch` (many players, one shared knob-derived `DevTables` — `club_ai::observe`'s per-squad projection), the `ValueKnobs` §9 table (plausibility-picked, sibling of `DevKnobs`), and `MarketContext` (bounded league-wide role scarcity). `value_with` integrates each player's whole 0..=horizon_years trajectory in one pass (`project_ca_series`) rather than once per year — same numbers, no redundant re-integration of the shared prefix. A pure Layer-2 function — prices, never decides; no market/club-AI here (Phase 4 §5–§6) |
 | `career_arc` | Phase-3 career-arc harness (`DEVELOPMENT_MODEL.md` §6): the development sibling of `match_engine::calibrate`. Drives the real worldgen + development-fold pipeline over many seeds × a decade-plus and reports the §6 metrics (peak ages, PA attainment + tail, veteran decline slopes, wonderkid hit/flop) with per-seed spread. `bin/career_arc` is the runner; `career_arcs_are_in_a_believable_ballpark` is the wide-band regression guard. Harness plumbing, never fed back into `DevKnobs` by itself — the re-fit is a human reading the numbers |
 | `finance` | Phase-4 finance tick (`TRANSFER_MODEL.md` §4): `finance_deltas` resolves monthly revenue (∝ `Club.reputation`) minus the monthly share of committed wages into per-club deltas; `FinanceKnobs` (plausibility-picked, sibling of `DevKnobs`/`ValueKnobs`). RNG-free — both inputs are already-resolved world state, unlike `tick_changes`'s jitter. `commands::dev_ticks_between` calls it on the same 30-day boundary crossing `DevelopmentTick` fires on, emitting `Event::FinanceTick` alongside it |
+| `pool` | Phase-4 player-pool lifecycle (`TRANSFER_MODEL.md` §8): `summer_pool_events` — one `YouthIntake` per club with roster headroom (reusing `worldgen::gen_player` with a 16-18 age band, quality anchored on `reputation` × `coaching_milli`), then every qualifying `PlayerRetired` (age ≥ `min_retirement_age` and best-role CA below `relevance_floor`, or a full season unsigned via `GameState::unsigned_since`). `PoolKnobs` (plausibility-picked, sibling of the others — but re-tuned against a real 15-season run, not left at a naive guess: the aging law lets CA plateau rather than crash, so a too-low floor leaves veterans immortal, squads permanently full, and mean age climbing unchecked). Intake is capped to `squad_max` headroom so it can never walk a club through the market's own hard squad-bound stabilizer. `commands::transfer_window_events` calls it only on the summer (even) window index, before `market::resolve_window`, so new prospects are on the books and retirees are already excluded from valuation when the clearing loop runs |
 | `rng` | Seeded xoshiro256** + `derive_stream` — the crate's only source of randomness |
 | `schedule` | `double_round_robin()` — deterministic fixture generation |
 | `worldgen` | `generate()` — seeded new-game world/schedule/start date, recorded once into `GameStarted` |

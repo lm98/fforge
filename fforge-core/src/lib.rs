@@ -22,6 +22,7 @@ pub mod finance;
 pub mod market;
 pub mod match_engine;
 pub mod observer;
+pub mod pool;
 pub mod rng;
 pub mod schedule;
 pub mod session;
@@ -38,6 +39,7 @@ pub use market::{
     TRANSFER_STREAM_NS, resolve_window,
 };
 pub use observer::{EventObserver, SeasonTelemetry};
+pub use pool::{PoolKnobs, YOUTH_STREAM_NS, summer_pool_events};
 pub use session::{Session, load_log, save_log};
 pub use state::{GameState, TableRow, league_table};
 pub use valuation::{MarketContext, ValueKnobs, project_ca, project_ca_batch, value, value_all};

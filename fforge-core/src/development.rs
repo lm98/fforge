@@ -605,4 +605,56 @@ mod tests {
             assert!(n > 0.0 && n <= 1.0, "norm {n} out of (0,1]");
         }
     }
+
+    /// `TRANSFER_MODEL.md` §8.3: a released, unsigned player has no club, so
+    /// `tick_changes` cannot look up a coaching coefficient for him — the
+    /// live panic waiting in the fold once P4.5 can release players. Confirm
+    /// the neutral-coaching path both runs without panicking and produces
+    /// **exactly** the same deltas as an otherwise-identical rostered player
+    /// at a neutral-coaching (`coaching_milli = 1000`) club who is likewise
+    /// absent from every match this window: coaching and the playing-time
+    /// multiplier are the only club-derived inputs to the rate law, and both
+    /// resolve identically (`coaching = 1.0`, `mult = minutes_absent`) in the
+    /// two cases.
+    #[test]
+    fn clubless_player_develops_without_panicking_using_neutral_coaching() {
+        let (world, _schedule, start) =
+            crate::worldgen::generate(3, &crate::worldgen::WorldGenConfig::default());
+        let knobs = DevKnobs::default();
+
+        let club = *world.clubs.keys().next().unwrap();
+        let mut world_rostered = world.clone();
+        world_rostered.clubs.get_mut(&club).unwrap().coaching_milli = 1000;
+        let pid = world_rostered.club(club).players[0];
+
+        let mut world_clubless = world_rostered.clone();
+        world_clubless
+            .clubs
+            .get_mut(&club)
+            .unwrap()
+            .players
+            .retain(|&p| p != pid);
+
+        let empty_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
+        let empty_matches: BTreeMap<ClubId, u32> = BTreeMap::new();
+
+        // No panic reaching past these two calls is itself the primary
+        // assertion (§8.3): `world_clubless` has `pid` in `World.players`
+        // but on no club's roster at all.
+        let rostered_changes =
+            tick_changes(&world_rostered, 1, 0, start, &empty_apps, &empty_matches, &knobs);
+        let clubless_changes =
+            tick_changes(&world_clubless, 1, 0, start, &empty_apps, &empty_matches, &knobs);
+
+        assert!(
+            !rostered_changes.is_empty(),
+            "sanity: development should produce some deltas in this window"
+        );
+        assert_eq!(
+            rostered_changes, clubless_changes,
+            "a clubless player must develop identically to a rostered, \
+             neutral-coaching, likewise-absent player — the coaching=1.0 \
+             fallback must be exactly neutral, not merely non-panicking"
+        );
+    }
 }

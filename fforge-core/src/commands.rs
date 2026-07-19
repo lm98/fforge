@@ -11,9 +11,13 @@ use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
 use crate::match_engine::{ai_pick_lineup, play_match};
+use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
-use crate::state::{apply_finance_deltas, apply_transfer_completed, league_table, GameState};
+use crate::state::{
+    apply_finance_deltas, apply_player_retired, apply_transfer_completed, apply_youth_intake,
+    league_table, GameState,
+};
 use crate::valuation::ValueKnobs;
 use fforge_domain::{ClubId, GameDate, Lineup, PlayerId, World, FORMATIONS, XI};
 use std::collections::{BTreeMap, BTreeSet};
@@ -323,12 +327,16 @@ fn dev_ticks_between(
 }
 
 /// Emit a `TransferCompleted` for every transfer a window's clearing loop
-/// completes, for each window boundary (§7) inside `(old_date, new_date]`.
-/// No new command: the market is a *tick*, exactly like development and
-/// finance, resolved here inside `commands::step` when `AdvanceMatchday`
-/// crosses a window's close date. `world` is the tick-compounded snapshot
-/// (`dev_ticks_between`'s return) so the window prices against this advance's
-/// developed attributes and finance deltas.
+/// completes, for each window boundary (§7) inside `(old_date, new_date]` —
+/// and, for the summer window only, the pool's own events first (§8: youth
+/// intake, then retirement). No new command: the market and the pool are
+/// both *ticks*, exactly like development and finance, resolved here inside
+/// `commands::step` when `AdvanceMatchday` crosses a window's close date.
+/// `world` is the tick-compounded snapshot (`dev_ticks_between`'s return) so
+/// the window prices against this advance's developed attributes and finance
+/// deltas. `window_index` is even for the summer window, odd for winter
+/// (`season_start.year() * 2` / `+ 1`) — that parity is what gates the pool
+/// events to summer only.
 fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, new_date: GameDate) -> Vec<Event> {
     let season_start = season_start_date(state);
     let candidates = [
@@ -354,10 +362,40 @@ fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, 
     let value_knobs = ValueKnobs::default();
     let utility_knobs = UtilityKnobs::default();
     let market_knobs = MarketKnobs::default();
+    let pool_knobs = PoolKnobs::default();
 
     let mut work_world = world.clone();
     let mut events = Vec::new();
     for (window_index, close_date) in crossed {
+        // Summer window only (§8): resolved against the same snapshot the
+        // market prices off next, so new prospects are already on their
+        // club's books and retirees are already excluded from valuation and
+        // squad depth before the clearing loop runs.
+        if window_index.is_multiple_of(2) {
+            let pool_events = pool::summer_pool_events(
+                &work_world,
+                close_date,
+                state.seed,
+                window_index,
+                &state.unsigned_since,
+                &dev_knobs,
+                &pool_knobs,
+                utility_knobs.squad_max,
+            );
+            for e in &pool_events {
+                match e {
+                    Event::YouthIntake { club, players, .. } => {
+                        apply_youth_intake(&mut work_world, *club, players);
+                    }
+                    Event::PlayerRetired { player, .. } => {
+                        apply_player_retired(&mut work_world, *player);
+                    }
+                    _ => unreachable!("summer_pool_events only produces YouthIntake/PlayerRetired"),
+                }
+            }
+            events.extend(pool_events);
+        }
+
         let outcome = market::resolve_window(
             &work_world,
             close_date,
