@@ -125,6 +125,44 @@ mod tests {
     }
 
     #[test]
+    fn every_event_names_an_actor_in_the_fielding_sides_xi() {
+        // The identity enrichment invariant (MATCH_MODEL.md §9): each beat's
+        // `actor` is a player the resolver sampled from the `side`-relative
+        // fielding XI, so it must be a member of that XI — and `opponent`,
+        // when a contest names one, must belong to the other side's XI. No
+        // event may reference a player who was not on the pitch for its side.
+        let (world, home, away) = tiny_world_and_lineups();
+        let home_xi: std::collections::BTreeSet<_> = home.players.iter().copied().collect();
+        let away_xi: std::collections::BTreeSet<_> = away.players.iter().copied().collect();
+        for seed in 0..64u64 {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &home, &away, &mut rng);
+            for event in &outcome.stream {
+                let (fielding, opposing) = match event.side {
+                    Side::Home => (&home_xi, &away_xi),
+                    Side::Away => (&away_xi, &home_xi),
+                };
+                assert!(
+                    fielding.contains(&event.actor),
+                    "seed {seed}: {:?} at {}' names actor {} who is not in the fielding side's XI",
+                    event.kind,
+                    event.minute,
+                    event.actor
+                );
+                if let Some(opponent) = event.opponent {
+                    assert!(
+                        opposing.contains(&opponent),
+                        "seed {seed}: {:?} at {}' names opponent {opponent} who is not in the \
+                         opposing side's XI",
+                        event.kind,
+                        event.minute
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn same_seed_same_outcome() {
         let (world, home, away) = tiny_world_and_lineups();
         let mut r1 = derive_stream(99, 1);

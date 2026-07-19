@@ -5,12 +5,16 @@
 //! happens here, and only resolved, validated values become events. `step`
 //! never mutates state — callers apply the returned events through the fold.
 
+use crate::club_ai::UtilityKnobs;
 use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
+use crate::finance::{finance_deltas, FinanceKnobs};
+use crate::market::{self, MarketKnobs};
 use crate::match_engine::{ai_pick_lineup, play_match};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
-use crate::state::{league_table, GameState};
+use crate::state::{apply_finance_deltas, apply_transfer_completed, league_table, GameState};
+use crate::valuation::ValueKnobs;
 use fforge_domain::{ClubId, GameDate, Lineup, PlayerId, World, FORMATIONS, XI};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -203,13 +207,18 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
     // Development: fire a tick for each 30-day boundary the advance crosses
     // (at most one, since a matchday step is 7 days). The window's appearances
     // include this matchday's matches, resolved above.
-    events.extend(dev_ticks_between(
+    let (dev_events, work_world) = dev_ticks_between(
         state,
         state.date,
         new_date,
         &window_apps,
         &window_club_matches,
-    ));
+    );
+    events.extend(dev_events);
+
+    // Transfer windows (`TRANSFER_MODEL.md` §7): resolved on the same
+    // boundary-crossing mechanism, against the tick-compounded world above.
+    events.extend(transfer_window_events(state, &work_world, state.date, new_date));
 
     if md == state.last_matchday {
         let table = league_table(&state.world, &state.schedule, &new_results);
@@ -227,8 +236,10 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
 fn start_next_season(state: &GameState) -> Vec<Event> {
     let new_start = next_season_start(state.date);
     // Offseason ticks: no matches in the gap, so the appearance window here is
-    // just the tail accumulated since the last in-season tick (§3).
-    let mut events = dev_ticks_between(
+    // just the tail accumulated since the last in-season tick (§3). No window
+    // boundary falls inside the offseason gap itself (§7: the summer window
+    // closes *after* `SeasonStarted`), so no transfer resolution belongs here.
+    let (mut events, _work_world) = dev_ticks_between(
         state,
         state.date,
         new_start,
@@ -243,26 +254,31 @@ fn start_next_season(state: &GameState) -> Vec<Event> {
     events
 }
 
-/// Emit a `DevelopmentTick` for every 30-day period boundary in `(old, new]`.
-/// A working copy of the world is developed forward so successive ticks (only
-/// possible across the multi-month offseason gap) compound correctly, exactly
-/// as the fold will replay them. `first_apps`/`first_club_matches` are the
+/// Emit a `DevelopmentTick` (and, riding the same boundary, a `FinanceTick`,
+/// `TRANSFER_MODEL.md` §4) for every 30-day period in `(old, new]`. A working
+/// copy of the world is developed forward so successive ticks (only possible
+/// across the multi-month offseason gap) compound correctly, exactly as the
+/// fold will replay them. `first_apps`/`first_club_matches` are the
 /// playing-time window for the *first* tick; later ticks in the same span see
-/// an empty window (the fold resets it on each tick).
+/// an empty window (the fold resets it on each tick). Returns the compounded
+/// working world alongside the events, so a caller resolving a transfer
+/// window in the same advance (`transfer_window_events`) prices against this
+/// tick's developed attributes and finance deltas, not the pre-tick world.
 fn dev_ticks_between(
     state: &GameState,
     old_date: GameDate,
     new_date: GameDate,
     first_apps: &BTreeMap<PlayerId, u32>,
     first_club_matches: &BTreeMap<ClubId, u32>,
-) -> Vec<Event> {
+) -> (Vec<Event>, World) {
+    let mut work_world: World = state.world.clone();
     let old_idx = period_index(old_date);
     let new_idx = period_index(new_date);
     if new_idx <= old_idx {
-        return Vec::new();
+        return (Vec::new(), work_world);
     }
     let knobs = DevKnobs::default();
-    let mut work_world: World = state.world.clone();
+    let finance_knobs = FinanceKnobs::default();
     let empty_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
     let empty_club_matches: BTreeMap<ClubId, u32> = BTreeMap::new();
 
@@ -292,8 +308,88 @@ fn dev_ticks_between(
             date: tick_date,
             changes,
         });
+        // FinanceTick rides the same boundary crossing: resolved
+        // revenue-minus-wages deltas off the same working snapshot, so a
+        // multi-period offseason gap prices each tick against a consistent
+        // world rather than re-deriving from the pre-offseason one.
+        let deltas = finance_deltas(&work_world, &finance_knobs);
+        apply_finance_deltas(&mut work_world, &deltas);
+        events.push(Event::FinanceTick {
+            date: tick_date,
+            deltas,
+        });
+    }
+    (events, work_world)
+}
+
+/// Emit a `TransferCompleted` for every transfer a window's clearing loop
+/// completes, for each window boundary (§7) inside `(old_date, new_date]`.
+/// No new command: the market is a *tick*, exactly like development and
+/// finance, resolved here inside `commands::step` when `AdvanceMatchday`
+/// crosses a window's close date. `world` is the tick-compounded snapshot
+/// (`dev_ticks_between`'s return) so the window prices against this advance's
+/// developed attributes and finance deltas.
+fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, new_date: GameDate) -> Vec<Event> {
+    let season_start = season_start_date(state);
+    let candidates = [
+        (
+            season_start.year() as u64 * 2,
+            market::summer_window_close(season_start),
+        ),
+        (
+            season_start.year() as u64 * 2 + 1,
+            market::winter_window_close(season_start, state.last_matchday),
+        ),
+    ];
+    let mut crossed: Vec<(u64, GameDate)> = candidates
+        .into_iter()
+        .filter(|&(_, close)| old_date < close && close <= new_date)
+        .collect();
+    crossed.sort_by_key(|&(_, close)| close);
+    if crossed.is_empty() {
+        return Vec::new();
+    }
+
+    let dev_knobs = DevKnobs::default();
+    let value_knobs = ValueKnobs::default();
+    let utility_knobs = UtilityKnobs::default();
+    let market_knobs = MarketKnobs::default();
+
+    let mut work_world = world.clone();
+    let mut events = Vec::new();
+    for (window_index, close_date) in crossed {
+        let outcome = market::resolve_window(
+            &work_world,
+            close_date,
+            state.seed,
+            window_index,
+            &dev_knobs,
+            &value_knobs,
+            &utility_knobs,
+            &market_knobs,
+        );
+        for t in &outcome.transfers {
+            apply_transfer_completed(&mut work_world, t.player, t.from, t.to, t.fee, t.contract);
+            events.push(Event::TransferCompleted {
+                date: close_date,
+                player: t.player,
+                from: t.from,
+                to: t.to,
+                fee: t.fee,
+                contract: t.contract,
+            });
+        }
     }
     events
+}
+
+/// The current season's start date, derived — never stored — from
+/// `state.date` and `state.current_matchday`: each matchday step advances
+/// the calendar exactly 7 days from the season's kickoff
+/// (`commands::advance_matchday`), so `date - (current_matchday - 1) * 7`
+/// recovers it without a dedicated field.
+fn season_start_date(state: &GameState) -> GameDate {
+    state.date.add_days(-((state.current_matchday as i64 - 1) * 7))
 }
 
 /// The next season-start date strictly after `date`: day 220 of this sim-year,

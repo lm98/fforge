@@ -14,23 +14,33 @@
 //! minute-by-minute trace rides alongside, never inside, the fold.
 
 pub mod career_arc;
+pub mod club_ai;
 pub mod commands;
 pub mod development;
 pub mod event;
+pub mod finance;
+pub mod market;
 pub mod match_engine;
 pub mod observer;
 pub mod rng;
 pub mod schedule;
 pub mod session;
 pub mod state;
+pub mod valuation;
 pub mod worldgen;
 
+pub use club_ai::{ClubObservation, ClubPolicy, TransferDecision, UtilityKnobs, UtilityPolicy, observe};
 pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
 pub use development::{DEV_STREAM_NS, DevKnobs};
 pub use event::{AttrStep, Event};
+pub use market::{
+    MarketKnobs, RejectReason, RejectedBid, Transfer, WindowOutcome, MAX_ROUNDS,
+    TRANSFER_STREAM_NS, resolve_window,
+};
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use session::{Session, load_log, save_log};
 pub use state::{GameState, TableRow, league_table};
+pub use valuation::{MarketContext, ValueKnobs, project_ca, project_ca_batch, value, value_all};
 pub use worldgen::{WorldGenConfig, generate};
 
 /// Convenience: assemble the opening event for a new game.

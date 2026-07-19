@@ -19,7 +19,10 @@
 //!    deltas, *not* the seed, so the growth model can evolve without rewriting a
 //!    recorded career — the fold only integer-adds the deltas.
 
-use fforge_domain::{Attribute, ClubId, Fixture, FixtureId, GameDate, Lineup, PlayerId, World};
+use fforge_domain::{
+    Attribute, ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId,
+    World,
+};
 use serde::{Deserialize, Serialize};
 
 /// One resolved attribute step in a `DevelopmentTick` (`DEVELOPMENT_MODEL.md`
@@ -83,5 +86,52 @@ pub enum Event {
     SeasonStarted {
         start_date: GameDate,
         schedule: Vec<Fixture>,
+    },
+    /// A completed transfer (`TRANSFER_MODEL.md` §4): the resolved fee and the
+    /// buyer's freshly agreed contract — never a bid, which stays in the
+    /// window's Trace (§4, §5). `from: None` is a free-agent signing, so there
+    /// is no selling club to credit.
+    TransferCompleted {
+        date: GameDate,
+        player: PlayerId,
+        from: Option<ClubId>,
+        to: ClubId,
+        fee: Money,
+        contract: Contract,
+    },
+    /// A club releases a player outright: he leaves the roster and the
+    /// contract ends, with no fee changing hands.
+    PlayerReleased {
+        date: GameDate,
+        player: PlayerId,
+        club: ClubId,
+    },
+    /// An existing player's contract is replaced with newly resolved terms.
+    ContractRenewed {
+        date: GameDate,
+        player: PlayerId,
+        club: ClubId,
+        contract: Contract,
+    },
+    /// The summer youth intake (`TRANSFER_MODEL.md` §8.1). Carries the
+    /// **generated players** themselves, not a seed — the same choice
+    /// `GameStarted` makes about the world snapshot, for the same reason:
+    /// improving youth generation must never rewrite a recorded career.
+    YouthIntake {
+        date: GameDate,
+        club: ClubId,
+        players: Vec<Player>,
+    },
+    /// A player retires (`TRANSFER_MODEL.md` §8.2): he leaves every roster,
+    /// his contract ends, and he is marked retired. He stays in `World.players`
+    /// — the log still references him in historical `MatchPlayed` XIs.
+    PlayerRetired { date: GameDate, player: PlayerId },
+    /// The monthly finance tick (`TRANSFER_MODEL.md` §4) — money's
+    /// `DevelopmentTick`. Carries resolved per-club revenue-minus-wages
+    /// deltas the fold integer-adds to `Club.finances.balance`; fires on the
+    /// same 30-day period-boundary crossing `DevelopmentTick` does.
+    FinanceTick {
+        date: GameDate,
+        deltas: Vec<(ClubId, Money)>,
     },
 }

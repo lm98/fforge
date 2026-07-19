@@ -30,7 +30,7 @@
 use crate::event::AttrStep;
 use crate::rng::{Rng, derive_stream};
 use fforge_domain::{
-    Attribute, ClubId, DevCategory, GameDate, PlayerId, ROLE_WEIGHTS, World, best_role,
+    Attribute, ClubId, DevCategory, GameDate, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
 };
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ pub const DEV_STREAM_NS: u64 = 0x4445_5645_0000_0000; // "DEVE"
 pub const DEV_TICK_PERIOD_DAYS: i64 = 30;
 
 const DAYS_PER_YEAR: f64 = fforge_domain::date::DAYS_PER_YEAR as f64;
-const NUM_CATEGORIES: usize = 4;
+pub(crate) const NUM_CATEGORIES: usize = 4;
 
 /// The 30-day period a date falls in — the tick's identity and RNG-stream tag.
 #[inline]
@@ -273,7 +273,7 @@ impl Default for DevKnobs {
 }
 
 #[inline]
-fn cat_index(cat: DevCategory) -> usize {
+pub(crate) fn cat_index(cat: DevCategory) -> usize {
     match cat {
         DevCategory::Physical => 0,
         DevCategory::Technical => 1,
@@ -290,7 +290,7 @@ const GRID_STEP: f64 = 0.05;
 /// `NORM` per role (`DEVELOPMENT_MODEL.md` §2.2): the max over age of the
 /// role-weighted mean of the category envelopes — "the role-weighted mean of env
 /// at its blended peak." A per-role constant given the knobs.
-fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES] {
+pub(crate) fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES] {
     let mut norms = [0.0f64; fforge_domain::NUM_ROLES];
     for role in fforge_domain::Role::ALL {
         let mut best = 0.0;
@@ -318,7 +318,7 @@ fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES] {
 
 /// Each category's envelope-peak age — past it, the downward (aging) pull acts;
 /// before it a precocious youth holds rather than being pulled down (§2, §2.1).
-fn category_peaks(knobs: &DevKnobs) -> [f64; NUM_CATEGORIES] {
+pub(crate) fn category_peaks(knobs: &DevKnobs) -> [f64; NUM_CATEGORIES] {
     let mut peaks = [0.0f64; NUM_CATEGORIES];
     for cat in [
         DevCategory::Physical,
@@ -346,7 +346,7 @@ fn category_peaks(knobs: &DevKnobs) -> [f64; NUM_CATEGORIES] {
 /// Per-role ceiling base offset: `pa_base = PA − spread·role_const` makes the
 /// role-shaped ceiling's best-role CA equal PA exactly (before clamping).
 /// `role_const = Σ w(w−3) / Σ w` over the role's weighted attributes.
-fn role_ceiling_consts() -> [f64; fforge_domain::NUM_ROLES] {
+pub(crate) fn role_ceiling_consts() -> [f64; fforge_domain::NUM_ROLES] {
     let mut consts = [0.0f64; fforge_domain::NUM_ROLES];
     for role in fforge_domain::Role::ALL {
         let mut num = 0.0;
@@ -361,6 +361,54 @@ fn role_ceiling_consts() -> [f64; fforge_domain::NUM_ROLES] {
         consts[role.index()] = num / den;
     }
     consts
+}
+
+/// The §2 growth/aging **rate law** for a single attribute — the shared core
+/// that both the recording path (`tick_changes`) and the noise-free projection
+/// (`crate::valuation::project_ca`) run, so there is exactly one law and no
+/// second integrator to drift (`DEVELOPMENT_MODEL.md` §2.3). Returns the annual
+/// rate in attribute-points/year; callers multiply by `dt` and then either
+/// quantize it with jitter into the fold's recorded integer step (§5) or
+/// accumulate it in float (a projection). Pure — no RNG, no clock. `y` is the
+/// bloomer-shifted age (`age − φ`); `phys_lmax` is the professionalism-adjusted
+/// physical peak-loss (§3). An attribute the role weights at 0 earns no
+/// headroom and returns 0 (§2.2).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attr_rate(
+    knobs: &DevKnobs,
+    role: Role,
+    attr: Attribute,
+    a_cur: f64,
+    norm: f64,
+    pa_base: f64,
+    e: f64,
+    coaching: f64,
+    minutes: f64,
+    y: f64,
+    phys_lmax: f64,
+    peaks: &[f64; NUM_CATEGORIES],
+) -> f64 {
+    let w = ROLE_WEIGHTS.weight(role, attr);
+    if w == 0 {
+        return 0.0; // attributes the role does not value earn no headroom (§2.2)
+    }
+    let cat = attr.dev_category();
+    let e_env = if cat == DevCategory::Physical {
+        knobs.env_phys.env_lmax(y, phys_lmax)
+    } else {
+        knobs.env(cat).env(y)
+    };
+    let ceiling = (pa_base + (w as f64 - 3.0) * knobs.ceil_spread).clamp(knobs.ceil_floor, 100.0);
+    let target = (ceiling / norm) * e_env;
+    let gap = target - a_cur;
+    if gap > 0.0 {
+        knobs.k * e * knobs.plast(y) * coaching * minutes * gap
+    } else if y >= peaks[cat_index(cat)] {
+        knobs.k_dec * gap // aging decline (gap < 0)
+    } else {
+        0.0 // precocious youth above the young-envelope: hold (§2.1)
+    }
 }
 
 /// The coarse appeared/benched/absent playing-time multiplier (§3), from the
@@ -493,30 +541,16 @@ pub fn tick_changes(
             let jitter = rng.normal(0.0, knobs.jitter_sigma);
             let u = rng.f64();
 
-            let w = ROLE_WEIGHTS.weight(role, attr);
-            if w == 0 {
+            if ROLE_WEIGHTS.weight(role, attr) == 0 {
                 continue; // attributes the role does not value earn no headroom (§2.2)
             }
 
-            let cat = attr.dev_category();
-            let e_env = if cat == DevCategory::Physical {
-                knobs.env_phys.env_lmax(y, phys_lmax)
-            } else {
-                knobs.env(cat).env(y)
-            };
-            let ceiling =
-                (pa_base + (w as f64 - 3.0) * knobs.ceil_spread).clamp(knobs.ceil_floor, 100.0);
-            let target = (ceiling / norm) * e_env;
             let a_cur = player.attributes.get(attr) as f64;
-            let gap = target - a_cur;
-
-            let rate = if gap > 0.0 {
-                knobs.k * e * knobs.plast(y) * coaching * mult * gap
-            } else if y >= peaks[cat_index(cat)] {
-                knobs.k_dec * gap // aging decline (gap < 0)
-            } else {
-                0.0 // precocious youth above the young-envelope: hold (§2.1)
-            };
+            // The shared §2 law — identical to the projection's, jitter added
+            // only here (the recording path); see `attr_rate`.
+            let rate = attr_rate(
+                knobs, role, attr, a_cur, norm, pa_base, e, coaching, mult, y, phys_lmax, &peaks,
+            );
 
             let monthly = (rate + jitter) * dt;
             let mag = monthly.abs();
