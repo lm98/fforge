@@ -231,6 +231,32 @@ pub fn project_ca(
     project_ca_with(world, player, today, years_ahead, knobs, &DevTables::new(knobs))
 }
 
+/// Project many players at once, building the knob-derived `DevTables`
+/// (the `norms_by_role`/`category_peaks` grid scans) **once** rather than
+/// once per player. `project_ca` above is the right call for a single
+/// lookup; a caller projecting a whole squad or league (`club_ai::observe`'s
+/// per-squad-member succession-risk projection is the motivating case) should
+/// use this instead — the projected *value* is identical either way, this
+/// only removes redundant, purely knob-derived recomputation.
+pub fn project_ca_batch(
+    world: &World,
+    players: impl IntoIterator<Item = fforge_domain::PlayerId>,
+    today: GameDate,
+    years_ahead: u32,
+    knobs: &DevKnobs,
+) -> BTreeMap<fforge_domain::PlayerId, u8> {
+    let tables = DevTables::new(knobs);
+    players
+        .into_iter()
+        .map(|pid| {
+            (
+                pid,
+                project_ca_with(world, pid, today, years_ahead, knobs, &tables),
+            )
+        })
+        .collect()
+}
+
 fn project_ca_with(
     world: &World,
     player: fforge_domain::PlayerId,
@@ -292,6 +318,88 @@ fn project_ca_with(
     best_role(&attrs_to_domain(&cur), &ROLE_WEIGHTS).1
 }
 
+#[inline]
+fn year_steps(years_ahead: u32) -> u32 {
+    (years_ahead as f64 * DAYS_PER_YEAR / development::DEV_TICK_PERIOD_DAYS as f64).round() as u32
+}
+
+/// Project a player's best-role CA at **every** whole year from `0` to
+/// `max_years_ahead`, in one forward integration. `value_with`'s `ca_eff` sum
+/// needs exactly this range (`t = 0..=horizon_years`); since each year's
+/// trajectory is a strict prefix of the next one's (the law only ever steps
+/// forward from the current attributes), integrating once and snapshotting at
+/// each year boundary yields results **identical** to calling
+/// `project_ca_with` independently per year — this only removes the redundant
+/// re-integration of the same early steps `horizon_years + 1` times over.
+fn project_ca_series(
+    world: &World,
+    player: fforge_domain::PlayerId,
+    today: GameDate,
+    max_years_ahead: u32,
+    knobs: &DevKnobs,
+    tables: &DevTables,
+) -> Vec<u8> {
+    let p = world.player(player);
+    let start_ca = best_role(&p.attributes, &ROLE_WEIGHTS).1;
+    if max_years_ahead == 0 {
+        return vec![start_ca];
+    }
+
+    let dt = knobs.dt();
+    let phi = p.development.bloomer_phase();
+    let e = p.development.efficiency();
+    let pa = p.character.potential as f64;
+    let prof = p.character.professionalism as f64;
+    let phys_lmax = knobs.env_phys.lmax * (1.0 - knobs.prof_aging_coeff * (prof - 50.0) / 50.0);
+    let age0 = (today.days - p.birth.days) as f64 / DAYS_PER_YEAR;
+
+    let mut cur = [0.0f64; NUM_ATTRIBUTES];
+    for attr in Attribute::ALL {
+        cur[attr.index()] = p.attributes.get(attr) as f64;
+    }
+
+    let mut result = vec![start_ca];
+    let total_steps = year_steps(max_years_ahead);
+    let mut next_year = 1u32;
+    let mut next_year_steps = year_steps(next_year);
+
+    for step in 0..total_steps {
+        let y = age0 + step as f64 * dt - phi;
+        let snapshot = attrs_to_domain(&cur);
+        let (role, _) = best_role(&snapshot, &ROLE_WEIGHTS);
+        let norm = tables.norms[role.index()];
+        let pa_base = pa - knobs.ceil_spread * tables.ceiling_consts[role.index()];
+        for attr in Attribute::ALL {
+            let rate = attr_rate(
+                knobs,
+                role,
+                attr,
+                cur[attr.index()],
+                norm,
+                pa_base,
+                e,
+                1.0,
+                1.0,
+                y,
+                phys_lmax,
+                &tables.peaks,
+            );
+            cur[attr.index()] = (cur[attr.index()] + rate * dt).clamp(0.0, 100.0);
+        }
+        // A year boundary (possibly more than one, at short horizons) may
+        // land on this exact step — record every one reached.
+        let reached = step + 1;
+        while next_year <= max_years_ahead && reached >= next_year_steps {
+            result.push(best_role(&attrs_to_domain(&cur), &ROLE_WEIGHTS).1);
+            next_year += 1;
+            if next_year <= max_years_ahead {
+                next_year_steps = year_steps(next_year);
+            }
+        }
+    }
+    result
+}
+
 /// The contract multiplier (§2.4): `1 − c·(1 − min(yrs_left, T)/T)`. Full value
 /// at `T`+ years, `1 − c` in the final months. This is the mechanism behind the
 /// sell-now-or-lose-him decision. A free agent (`None`) is treated as zero years
@@ -332,12 +440,15 @@ fn value_with(
 ) -> Money {
     // ca_eff: the δ-discounted mean of projected CA over the horizon (§2.1) —
     // pricing the whole career profile, with the convexity below applied to it.
+    // One integration covers every `t` in the sum (`project_ca_series`):
+    // identical numbers to calling `project_ca_with` per `t`, without
+    // re-integrating the same early years `horizon_years + 1` times over.
+    let series = project_ca_series(world, player, today, knobs.horizon_years, dev, tables);
     let mut num = 0.0;
     let mut den = 0.0;
     let mut disc = 1.0;
-    for t in 0..=knobs.horizon_years {
-        let ca = project_ca_with(world, player, today, t, dev, tables) as f64;
-        num += disc * ca;
+    for &ca in &series {
+        num += disc * ca as f64;
         den += disc;
         disc *= knobs.discount;
     }

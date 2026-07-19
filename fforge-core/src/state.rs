@@ -7,8 +7,55 @@
 
 use crate::development::apply_attr_step;
 use crate::event::Event;
-use fforge_domain::{ClubId, Fixture, FixtureId, GameDate, Lineup, Money, PlayerId, World};
+use fforge_domain::{
+    ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, PlayerId, World,
+};
 use std::collections::BTreeMap;
+
+/// Move `player` from `from` (if any) to `to`, exchange `fee` between their
+/// balances, and install `contract` — the resolved effect of a completed
+/// transfer (`TRANSFER_MODEL.md` §4). Shared by the `TransferCompleted` fold
+/// arm below and `market::resolve_window`'s per-round working-world update,
+/// so there is exactly one place this mutation is encoded, never two that
+/// could drift apart.
+pub(crate) fn apply_transfer_completed(
+    world: &mut World,
+    player: PlayerId,
+    from: Option<ClubId>,
+    to: ClubId,
+    fee: Money,
+    contract: Contract,
+) {
+    if let Some(from_club) = from
+        && let Some(club) = world.clubs.get_mut(&from_club)
+    {
+        club.players.retain(|&p| p != player);
+        club.finances.balance = Money(club.finances.balance.0 + fee.0);
+    }
+    if let Some(club) = world.clubs.get_mut(&to) {
+        if !club.players.contains(&player) {
+            club.players.push(player);
+            club.players.sort();
+        }
+        club.finances.balance = Money(club.finances.balance.0 - fee.0);
+    }
+    if let Some(p) = world.players.get_mut(&player) {
+        p.contract = Some(contract);
+    }
+}
+
+/// Integer-add each resolved per-club delta to `Club.finances.balance`
+/// (`TRANSFER_MODEL.md` §4). Shared by the `FinanceTick` fold arm and
+/// `commands::dev_ticks_between`'s working-world compounding, so a transfer
+/// window resolving in the same advance sees this tick's cash flow already
+/// applied.
+pub(crate) fn apply_finance_deltas(world: &mut World, deltas: &[(ClubId, Money)]) {
+    for &(club, delta) in deltas {
+        if let Some(c) = world.clubs.get_mut(&club) {
+            c.finances.balance = Money(c.finances.balance.0 + delta.0);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
@@ -152,22 +199,7 @@ impl GameState {
                 contract,
                 ..
             } => {
-                if let Some(from_club) = from
-                    && let Some(club) = self.world.clubs.get_mut(from_club)
-                {
-                    club.players.retain(|p| p != player);
-                    club.finances.balance = Money(club.finances.balance.0 + fee.0);
-                }
-                if let Some(club) = self.world.clubs.get_mut(to) {
-                    if !club.players.contains(player) {
-                        club.players.push(*player);
-                        club.players.sort();
-                    }
-                    club.finances.balance = Money(club.finances.balance.0 - fee.0);
-                }
-                if let Some(p) = self.world.players.get_mut(player) {
-                    p.contract = Some(*contract);
-                }
+                apply_transfer_completed(&mut self.world, *player, *from, *to, *fee, *contract);
             }
             Event::PlayerReleased { player, club, .. } => {
                 if let Some(c) = self.world.clubs.get_mut(club) {
@@ -209,11 +241,7 @@ impl GameState {
                 }
             }
             Event::FinanceTick { deltas, .. } => {
-                for (club, delta) in deltas {
-                    if let Some(c) = self.world.clubs.get_mut(club) {
-                        c.finances.balance = Money(c.finances.balance.0 + delta.0);
-                    }
-                }
+                apply_finance_deltas(&mut self.world, deltas);
             }
         }
     }

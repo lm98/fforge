@@ -240,7 +240,7 @@ fn resolve_contract(rng: &mut Rng, age: i32, best_ca: u8, today: GameDate) -> Co
 /// Annual wage from a player's headline CA — convex, so a CA-88 star earns a
 /// large multiple of a CA-40 reserve, seeding a league near its own wage
 /// equilibrium (`TRANSFER_MODEL.md` §3.1). Whole currency units.
-fn wage_for_quality(rng: &mut Rng, best_ca: u8) -> Money {
+pub(crate) fn wage_for_quality(rng: &mut Rng, best_ca: u8) -> Money {
     let ca = best_ca as f64;
     let base = 20_000.0 + 3_000_000.0 * (ca / 90.0).powi(3);
     let jitter = rng.normal(1.0, 0.12).clamp(0.6, 1.5);

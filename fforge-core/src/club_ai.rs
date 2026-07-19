@@ -21,7 +21,7 @@
 //! extraction, not a prediction."
 
 use crate::development::DevKnobs;
-use crate::valuation::project_ca;
+use crate::valuation::project_ca_batch;
 use crate::worldgen::SQUAD_TEMPLATE;
 use fforge_domain::{best_role, ClubId, GameDate, Money, PlayerId, Role, World, ROLE_WEIGHTS};
 use serde::{Deserialize, Serialize};
@@ -136,7 +136,18 @@ pub struct UtilityKnobs {
     /// points of the club's own target; otherwise an expiring player lists.
     pub renew_worth_margin: f64,
 
-    /// v1's asking-price markup on `value` (§12 item 6).
+    /// v1's asking-price factor on `value` (§12 item 6, "v1 sets a selling
+    /// club's ask as a markup on value"). **Held to `<= 1.0` here, not the
+    /// `>1` "markup" the note's plain-English phrasing suggests**: every
+    /// club prices off the *same* omniscient `value()` in v1 (§2.6 — private
+    /// valuations are explicitly deferred), and §6's utility formula is
+    /// `need · (value − asking_price)`. With no private-valuation gap to
+    /// exploit, an ask *above* value makes `(value − asking_price)`
+    /// negative for every buyer regardless of `need`, so `need`'s multiplier
+    /// can never turn a bad deal good — no trade ever clears. A factor
+    /// `<= 1.0` (a modest below-value ask) is what keeps §6's formula
+    /// capable of producing a signing at all until §12's fog-of-war wrapper
+    /// gives sellers a genuinely independent ask.
     pub asking_markup: f64,
 }
 
@@ -154,7 +165,7 @@ impl Default for UtilityKnobs {
             cash_reserve_floor: Money(250_000),
             expiring_within_years: 1.0,
             renew_worth_margin: 4.0,
-            asking_markup: 1.15,
+            asking_markup: 0.95,
         }
     }
 }
@@ -355,13 +366,26 @@ pub fn observe(
     knobs: &UtilityKnobs,
 ) -> ClubObservation {
     let c = world.club(club);
+    // One batched projection for the whole squad (`valuation::project_ca_batch`)
+    // rather than one `project_ca` call per member: the knob-derived
+    // `DevTables` grid scans are the same regardless of which player is being
+    // projected, and `observe` runs once per club per clearing round, so
+    // rebuilding them per member would redo the same work dozens of times a
+    // window.
+    let projections = project_ca_batch(
+        world,
+        c.players.iter().copied(),
+        today,
+        SUCCESSION_HORIZON_YEARS,
+        dev,
+    );
     let squad: Vec<SquadMember> = c
         .players
         .iter()
         .map(|&pid| {
             let p = world.player(pid);
             let (role, current_ca) = best_role(&p.attributes, &ROLE_WEIGHTS);
-            let projected_ca = project_ca(world, pid, today, SUCCESSION_HORIZON_YEARS, dev);
+            let projected_ca = projections[&pid];
             let (wage, years_left_on_contract) = match p.contract {
                 Some(contract) => (
                     contract.wage,
@@ -639,6 +663,41 @@ mod tests {
         // Same inputs, same observation — the pipeline is pure.
         let obs2 = observe(&world, club, start, &valuations, &dev, &knobs);
         assert_eq!(obs, obs2);
+    }
+
+    #[test]
+    fn real_observed_candidates_can_actually_produce_a_bid() {
+        // A regression guard for a real bug this integration surfaced:
+        // `asking_markup > 1.0` makes `value - asking_price` negative for
+        // every real candidate, so `need * surplus` can never be positive
+        // and `buy_decisions` silently produces nothing, no matter how
+        // desperate the need. Every prior test hand-built candidates with
+        // `asking_price < value`, so it went uncaught. This one runs the
+        // real `observe()` pipeline end to end and requires at least one
+        // real club to find at least one real, affordable, worthwhile Bid.
+        let cfg = WorldGenConfig {
+            num_clubs: 6,
+            ..Default::default()
+        };
+        let (world, _schedule, start) = generate(5, &cfg);
+        let dev = DevKnobs::default();
+        let vk = ValueKnobs::default();
+        let ctx = MarketContext::from_world(&world, &vk);
+        let valuations = value_all(&world, start, &ctx, &vk, &dev);
+        let knobs = UtilityKnobs::default();
+        let policy = UtilityPolicy::new(knobs);
+
+        let any_bid = world.competition.clubs.iter().any(|&club| {
+            let obs = observe(&world, club, start, &valuations, &dev, &knobs);
+            policy
+                .transfer_decisions(&obs)
+                .iter()
+                .any(|d| matches!(d, TransferDecision::Bid { .. }))
+        });
+        assert!(
+            any_bid,
+            "no club in a real 6-club league produced a single Bid — asking_markup regression"
+        );
     }
 
     #[test]
