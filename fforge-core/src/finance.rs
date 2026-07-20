@@ -28,7 +28,9 @@ pub struct FinanceKnobs {
 impl Default for FinanceKnobs {
     fn default() -> Self {
         FinanceKnobs {
-            revenue_per_reputation: 150_000.0,
+            // Re-fit against real `worldgen` output (`TRANSFER_MODEL.md` §9):
+            // see that section for the harness reading and the reasoning.
+            revenue_per_reputation: 500_000.0,
         }
     }
 }

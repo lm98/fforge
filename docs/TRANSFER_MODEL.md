@@ -449,10 +449,69 @@ fitted results**. The §11 harness re-fits them, exactly as `b_beat` and `env_ph
 | `squad_min` / `squad_max` | 18 / 30 | Hard bounds |
 | `max_rounds` | 12 | Clearing-loop cap |
 | `wage_share_of_value` | ~0.18/yr | Wage demanded as a share of value |
-| `revenue_per_reputation` | — | Annual revenue ∝ reputation; fit against wage bills |
+| `revenue_per_reputation` | 150 000 (start) | Annual revenue ∝ reputation; fit against wage bills |
 
 The two that most need the harness: **`beta`** (too flat → homogenised squads; too steep → one club
 buys the league) and **`revenue_per_reputation`** (sets whether the market clears at all).
+
+**Rust harness result (the deliverable this section deferred):** `fforge-core/src/market/calibrate.rs`
+(`MarketTelemetry`/`MarketReport`) + `fforge-core/src/bin/market.rs` (`cargo run --release --bin
+market -- --seeds N --seasons M`) now run the §11 table against real `worldgen` + the full
+`commands::step` pipeline (matches, development, finance, pool, market), not a synthetic stand-in —
+per §1.1, this harness *is* Phase 4's shape-finder, there was no notebook fit to inherit.
+
+*Diagnosis, first run (pooled, 8 seeds × 15 seasons, both knobs at their plausibility-picked start).*
+A direct read of worldgen's own output already condemned `revenue_per_reputation = 150 000`: mean
+squad wage bill ≈ 26.1M/club/year against mean reputation ≈ 62.4 implies revenue ≈ 9.4M/year at the
+starting constant — barely a third of the wage bill, for every club, before a single transfer fee
+changes hands. The harness confirmed it at scale: **20/20 clubs insolvent** every season, and the
+market functionally dead (transfers/club/window ≈ 0.22, target ~2–5) — clubs too broke to bid.
+Talent concentration also drifted upward across the 15 seasons (top-3 share of the league top-20:
+0.64 → 0.79) even inside that mostly-frozen market.
+
+*Re-fit.* `revenue_per_reputation`: 150 000 → **500 000** — set from the same worldgen reading
+(mean wage bill / mean reputation ≈ 418 000/rep-point) plus a modest ~20% margin so a mid-table club
+accumulates some transfer-window cash rather than merely break even; deliberately *not* set high
+enough to make every club solvent, since wage bills scale convexly with CA (`wage_for_quality`) while
+this model's revenue is linear in the (static, v1) reputation — the two curves cannot match at every
+point, so the wealthiest clubs (highest wage bills) run the tightest margins by construction, which
+reads as realistic rather than broken. `beta`: ln2/6 → **ln2/8** (+8 CA points doubles value, was +6).
+Financially healthier clubs, still governed by the original `beta`, bid more freely for the same
+elite players — the harness showed this *increases* concentration drift (0.66 → 0.79) rather than
+fixing it, confirming the "too steep → one club buys the league" direction named above; flattening
+the curve so quality differences are cheaper to bridge held concentration flat across the 15 seasons
+(0.63 → 0.64) without materially hurting the fee-convexity read (p90/median stayed ~2.6–3.7×).
+`revenue_per_reputation` was also tried at 550k/600k, which pulled transfers/window closer to the ~2–5
+band (1.9–2.0 vs 1.5–1.7) but reopened the concentration drift (0.60 → 0.71–0.76) — rejected in favour
+of keeping the harder-to-fix competitive-balance axis stable; volume sitting just under its target
+band is the accepted residual (see below).
+
+*Reading at the banked knobs (pooled, 8 seeds × 15 seasons):*
+
+| Metric | Reading | Target |
+|---|---|---|
+| Transfers / club / window | ~1.6 | ~2–5 |
+| Fee median / p90 | ~1.3M / ~3.5M | p90 well above median |
+| Points-Gini, early → late | 0.314 → 0.298 | stable, not rising |
+| Season-to-season rank churn | ~1.13 | non-zero |
+| Top-3 share of top-20, early → late | 0.63 → 0.64 | elevated, non-rising |
+| Median fee, last season / first season | ~0.67× | < ~2× |
+| Clubs insolvent | ~5.0 / 20 | neither zero nor unbounded |
+| Clubs hoarding cash | ~0.9 / 20 | neither zero nor unbounded |
+| League mean age | ~27.6 | stable, plausible |
+| Squad size, min / max across the run | ~22.9 / 30 | in [18, 30] |
+| Role-coverage violations (< 2 GK) | ~1.9 (up to 6 in a seed) | 0 (hard stabilizer) |
+
+Read §2.6 before reacting to the concentration row: v1's omniscient valuers make it an upper bound,
+not a prediction of the fogged Phase-5 game — it is reported flat/bounded here because that is the
+believable band for *this* baseline, not because fog-of-war would reproduce the same number.
+
+**Two open residuals, reported rather than chased** (harness plumbing never feeds back into the knob
+table by itself — this is that boundary): transfer volume sits just under the ~2–5 band, and squad
+sizes pin at the `squad_max = 30` ceiling in every seed with a handful of GK-coverage violations
+following from it (a club hitting the cap can lose a keeper to retirement faster than the market lets
+it buy a replacement). Both point at `club_ai`/`pool` selling and youth-intake balance, not at `beta`
+or `revenue_per_reputation` — outside this pass's scope fence, flagged for a future re-fit pass.
 
 ---
 
