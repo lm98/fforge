@@ -78,18 +78,112 @@ pub struct EnvParams {
 }
 
 impl EnvParams {
-    #[inline]
-    fn env(&self, y: f64) -> f64 {
-        self.env_lmax(y, self.lmax)
-    }
-
     /// `env` with the aging peak-loss overridden — the seam Professionalism uses
-    /// to flatten physical decline (§3, "the pro who ages well").
+    /// to flatten physical decline (§3, "the pro who ages well"). The exact
+    /// closed form (two `exp()` calls); `EnvTable::env_lmax` is the tabulated
+    /// fast path and falls back to this outside the grid it covers.
     #[inline]
     fn env_lmax(&self, y: f64, lmax: f64) -> f64 {
         let grow = 1.0 / (1.0 + (-(y - self.g) / self.s).exp());
         let loss = lmax / (1.0 + (-(y - self.d) / self.w).exp());
         (grow - loss).clamp(0.0, 1.0)
+    }
+}
+
+/// A lookup-table stand-in for one category's `EnvParams`, sampled on the
+/// shared `GRID_LO..=GRID_HI` age grid (`category_peaks`'s precedent step,
+/// `GRID_STEP`) and linearly interpolated. `env`/`env_lmax` are each two
+/// `exp()` calls, evaluated per attribute × per tick × per player × per
+/// projection year (`attr_rate`'s hot path); tabulating `grow(y)` and the
+/// unit-`lmax` `loss(y)` as two age-only curves and interpolating replaces
+/// that with one array lookup + a lerp each, while still letting the
+/// per-player physical `lmax` (Professionalism, §3) scale the tabulated loss
+/// curve after the lookup — the one wrinkle physical decline has that the
+/// other categories don't.
+///
+/// Outside the tabulated range (a bloomer-shifted `y` can fall below 15 or,
+/// rarely, an unretired veteran above 40) this falls back to the exact
+/// `EnvParams` closed form, so attribute-level outputs are unchanged for
+/// every age, not just the common in-range case.
+#[derive(Debug, Clone)]
+struct EnvTable {
+    params: EnvParams,
+    grow: Vec<f64>,
+    loss_unit: Vec<f64>,
+}
+
+impl EnvTable {
+    fn build(params: EnvParams) -> Self {
+        let n = ((GRID_HI - GRID_LO) / GRID_STEP).round() as usize + 1;
+        let mut grow = Vec::with_capacity(n);
+        let mut loss_unit = Vec::with_capacity(n);
+        for i in 0..n {
+            let y = GRID_LO + i as f64 * GRID_STEP;
+            grow.push(1.0 / (1.0 + (-(y - params.g) / params.s).exp()));
+            loss_unit.push(1.0 / (1.0 + (-(y - params.d) / params.w).exp()));
+        }
+        EnvTable {
+            params,
+            grow,
+            loss_unit,
+        }
+    }
+
+    /// Linear interpolation; `y` must already be range-checked to
+    /// `[GRID_LO, GRID_HI]` by the caller (`env_lmax`).
+    #[inline]
+    fn lerp(table: &[f64], y: f64) -> f64 {
+        let n = table.len();
+        let pos = (y - GRID_LO) / GRID_STEP;
+        let i0 = pos as usize;
+        let i1 = (i0 + 1).min(n - 1);
+        let frac = pos - i0 as f64;
+        table[i0] + frac * (table[i1] - table[i0])
+    }
+
+    #[inline]
+    fn env(&self, y: f64) -> f64 {
+        self.env_lmax(y, self.params.lmax)
+    }
+
+    #[inline]
+    fn env_lmax(&self, y: f64, lmax: f64) -> f64 {
+        if !(GRID_LO..=GRID_HI).contains(&y) {
+            return self.params.env_lmax(y, lmax); // exact fallback outside the grid
+        }
+        (Self::lerp(&self.grow, y) - lmax * Self::lerp(&self.loss_unit, y)).clamp(0.0, 1.0)
+    }
+}
+
+/// The four category `EnvTable`s, built once per `DevKnobs` and shared across
+/// every player/attribute a tick or projection touches — the env-lookup
+/// analogue of `valuation::DevTables`' knob-derived caching.
+#[derive(Debug, Clone)]
+pub(crate) struct EnvTables {
+    phys: EnvTable,
+    tech: EnvTable,
+    ment: EnvTable,
+    gk: EnvTable,
+}
+
+impl EnvTables {
+    pub(crate) fn new(knobs: &DevKnobs) -> Self {
+        EnvTables {
+            phys: EnvTable::build(knobs.env_phys),
+            tech: EnvTable::build(knobs.env_tech),
+            ment: EnvTable::build(knobs.env_ment),
+            gk: EnvTable::build(knobs.env_gk),
+        }
+    }
+
+    #[inline]
+    fn env(&self, cat: DevCategory) -> &EnvTable {
+        match cat {
+            DevCategory::Physical => &self.phys,
+            DevCategory::Technical => &self.tech,
+            DevCategory::Mental => &self.ment,
+            DevCategory::Goalkeeping => &self.gk,
+        }
     }
 }
 
@@ -168,15 +262,6 @@ impl DevKnobs {
     #[inline]
     pub fn dt(&self) -> f64 {
         DEV_TICK_PERIOD_DAYS as f64 / DAYS_PER_YEAR
-    }
-
-    fn env(&self, cat: DevCategory) -> &EnvParams {
-        match cat {
-            DevCategory::Physical => &self.env_phys,
-            DevCategory::Technical => &self.env_tech,
-            DevCategory::Mental => &self.env_ment,
-            DevCategory::Goalkeeping => &self.env_gk,
-        }
     }
 
     #[inline]
@@ -290,7 +375,7 @@ const GRID_STEP: f64 = 0.05;
 /// `NORM` per role (`DEVELOPMENT_MODEL.md` §2.2): the max over age of the
 /// role-weighted mean of the category envelopes — "the role-weighted mean of env
 /// at its blended peak." A per-role constant given the knobs.
-pub(crate) fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES] {
+pub(crate) fn norms_by_role(envs: &EnvTables) -> [f64; fforge_domain::NUM_ROLES] {
     let mut norms = [0.0f64; fforge_domain::NUM_ROLES];
     for role in fforge_domain::Role::ALL {
         let mut best = 0.0;
@@ -301,7 +386,7 @@ pub(crate) fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES]
             for attr in Attribute::ALL {
                 let w = ROLE_WEIGHTS.weight(role, attr) as f64;
                 if w > 0.0 {
-                    num += w * knobs.env(attr.dev_category()).env(y);
+                    num += w * envs.env(attr.dev_category()).env(y);
                     den += w;
                 }
             }
@@ -318,7 +403,7 @@ pub(crate) fn norms_by_role(knobs: &DevKnobs) -> [f64; fforge_domain::NUM_ROLES]
 
 /// Each category's envelope-peak age — past it, the downward (aging) pull acts;
 /// before it a precocious youth holds rather than being pulled down (§2, §2.1).
-pub(crate) fn category_peaks(knobs: &DevKnobs) -> [f64; NUM_CATEGORIES] {
+pub(crate) fn category_peaks(envs: &EnvTables) -> [f64; NUM_CATEGORIES] {
     let mut peaks = [0.0f64; NUM_CATEGORIES];
     for cat in [
         DevCategory::Physical,
@@ -326,7 +411,7 @@ pub(crate) fn category_peaks(knobs: &DevKnobs) -> [f64; NUM_CATEGORIES] {
         DevCategory::Mental,
         DevCategory::Goalkeeping,
     ] {
-        let p = knobs.env(cat);
+        let p = envs.env(cat);
         let mut best_y = GRID_LO;
         let mut best_v = p.env(GRID_LO);
         let mut y = GRID_LO;
@@ -387,6 +472,7 @@ pub(crate) fn attr_rate(
     minutes: f64,
     y: f64,
     phys_lmax: f64,
+    envs: &EnvTables,
     peaks: &[f64; NUM_CATEGORIES],
 ) -> f64 {
     let w = ROLE_WEIGHTS.weight(role, attr);
@@ -395,9 +481,9 @@ pub(crate) fn attr_rate(
     }
     let cat = attr.dev_category();
     let e_env = if cat == DevCategory::Physical {
-        knobs.env_phys.env_lmax(y, phys_lmax)
+        envs.env(DevCategory::Physical).env_lmax(y, phys_lmax)
     } else {
-        knobs.env(cat).env(y)
+        envs.env(cat).env(y)
     };
     let ceiling = (pa_base + (w as f64 - 3.0) * knobs.ceil_spread).clamp(knobs.ceil_floor, 100.0);
     let target = (ceiling / norm) * e_env;
@@ -498,8 +584,9 @@ pub fn tick_changes(
     knobs: &DevKnobs,
 ) -> Vec<AttrStep> {
     let mut rng = derive_stream(seed, DEV_STREAM_NS | (period as u64));
-    let norms = norms_by_role(knobs);
-    let peaks = category_peaks(knobs);
+    let envs = EnvTables::new(knobs);
+    let norms = norms_by_role(&envs);
+    let peaks = category_peaks(&envs);
     let ceiling_consts = role_ceiling_consts();
     let dt = knobs.dt();
 
@@ -549,7 +636,8 @@ pub fn tick_changes(
             // The shared §2 law — identical to the projection's, jitter added
             // only here (the recording path); see `attr_rate`.
             let rate = attr_rate(
-                knobs, role, attr, a_cur, norm, pa_base, e, coaching, mult, y, phys_lmax, &peaks,
+                knobs, role, attr, a_cur, norm, pa_base, e, coaching, mult, y, phys_lmax, &envs,
+                &peaks,
             );
 
             let monthly = (rate + jitter) * dt;
@@ -588,7 +676,7 @@ mod tests {
     fn envelope_peaks_land_where_the_doc_says() {
         // §2.1 / §6: physical peaks mid-20s, technical late-20s, mental early-30s.
         let k = DevKnobs::default();
-        let peaks = category_peaks(&k);
+        let peaks = category_peaks(&EnvTables::new(&k));
         let phys = peaks[cat_index(DevCategory::Physical)];
         let tech = peaks[cat_index(DevCategory::Technical)];
         let ment = peaks[cat_index(DevCategory::Mental)];
@@ -600,7 +688,7 @@ mod tests {
 
     #[test]
     fn norms_are_positive_and_bounded() {
-        let norms = norms_by_role(&DevKnobs::default());
+        let norms = norms_by_role(&EnvTables::new(&DevKnobs::default()));
         for n in norms {
             assert!(n > 0.0 && n <= 1.0, "norm {n} out of (0,1]");
         }

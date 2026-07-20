@@ -33,7 +33,8 @@
 //! the inputs, not a change to this function.
 
 use crate::development::{
-    self, DevKnobs, NUM_CATEGORIES, attr_rate, category_peaks, norms_by_role, role_ceiling_consts,
+    self, DevKnobs, EnvTables, NUM_CATEGORIES, attr_rate, category_peaks, norms_by_role,
+    role_ceiling_consts,
 };
 use fforge_domain::{
     Attribute, Contract, FORMATIONS, GameDate, Money, NUM_ATTRIBUTES, NUM_ROLES, ROLE_WEIGHTS, Role,
@@ -181,14 +182,17 @@ struct DevTables {
     norms: [f64; NUM_ROLES],
     peaks: [f64; NUM_CATEGORIES],
     ceiling_consts: [f64; NUM_ROLES],
+    envs: EnvTables,
 }
 
 impl DevTables {
     fn new(knobs: &DevKnobs) -> Self {
+        let envs = EnvTables::new(knobs);
         DevTables {
-            norms: norms_by_role(knobs),
-            peaks: category_peaks(knobs),
+            norms: norms_by_role(&envs),
+            peaks: category_peaks(&envs),
             ceiling_consts: role_ceiling_consts(),
+            envs,
         }
     }
 }
@@ -310,6 +314,7 @@ fn project_ca_with(
                 1.0, // minutes — regular; prices what a club that plays him gets (§2.3)
                 y,
                 phys_lmax,
+                &tables.envs,
                 &tables.peaks,
             );
             cur[attr.index()] = (cur[attr.index()] + rate * dt).clamp(0.0, 100.0);
@@ -382,6 +387,7 @@ fn project_ca_series(
                 1.0,
                 y,
                 phys_lmax,
+                &tables.envs,
                 &tables.peaks,
             );
             cur[attr.index()] = (cur[attr.index()] + rate * dt).clamp(0.0, 100.0);
