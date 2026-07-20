@@ -19,6 +19,9 @@
 //! human's club is AI-run in the market for v1), no loans, no negotiation
 //! rounds, no transfer clauses.
 
+pub mod calibrate;
+pub use calibrate::{print_report, run_market_calibration, MarketReport, MarketTelemetry, SeedSpread};
+
 use crate::club_ai::{observe, ClubPolicy, TransferDecision, UtilityKnobs, UtilityPolicy};
 use crate::development::DevKnobs;
 use crate::rng::derive_stream;

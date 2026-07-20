@@ -3,34 +3,47 @@
 Layer 2 of the fforge workspace: the deterministic simulation core, consuming
 `fforge-domain`. The crate is a pure fold over an append-only event log — `GameState`
 *is* the fold's accumulator, `Session` glues log + state + observers together, and
-`commands::step` is the only place proposals turn into recorded events. Phase 1 (full
-season loop, league table) is complete; `match_engine` now runs the Phase 2a
-event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson
-engine behind the same `play_match` call site. Phase 3 player development
-(`DEVELOPMENT_MODEL.md`) is implemented in the `development` module — a monthly
-`Event::DevelopmentTick` records resolved attribute deltas the fold integer-adds,
-and `Command::StartNextSeason` rolls the developed world into a fresh season. Phase 4's
-event-log seam (`TRANSFER_MODEL.md` §4) is implemented — six events
-(`TransferCompleted`, `PlayerReleased`, `ContractRenewed`, `YouthIntake`,
+`commands::step` is the only place proposals turn into recorded events.
+
+## Current phase
+
+Phase 1 (full season loop, league table) is complete. `match_engine` runs the Phase 2a
+event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson engine
+behind the same `play_match` call site, calibrated and guarded by
+`match_engine::calibrate`/`bin/calibrate`.
+
+Phase 3 player development (`DEVELOPMENT_MODEL.md`) is implemented in the `development`
+module — a monthly `Event::DevelopmentTick` records resolved attribute deltas the fold
+integer-adds, and `Command::StartNextSeason` rolls the developed world into a fresh
+season — calibrated and guarded by the `career_arc` harness/`bin/career_arc`.
+
+Phase 4 (`TRANSFER_MODEL.md`) is complete end to end. The event-log seam (§4) adds six
+events (`TransferCompleted`, `PlayerReleased`, `ContractRenewed`, `YouthIntake`,
 `PlayerRetired`, `FinanceTick`) and their `state::apply` fold arms. The Layer-3 club
-decision AI (`TRANSFER_MODEL.md` §6, §6.1) is implemented in `club_ai` — a
-`ClubPolicy` trait and its v1 `UtilityPolicy` implementation, producing
-`TransferDecision`s from a `ClubObservation`. Phase 4's market is now complete
-end to end: `market::resolve_window` runs §5's simultaneous, deferred-acceptance
-clearing loop over `club_ai`'s decisions and folds winning bids into
-`Event::TransferCompleted`; `commands::advance_matchday` fires it on the §7 window
-boundaries (summer/winter), the same tick mechanism development and finance use —
-no new command. The player pool closes at both ends (`TRANSFER_MODEL.md` §8) via
-the `pool` module: annual youth intake and age/CA-driven retirement, both firing
-at the summer window alongside the market. Deferred beyond v1: human transfer
-decisions (§10), loans, negotiation rounds, transfer clauses.
+decision AI (§6, §6.1) is implemented in `club_ai` — a `ClubPolicy` trait and its v1
+`UtilityPolicy` implementation, producing `TransferDecision`s from a `ClubObservation`.
+`market::resolve_window` runs §5's simultaneous, deferred-acceptance clearing loop over
+`club_ai`'s decisions and folds winning bids into `Event::TransferCompleted`;
+`commands::advance_matchday` fires it on the §7 window boundaries (summer/winter), the
+same tick mechanism development and finance use — no new command. The player pool
+closes at both ends (§8) via the `pool` module: annual youth intake and age/CA-driven
+retirement, both firing at the summer window alongside the market. Deferred beyond v1:
+human transfer decisions (§10), loans, negotiation rounds, transfer clauses. The
+Phase-4 pathology harness (§11) is implemented in `market::calibrate`
+(`MarketTelemetry`/`MarketReport`, `bin/market.rs`, `market_is_in_a_believable_ballpark`)
+— the transfer-market sibling of `match_engine::calibrate` and `career_arc`. It drove
+the re-fit of `ValueKnobs::beta` (ln2/6 → ln2/8) and `FinanceKnobs::revenue_per_reputation`
+(150k → 500k) recorded in `TRANSFER_MODEL.md` §9; the harness caught the market at those
+starting values dead (universal insolvency, ~0.2 transfers/club/window).
+
+`fforge-core` is the active development front.
 
 ## Module map
 
 | Module | Owns |
 |---|---|
 | `event` | `Event` enum — the append-only log's payload types, including the Phase-4 transfer/contract/finance/pool events (`TRANSFER_MODEL.md` §4) |
-| `market` | Phase-4 clearing loop and window mechanics (`TRANSFER_MODEL.md` §5, §7): `resolve_window` — freeze the valuation cache once, then simultaneous rounds of `club_ai`-decided bids/listings, contention resolved by the selling club's ranking (fee, buyer reputation, `ClubId`) then player consent (`MarketKnobs`'s wage/reputation-threshold roll), refused pairs never re-proposed (classic deferred acceptance — the actual convergence mechanism; `MAX_ROUNDS = 12` is the adversarial-input cap, not the normal exit). Returns `WindowOutcome { transfers, rejected_bids, valuations, unfilled_needs, rounds_used }` — only `transfers` folds into `Event::TransferCompleted`; the rest is a Trace, exactly `MatchOutcome.stream`'s shape (`MATCH_MODEL.md` §7). `summer_window_close`/`winter_window_close` derive window boundaries from the season (never day-of-year constants); `commands::transfer_window_events` fires resolution when `advance_matchday` crosses one, using `TRANSFER_STREAM_NS \| window_index` as its RNG stream |
+| `market` | Phase-4 clearing loop and window mechanics (`TRANSFER_MODEL.md` §5, §7): `resolve_window` — freeze the valuation cache once, then simultaneous rounds of `club_ai`-decided bids/listings, contention resolved by the selling club's ranking (fee, buyer reputation, `ClubId`) then player consent (`MarketKnobs`'s wage/reputation-threshold roll), refused pairs never re-proposed (classic deferred acceptance — the actual convergence mechanism; `MAX_ROUNDS = 12` is the adversarial-input cap, not the normal exit). Returns `WindowOutcome { transfers, rejected_bids, valuations, unfilled_needs, rounds_used }` — only `transfers` folds into `Event::TransferCompleted`; the rest is a Trace, exactly `MatchOutcome.stream`'s shape (`MATCH_MODEL.md` §7). `summer_window_close`/`winter_window_close` derive window boundaries from the season (never day-of-year constants); `commands::transfer_window_events` fires resolution when `advance_matchday` crosses one, using `TRANSFER_STREAM_NS \| window_index` as its RNG stream. Its `calibrate` submodule (re-exported at `market::{MarketTelemetry, MarketReport, run_market_calibration, print_report}`) is the §11 pathology harness: since `WindowOutcome`'s rich Trace never survives the fold, `MarketTelemetry` reads competitive-balance/financial-health metrics off the folded `World` at each season boundary (`record_season_end`, via `state::league_table` and `valuation::value_all`) while consuming `TransferCompleted`/`YouthIntake`/etc. as an `EventObserver` for fee/volume data — pooled over many seeds × ~15 seasons, exactly the multi-seed-pooling discipline `career_arc` and `match_engine::calibrate` established. Harness plumbing only; never feeds back into `ValueKnobs`/`FinanceKnobs` by itself |
 | `club_ai` | Phase-4 Layer-3 club decision AI (`TRANSFER_MODEL.md` §6, §6.1): the `ClubPolicy` trait (`ClubObservation` in, `Vec<TransferDecision>` out — the Gym-shaped seam `ai_pick_lineup`'s doc comment anticipated), `UtilityPolicy` (`need(club, role)` = depth + quality-vs-own-reputation-target + succession risk from `valuation::project_ca_batch`; buy shortlists ranked by `need · (value − asking_price)`; sell lists from §6's first two triggers), and `observe()` (builds a `ClubObservation` off `World` + the `value_all` cache — the only place in this module that reads `World`). Squad bounds `[18, 30]`, `≥2` GK, cash and wage headroom are hard stabilizers, not utility terms. **`UtilityKnobs::asking_markup` must stay `<= 1.0`**: with every club pricing off the same omniscient `value()` (§2.6 — no private valuations in v1), an ask *above* value makes `need · (value − asking_price)` negative for every buyer regardless of need, so no trade can ever clear — filed as a corrected divergence from §12 item 6's literal "markup" phrasing, caught by `club_ai::tests::real_observed_candidates_can_actually_produce_a_bid`. Decisions only — the clearing loop lives in `market` |
 | `state` | `GameState` — pure fold (`apply`/`replay`), `TableRow`, `league_table()`. The six Phase-4 fold arms are pure integer operations only (no RNG, no math beyond addition, no engine calls) and keep club rosters sorted after mutation, so replay-path equality holds. `apply_transfer_completed`/`apply_finance_deltas` are `pub(crate)` free functions so `market`/`commands` can apply the identical mutation to a working `World` without a second encoding |
 | `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it; `player_match_preview()` — a pure query, re-deriving the same lineup selection and RNG stream `advance_matchday` is about to use, for live-viewing the human's own fixture before it's recorded. `dev_ticks_between` returns its compounded working `World` alongside the events, so `transfer_window_events` (fired from `advance_matchday` on a §7 boundary crossing) resolves against this advance's developed attributes and finance deltas, not the pre-tick world; `season_start_date` derives the season's kickoff from `state.date`/`current_matchday` rather than storing it |

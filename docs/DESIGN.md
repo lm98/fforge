@@ -109,6 +109,12 @@ Five layers, with a hard rule: **lower layers know nothing about higher ones.**
 
 ### 4.3 Transfer market
 
+> **Phase 4 implementation detail lives in `TRANSFER_MODEL.md`** — the pinned design record for the
+> centralized valuation function, club needs assessment and utility-based buy/sell policy, the
+> simultaneous deferred-acceptance market clearing loop, club finances and contracts, youth intake
+> and retirement, and the market pathology harness. This section is the high-level commitment; that
+> note is the settled shape.
+
 - A **multi-agent resource-allocation problem.** Utility-based club agents: needs (positional
   gaps, age profile, budget), a valuation function, a decision policy, inside time-gated windows.
 - **Centralize the valuation function** (attributes, age, potential, contract length, form,
@@ -232,9 +238,11 @@ Five layers, with a hard rule: **lower layers know nothing about higher ones.**
 - When several agents act in one window, the **order their decisions resolve is part of world
   state** (two clubs chasing one player). That ordering must itself be deterministic and
   captured — no nondeterministic scheduler.
-- **Sequential vs simultaneous** is an open design choice (§10). Current lean: *simultaneous with
-  explicit conflict resolution* for transfer windows (kills the "processed-first-always-wins"
-  artifact; the resolution rule is a natural fairness lever).
+- **Sequential vs simultaneous** — settled in favour of *simultaneous with explicit conflict
+  resolution* (§10; `TRANSFER_MODEL.md` §5's deferred-acceptance clearing loop for transfer
+  windows), which kills the "processed-first-always-wins" artifact and is the same mechanism
+  Phase 5's LLM agents substitute into at the same seam, so their measured decision quality never
+  depends on queue position.
 
 ## 7. Narrative Feedback & Safety
 
@@ -347,8 +355,10 @@ The meta-principle: **thin vertical slice first, then deepen.**
   **Sub-phases:** Phase 2 splits into **2a** — the match core (five-zone possession model, the wide
   route, actor-centric resolution; pinned in `MATCH_MODEL.md`) — through **2e** (tactics as
   transition-matrix modifiers, cards/fouls, injuries, set pieces, substitutions, and the
-  character/hidden attributes), all landing behind the same `play_match` call site. 2a is settled and
-  calibrated in a Python scratchpad; the Rust port is the next step.
+  character/hidden attributes), all landing behind the same `play_match` call site. 2a is settled,
+  ported to Rust (`fforge-core::match_engine`), and calibrated: the harness
+  (`fforge-core::match_engine::calibrate`, `bin/calibrate`) re-fit `b_beat` against real `worldgen`
+  and guards the result with a regression test.
 - **Phase 3 — Player development.** CA/PA, age curves, training, diminishing returns; validate
   over decade-long runs. **Pinned in `DEVELOPMENT_MODEL.md`** (the six deferred development decisions
   resolved: PA-gating, the `DevCategory` curve parameters, the event-log seam, in-scope inputs,
@@ -356,7 +366,14 @@ The meta-principle: **thin vertical slice first, then deepen.**
   a monthly `DevelopmentTick`); the career-arc harness (`fforge-core::career_arc`) is built and has
   re-fit the knob table against real `worldgen`, exactly as the match engine's `b_beat` was re-fit.
 - **Phase 4 — Transfer market.** Club decision AI, the shared valuation function, windows;
-  stress-test for pathologies. Resolve the sequential-vs-simultaneous ordering question here.
+  stress-test for pathologies. **Pinned in `TRANSFER_MODEL.md`** (the centralized valuation
+  function, club needs/utility policy, simultaneous deferred-acceptance clearing — resolving the
+  sequential-vs-simultaneous ordering question — club finances/contracts, youth intake and
+  retirement, and the market pathology harness). Settled and implemented in Rust
+  (`fforge-core::{valuation, club_ai, market, pool}`); the market harness
+  (`fforge-core::market::calibrate`) is built and has re-fit `ValueKnobs::beta` and
+  `FinanceKnobs::revenue_per_reputation` against real `worldgen`, exactly as the match engine's
+  `b_beat` and development's knob table were re-fit.
 - **Phase 5 — LLM narrative layer + feedback loop.** Agents, propose/dispose, the validation
   gate, bounded/decaying influence; optional with fallbacks. The **agent evaluation methodology**
   (which axes, baselines, rubrics) crystallizes here, once real agents produce real traces.
@@ -367,10 +384,10 @@ Throughout: the sim stays **headless**; the calibration/eval harness stays **fir
 ## 10. Open Questions (deliberately unresolved)
 
 *(Resolved and moved out of this list: **immediate next step** — Phase 0, the attribute schema, is
-decided; **tech-stack commitment** — settled in §8, Rust core built once.)*
+decided; **tech-stack commitment** — settled in §8, Rust core built once; **agent resolution order**
+within a window — settled simultaneous, deferred-acceptance (Gale–Shapley-flavoured), `TRANSFER_MODEL.md`
+§5.)*
 
-- **Agent resolution order** within a window: sequential vs simultaneous-with-resolution (leaning
-  simultaneous; decide by Phase 4).
 - **The narrative influence model:** how a validated beat maps to a bounded morale/confidence
   nudge (Phase 5; a calibration/taste problem, not architectural).
 - **UI toolkit:** egui (the current lean) vs Tauri + web — held open until the management screens

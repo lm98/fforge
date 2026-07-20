@@ -16,10 +16,13 @@ Natural Fitness (`ATTRIBUTE_SCHEMA.md` §3), and the validation targets.
 
 ## 1. Purpose & status
 
-- **Status:** Phase 3 — *model shape settled and calibrated in a Python scratchpad; not yet ported.*
-  Per `DESIGN.md` §8 the deterministic core is built **once, in Rust**; the notebook is a
-  discard-after-use design tool, never a port target. No `fforge-core` implementation lands with this
-  note — it is the settled design the port follows.
+- **Status:** Phase 3 — *ported, calibrated, and guarded.* Model shape settled in a Python
+  scratchpad (per `DESIGN.md` §8, discarded after use, never a port target); `fforge-core::development`
+  is the Rust transcription (the monthly `DevelopmentTick` fold), and the career-arc harness
+  (`fforge-core::career_arc`, `bin/career_arc`) re-ran the §6 metrics against real `worldgen` +
+  the full command pipeline, re-fit the knob table against it exactly as `MATCH_MODEL.md` §8
+  re-fitted the match knobs, and pinned the result behind the
+  `career_arcs_are_in_a_believable_ballpark` regression test.
 - **In scope (this pass):** monthly attribute growth and decline across a full career, gated by
   hidden PA, driven by age, playing time, a club coaching coefficient, the Determination /
   Professionalism character attributes, and noise. Enough noise for wonderkids-who-flop and late
@@ -27,9 +30,9 @@ Natural Fitness (`ATTRIBUTE_SCHEMA.md` §3), and the validation targets.
 - **Deferred:** player-directed per-attribute **training focus** (a decision-layer / management-UI
   concern, Phase 4/6); **injuries** and **between-match recovery/fatigue-carryover** (Phase 2e);
   **Consistency, Injury-proneness, Leadership** as development inputs (their homes are match variance,
-  injury events, and morale respectively — §4). Development is the active front; the knob table below
-  is a fitted starting point, not a finished calibration (the Rust harness §6 re-fits it against real
-  `worldgen`, exactly as `MATCH_MODEL.md` §8 re-fitted the match knobs).
+  injury events, and morale respectively — §4). The knob table below was a plausibility-picked
+  starting point; the Rust harness (§6) has since re-fit it against real `worldgen`, exactly as
+  `MATCH_MODEL.md` §8 re-fitted the match knobs.
 
 ## 2. The model — a PA-scaled age-envelope the attributes track
 

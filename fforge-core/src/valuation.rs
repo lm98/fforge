@@ -80,7 +80,7 @@ impl Default for ValueKnobs {
         ValueKnobs {
             ca_ref: 60.0,
             v0: 1_500_000.0,
-            beta: std::f64::consts::LN_2 / 6.0,
+            beta: std::f64::consts::LN_2 / 8.0,
             horizon_years: 8,
             discount: 0.88,
             contract_full_years: 3.0,

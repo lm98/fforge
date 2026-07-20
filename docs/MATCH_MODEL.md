@@ -10,9 +10,12 @@ note is the thing that survives it**, and the structure below is what drops into
 
 ## 1. Purpose & status
 
-- **Status:** Phase 2a — *model shape settled and calibrated in a Python scratchpad; not yet ported.*
-  Per `DESIGN.md` §8 the deterministic core is built **once, in Rust**; the notebook is a
-  discard-after-use design tool, never a port target.
+- **Status:** Phase 2a — *ported, calibrated, and guarded.* Model shape settled in a Python
+  scratchpad (per `DESIGN.md` §8, discarded after use, never a port target); `fforge-core::match_engine`
+  is the Rust transcription (`play_match`), and `fforge-core::match_engine::calibrate` +
+  `bin/calibrate` re-ran the calibration against real `worldgen` + `ai_pick_lineup` (not the
+  notebook's synthetic squads), re-fit `b_beat` against the real attribute distribution, and
+  pinned the result behind the `favourite_discrimination_regression_guard` regression test (§10).
 - **In scope (this pass):** open play across five pitch zones, **including the wide route**
   (crossing, headers, cutbacks). Fatigue, a home-advantage edge, and a per-step clock.
 - **Deferred to Phase 2e** (behind the same call site, no structural change): tactics as

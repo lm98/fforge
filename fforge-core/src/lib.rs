@@ -216,16 +216,38 @@ mod tests {
         let played = {
             let log = new_game(4242, &WorldGenConfig::default(), club);
             let mut session = Session::from_events(log, &mut []);
-            let mut xi = [PlayerId(0); XI];
-            xi.copy_from_slice(&youth);
-            let lineup = Lineup {
-                formation: 0,
-                players: xi,
-            };
             for s in 0..3 {
+                // Phase 4 (`TRANSFER_MODEL.md` §10): every club, including the
+                // human's, is AI-run in the transfer market, so a tracked youth
+                // player can legitimately be transferred or released between
+                // seasons. Re-derive the XI from whoever of `youth` is still on
+                // the squad each season, topped up from the rest of the current
+                // squad to stay a valid XI — a departed player still develops
+                // (`gain` below reads `world.player`, not squad membership), so
+                // this only affects who the human's own club fields him.
+                let squad = session.state.world.club(club).players.clone();
+                let mut xi: Vec<PlayerId> = youth
+                    .iter()
+                    .copied()
+                    .filter(|pid| squad.contains(pid))
+                    .collect();
+                for &pid in &squad {
+                    if xi.len() >= XI {
+                        break;
+                    }
+                    if !xi.contains(&pid) {
+                        xi.push(pid);
+                    }
+                }
+                let mut arr = [PlayerId(0); XI];
+                arr.copy_from_slice(&xi[..XI]);
+                let lineup = Lineup {
+                    formation: 0,
+                    players: arr,
+                };
                 session
-                    .execute(Command::SubmitLineup(lineup.clone()), &mut [])
-                    .expect("submit youth XI");
+                    .execute(Command::SubmitLineup(lineup), &mut [])
+                    .expect("submit youth-first XI");
                 while !session.state.season_over() {
                     session
                         .execute(Command::AdvanceMatchday, &mut [])
