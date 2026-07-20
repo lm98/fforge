@@ -5,6 +5,12 @@ edition.workspace = true
 description = "Core engines for the Football Forge game."
 license = "Apache-2.0"
 
+[features]
+# Gates the knob-change regression tripwires (see e.g.
+# `market::calibrate::tests::market_is_in_a_believable_ballpark`): multi-seed,
+# multi-season harness runs that are too slow for the default `cargo test`.
+slow-tests = []
+
 [dependencies]
 fforge-domain = { path = "../fforge-domain", version = "0.2.0" }
 serde.workspace = true

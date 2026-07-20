@@ -5,9 +5,20 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  schedule:
+    # Nightly full suite: the only unconditional trigger for the
+    # knob-change tripwires (see `slow-tests` feature, fforge-core/Cargo.toml).
+    - cron: '17 3 * * *'
 
 jobs:
-  test:
+  fast:
+    name: fast suite
+    # PR-required check. The four knob-change regression tripwires
+    # (`*_believable_ballpark`, `favourite_discrimination_regression_guard`)
+    # are `#[ignore]`d unless the `slow-tests` feature is on, so this job
+    # never runs them — a commit that touches neither a `*Knobs` table nor a
+    # sim module can't trip them, and shouldn't have to pay for them.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,5 +29,51 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
+      - name: Run fast suite
         run: cargo test --workspace --verbose
+
+  full:
+    name: full suite (slow-tests)
+    # Runs the knob-change tripwires on top of the fast suite. Always on
+    # push (post-merge safety net) and on the nightly schedule; on a PR,
+    # only when the diff touches a *Knobs table or a sim module
+    # (`development`, `match_engine`, `market`, `valuation`, `club_ai`,
+    # `pool`, `finance`) — the only commits that could actually move these.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether this run needs the slow tests
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "$BASE_REF" --depth=1
+          changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          echo "Changed files:"
+          echo "$changed"
+          pattern='^fforge-core/src/(development\.rs|match_engine(\.rs|/.*)|market(\.rs|/.*)|valuation\.rs|club_ai\.rs|pool\.rs|finance\.rs)$'
+          if echo "$changed" | grep -Eq "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.scope.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.scope.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run full suite
+        if: steps.scope.outputs.run == 'true'
+        run: cargo test --workspace --verbose --features fforge-core/slow-tests
