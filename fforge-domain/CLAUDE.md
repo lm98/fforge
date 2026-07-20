@@ -12,7 +12,7 @@ function — the crate is a library; the binary lives in `fforge-game`.
 | `role` | `Role` enum (8 variants), `RoleWeights`, `ROLE_WEIGHTS` static table |
 | `ability` | `current_ability()`, `best_role()` — CA semantics |
 | `character` | `Character` (hidden attributes: potential, determination, professionalism, consistency, injury_proneness, leadership) |
-| `entities` | ID newtypes, `Player` (incl. `DevProfile`), `Staff`, `Club` (incl. `coaching_milli`), `Competition`, `Fixture`, `World`. `DevProfile` = the once-resolved Phase-3 development trajectory (fixed-point `E`/`φ`, DEVELOPMENT_MODEL.md §2.3); `Club::coaching_milli` = per-club academy quality (§3) — both float-free, resolved at worldgen |
+| `entities` | ID newtypes, `Player` (incl. `DevProfile`, `contract: Option<Contract>`, `retired`), `Staff`, `Club` (incl. `coaching_milli`, `finances: Finances`, `reputation: u8`), `Competition`, `Fixture`, `World` (incl. `World::club_of(PlayerId) -> Option<ClubId>` — the sole club↔player reverse lookup; `Club.players` stays the one index). `DevProfile` = the once-resolved Phase-3 development trajectory (fixed-point `E`/`φ`, DEVELOPMENT_MODEL.md §2.3); `Club::coaching_milli` = per-club academy quality (§3) — both float-free, resolved at worldgen. `Money` (signed `i64`, whole currency units), `Contract` (`wage: Money`, `expires: GameDate`), and `Finances` (`balance: Money`, `wage_budget: Money`) are the Phase-4 finance types (`TRANSFER_MODEL.md` §3) — the sanctioned exception to "no new features at this stage," kept to the minimum that earns its keep |
 | `date` | `GameDate` — flat 365-day sim calendar, no leap years, no wall clock |
 | `formation` | `FormationDef`, `Lineup`, `FORMATIONS` — 4 hardcoded formations |
 

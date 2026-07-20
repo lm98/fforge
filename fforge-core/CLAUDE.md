@@ -3,33 +3,40 @@
 Layer 2 of the fforge workspace: the deterministic simulation core, consuming
 `fforge-domain`. The crate is a pure fold over an append-only event log — `GameState`
 *is* the fold's accumulator, `Session` glues log + state + observers together, and
-`commands::step` is the only place proposals turn into recorded events. Phase 1 (full
-season loop, league table) is complete; `match_engine` now runs the Phase 2a
-event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson
-engine behind the same `play_match` call site. Phase 3 player development
-(`DEVELOPMENT_MODEL.md`) is implemented in the `development` module — a monthly
-`Event::DevelopmentTick` records resolved attribute deltas the fold integer-adds,
-and `Command::StartNextSeason` rolls the developed world into a fresh season. Phase 4's
-event-log seam (`TRANSFER_MODEL.md` §4) is implemented — six events
-(`TransferCompleted`, `PlayerReleased`, `ContractRenewed`, `YouthIntake`,
+`commands::step` is the only place proposals turn into recorded events.
+
+## Current phase
+
+Phase 1 (full season loop, league table) is complete. `match_engine` runs the Phase 2a
+event-based possession engine (`MATCH_MODEL.md`), replacing the old crude Poisson engine
+behind the same `play_match` call site, calibrated and guarded by
+`match_engine::calibrate`/`bin/calibrate`.
+
+Phase 3 player development (`DEVELOPMENT_MODEL.md`) is implemented in the `development`
+module — a monthly `Event::DevelopmentTick` records resolved attribute deltas the fold
+integer-adds, and `Command::StartNextSeason` rolls the developed world into a fresh
+season — calibrated and guarded by the `career_arc` harness/`bin/career_arc`.
+
+Phase 4 (`TRANSFER_MODEL.md`) is complete end to end. The event-log seam (§4) adds six
+events (`TransferCompleted`, `PlayerReleased`, `ContractRenewed`, `YouthIntake`,
 `PlayerRetired`, `FinanceTick`) and their `state::apply` fold arms. The Layer-3 club
-decision AI (`TRANSFER_MODEL.md` §6, §6.1) is implemented in `club_ai` — a
-`ClubPolicy` trait and its v1 `UtilityPolicy` implementation, producing
-`TransferDecision`s from a `ClubObservation`. Phase 4's market is now complete
-end to end: `market::resolve_window` runs §5's simultaneous, deferred-acceptance
-clearing loop over `club_ai`'s decisions and folds winning bids into
-`Event::TransferCompleted`; `commands::advance_matchday` fires it on the §7 window
-boundaries (summer/winter), the same tick mechanism development and finance use —
-no new command. The player pool closes at both ends (`TRANSFER_MODEL.md` §8) via
-the `pool` module: annual youth intake and age/CA-driven retirement, both firing
-at the summer window alongside the market. Deferred beyond v1: human transfer
-decisions (§10), loans, negotiation rounds, transfer clauses. The Phase-4 pathology
-harness (`TRANSFER_MODEL.md` §11) is implemented in `market::calibrate`
+decision AI (§6, §6.1) is implemented in `club_ai` — a `ClubPolicy` trait and its v1
+`UtilityPolicy` implementation, producing `TransferDecision`s from a `ClubObservation`.
+`market::resolve_window` runs §5's simultaneous, deferred-acceptance clearing loop over
+`club_ai`'s decisions and folds winning bids into `Event::TransferCompleted`;
+`commands::advance_matchday` fires it on the §7 window boundaries (summer/winter), the
+same tick mechanism development and finance use — no new command. The player pool
+closes at both ends (§8) via the `pool` module: annual youth intake and age/CA-driven
+retirement, both firing at the summer window alongside the market. Deferred beyond v1:
+human transfer decisions (§10), loans, negotiation rounds, transfer clauses. The
+Phase-4 pathology harness (§11) is implemented in `market::calibrate`
 (`MarketTelemetry`/`MarketReport`, `bin/market.rs`, `market_is_in_a_believable_ballpark`)
 — the transfer-market sibling of `match_engine::calibrate` and `career_arc`. It drove
 the re-fit of `ValueKnobs::beta` (ln2/6 → ln2/8) and `FinanceKnobs::revenue_per_reputation`
 (150k → 500k) recorded in `TRANSFER_MODEL.md` §9; the harness caught the market at those
 starting values dead (universal insolvency, ~0.2 transfers/club/window).
+
+`fforge-core` is the active development front.
 
 ## Module map
 

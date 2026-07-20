@@ -172,9 +172,10 @@ where `w[role][i]` is the importance weight from §5. Consequences, both intende
 
 ## 5. Role → attribute weighting (a design-once artifact)
 
-One of the design-once / consumed-by-many artifacts (alongside the valuation function and the
-match event stream). It feeds **CA aggregation (§4), match team-quality contribution, valuation,
-and the transfer AI's needs assessment** — one table, four consumers.
+One of the design-once / consumed-by-many artifacts (alongside the valuation function
+**[resolved: `TRANSFER_MODEL.md` §2]** and the match event stream). It feeds **CA aggregation (§4),
+match team-quality contribution, valuation, and the transfer AI's needs assessment** — one table,
+four consumers.
 
 > **Sibling artifact (Phase 2):** the match model introduces a **role→zone _presence_ table**
 > (`MATCH_MODEL.md` §6) — a second `role × _` table, easily confused with this one. Keep them

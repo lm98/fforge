@@ -10,12 +10,14 @@ fforge/
 └── fforge-game     (CLI binary — depends on both)
 ```
 
-`fforge-domain` provides the core domain types of the simulator. `fforge-core` is the primary consumer; it now runs the Phase 2a
-event-based possession match engine (`play_match`, in `fforge-core::match_engine`). `fforge-game` wires everything into the CLI.
+`fforge-domain` provides the core domain types of the simulator. `fforge-core` is the primary consumer; it runs the Phase 2a
+event-based possession match engine (`play_match`, in `fforge-core::match_engine`), the Phase 3 monthly development fold
+(`fforge-core::development`), and the Phase 4 transfer market (valuation, club decision AI, the deferred-acceptance clearing
+loop, and the player pool — `fforge-core::{valuation, club_ai, market, pool}`). `fforge-game` wires everything into the CLI.
 
 ## Design documents
 
-All design decisions originate in three files at the workspace root:
+All design decisions originate in these files at the workspace root:
 
 - **`docs/ATTRIBUTE_SCHEMA.md`** — attribute list, rating scale, role→attribute weight
   table, CA/PA semantics, Character fields. The code in `fforge-domain` is a transcription of this document.
@@ -26,6 +28,15 @@ All design decisions originate in three files at the workspace root:
   state space, actor-centric resolution model, the wide route, the role→zone presence
   table, and the calibration knobs/targets. `fforge-core::match_engine` is a Rust
   transcription of this document (and of the notebook it pins).
+- **`docs/DEVELOPMENT_MODEL.md`** — the Phase 3 player-development design record: the
+  PA-scaled age envelope, per-`DevCategory` curve parameters, the `DevelopmentTick`
+  event-log seam, and the career-arc calibration harness. `fforge-core::development` is
+  a Rust transcription of this document.
+- **`docs/TRANSFER_MODEL.md`** — the Phase 4 transfer-market design record: the
+  centralized valuation function, club decision AI, the simultaneous deferred-acceptance
+  clearing loop, club finances, the player pool (youth intake/retirement), and the market
+  pathology harness. `fforge-core::{valuation, club_ai, market, pool}` is a Rust
+  transcription of this document.
 
 When the code and the design docs diverge, treat the design docs as authoritative and
 file the discrepancy as a bug.
@@ -72,10 +83,28 @@ in the latter case).
 ## Current phase
 
 Phase 0 (design & data model) is complete. Phase 1 (walking skeleton) is complete.
-Phase 2a (the event-based possession match engine, `MATCH_MODEL.md`) is implemented —
-`fforge-core` is the active development front. Deferred to Phase 2e behind the same
-`play_match` call site: tactics, cards/fouls, injuries, set pieces, substitutions, and
-the character/hidden attributes. The knob table is a fitted starting point, not a
-finished calibration; the Rust calibration harness (`MATCH_MODEL.md` §10) is a separate,
-not-yet-built deliverable. Changes to `fforge-domain` at this stage are corrections or
-clarifications to the Phase 0 deliverable, not new features.
+Phase 2a (the event-based possession match engine, `MATCH_MODEL.md`) is implemented and
+calibrated: the Rust harness (`fforge-core::match_engine::calibrate`, `bin/calibrate`) runs
+real `worldgen` + `ai_pick_lineup` + `play_match` pooled over many seeds, re-fit `b_beat`
+against it, and guards the result with `favourite_discrimination_regression_guard`. Deferred
+to Phase 2e behind the same `play_match` call site: tactics, cards/fouls, injuries, set
+pieces, substitutions, and the character/hidden attributes.
+
+Phase 3 (player development, `DEVELOPMENT_MODEL.md`) is implemented in `fforge-core::development`
+— a monthly `DevelopmentTick` records resolved attribute deltas the fold integer-adds. Its
+harness (`fforge-core::career_arc`, `bin/career_arc`) drives real multi-season runs and has
+re-fit the knob table, guarded by `career_arcs_are_in_a_believable_ballpark`.
+
+Phase 4 (transfer market, `TRANSFER_MODEL.md`) is implemented end to end: the centralized
+valuation function (`fforge-core::valuation`), club decision AI (`club_ai`), the simultaneous
+deferred-acceptance clearing loop and window mechanics (`market`), club finances (`finance`),
+and the player pool — youth intake and retirement (`pool`). Its pathology harness
+(`fforge-core::market::calibrate`, `bin/market`) pools many seeds × ~15 seasons and drove the
+re-fit of `ValueKnobs::beta` and `FinanceKnobs::revenue_per_reputation` (`TRANSFER_MODEL.md` §9),
+guarded by `market_is_in_a_believable_ballpark`. Deferred beyond v1: human transfer decisions,
+loans, negotiation rounds, transfer clauses (`TRANSFER_MODEL.md` §1).
+
+`fforge-core` is the active development front. Changes to `fforge-domain` at this stage are
+corrections or clarifications to the Phase 0 deliverable plus the sanctioned Phase 4 finance
+extension (`Money`, `Contract`, `Finances`, `Club.reputation` — `TRANSFER_MODEL.md` §3), not
+open-ended new features.
