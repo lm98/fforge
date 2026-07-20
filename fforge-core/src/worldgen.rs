@@ -76,7 +76,9 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
             for _ in 0..count {
                 let id = PlayerId(next_player);
                 next_player += 1;
-                let player = gen_player(&mut rng, id, role, quality, start_date, &dev_knobs);
+                // Age ~ triangular 16..=36, centered mid-20s.
+                let age = 16 + ((rng.f64() + rng.f64()) * 10.0) as i32;
+                let player = gen_player(&mut rng, id, role, quality, age, start_date, &dev_knobs);
                 squad.push(id);
                 players.insert(id, player);
             }
@@ -140,16 +142,20 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
     )
 }
 
-fn gen_player(
+/// Generate one player. `age` is resolved by the caller — `generate()` draws
+/// its own triangular 16..=36 spread for the opening squad; `pool::youth_cohort`
+/// (`TRANSFER_MODEL.md` §8.1) reuses this same function with a tight 16-18
+/// band, the second genuine consumer of `coaching_milli` alongside
+/// `resolve_coaching`. `pub(crate)` so `pool` can call it.
+pub(crate) fn gen_player(
     rng: &mut Rng,
     id: PlayerId,
     role: Role,
     club_quality: f64,
+    age: i32,
     today: GameDate,
     dev_knobs: &DevKnobs,
 ) -> Player {
-    // Age ~ triangular 16..=36, centered mid-20s.
-    let age = 16 + ((rng.f64() + rng.f64()) * 10.0) as i32;
     let birth = today
         .add_days(-(age as i64) * fforge_domain::date::DAYS_PER_YEAR)
         .add_days(-(rng.below(365) as i64));

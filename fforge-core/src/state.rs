@@ -8,7 +8,7 @@
 use crate::development::apply_attr_step;
 use crate::event::Event;
 use fforge_domain::{
-    ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, PlayerId, World,
+    ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId, World,
 };
 use std::collections::BTreeMap;
 
@@ -57,6 +57,41 @@ pub(crate) fn apply_finance_deltas(world: &mut World, deltas: &[(ClubId, Money)]
     }
 }
 
+/// Insert `players` into `club`'s roster and `World.players`
+/// (`TRANSFER_MODEL.md` §8.1, §4) — the resolved effect of a `YouthIntake`.
+/// Shared by the `YouthIntake` fold arm and `commands::transfer_window_events`'s
+/// working-world update (the same one-encoding pattern as
+/// `apply_transfer_completed`).
+pub(crate) fn apply_youth_intake(world: &mut World, club: ClubId, players: &[Player]) {
+    if let Some(c) = world.clubs.get_mut(&club) {
+        for p in players {
+            if !c.players.contains(&p.id) {
+                c.players.push(p.id);
+            }
+        }
+        c.players.sort();
+    }
+    for p in players {
+        world.players.insert(p.id, p.clone());
+    }
+}
+
+/// Remove `player` from every roster and mark him retired
+/// (`TRANSFER_MODEL.md` §8.2, §4) — the resolved effect of a `PlayerRetired`.
+/// Shared by the `PlayerRetired` fold arm and `commands::transfer_window_events`'s
+/// working-world update.
+pub(crate) fn apply_player_retired(world: &mut World, player: PlayerId) {
+    if let Some(cid) = world.club_of(player)
+        && let Some(c) = world.clubs.get_mut(&cid)
+    {
+        c.players.retain(|p| p != &player);
+    }
+    if let Some(p) = world.players.get_mut(&player) {
+        p.contract = None;
+        p.retired = true;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
     pub seed: u64,
@@ -83,6 +118,11 @@ pub struct GameState {
     /// Matches each club played in the current development window — the
     /// denominator for the appeared/benched/absent share. Reset on each tick.
     pub club_matches_since_tick: BTreeMap<ClubId, u32>,
+    /// The date each currently contract-less player last lost his contract
+    /// (`Event::PlayerReleased`) — `pool::retirements`' "gone a full season
+    /// unsigned" reading (`TRANSFER_MODEL.md` §8.2). Cleared when the player
+    /// signs again (`TransferCompleted`) or retires (`PlayerRetired`).
+    pub unsigned_since: BTreeMap<PlayerId, GameDate>,
 }
 
 impl GameState {
@@ -115,6 +155,7 @@ impl GameState {
                     champion: None,
                     appearances_since_tick: BTreeMap::new(),
                     club_matches_since_tick: BTreeMap::new(),
+                    unsigned_since: BTreeMap::new(),
                 }
             }
             other => panic!("event log must start with GameStarted, found {other:?}"),
@@ -200,14 +241,18 @@ impl GameState {
                 ..
             } => {
                 apply_transfer_completed(&mut self.world, *player, *from, *to, *fee, *contract);
+                self.unsigned_since.remove(player);
             }
-            Event::PlayerReleased { player, club, .. } => {
+            Event::PlayerReleased {
+                player, club, date,
+            } => {
                 if let Some(c) = self.world.clubs.get_mut(club) {
                     c.players.retain(|p| p != player);
                 }
                 if let Some(p) = self.world.players.get_mut(player) {
                     p.contract = None;
                 }
+                self.unsigned_since.insert(*player, *date);
             }
             Event::ContractRenewed {
                 player, contract, ..
@@ -217,28 +262,11 @@ impl GameState {
                 }
             }
             Event::YouthIntake { club, players, .. } => {
-                if let Some(c) = self.world.clubs.get_mut(club) {
-                    for p in players {
-                        if !c.players.contains(&p.id) {
-                            c.players.push(p.id);
-                        }
-                    }
-                    c.players.sort();
-                }
-                for p in players {
-                    self.world.players.insert(p.id, p.clone());
-                }
+                apply_youth_intake(&mut self.world, *club, players);
             }
             Event::PlayerRetired { player, .. } => {
-                if let Some(cid) = self.world.club_of(*player)
-                    && let Some(c) = self.world.clubs.get_mut(&cid)
-                {
-                    c.players.retain(|p| p != player);
-                }
-                if let Some(p) = self.world.players.get_mut(player) {
-                    p.contract = None;
-                    p.retired = true;
-                }
+                apply_player_retired(&mut self.world, *player);
+                self.unsigned_since.remove(player);
             }
             Event::FinanceTick { deltas, .. } => {
                 apply_finance_deltas(&mut self.world, deltas);
