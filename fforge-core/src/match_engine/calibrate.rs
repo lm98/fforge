@@ -628,6 +628,17 @@ mod tests {
     /// engine discriminates favourites more sharply than the reference
     /// curve, which is fine (§10 item 6 is a discrimination sanity check,
     /// not a fit target) but sets the deviation band well above zero.
+    ///
+    /// **Feature-gated behind `slow-tests`, ignored by default.** This is a
+    /// knob-change regression tripwire, not a unit test: a commit that touches
+    /// neither `*Knobs` nor a sim module can't trip it, so running it on every
+    /// `cargo test` is wasted wall-clock. It runs in the PR-required fast
+    /// suite's absence deliberately — CI instead runs it nightly and on any PR
+    /// touching `*Knobs`, `development`, `match_engine`, `market`,
+    /// `valuation`, `club_ai`, or `pool`. `#[ignore]` here is a scheduling
+    /// choice, not neglect; run it locally with `cargo test --features
+    /// slow-tests`.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn favourite_discrimination_regression_guard() {
         let cfg = crate::WorldGenConfig::default();

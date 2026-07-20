@@ -358,6 +358,16 @@ mod tests {
         assert_eq!(total_pts, w * 3 + d);
     }
 
+    /// **Feature-gated behind `slow-tests`, ignored by default.** This is a
+    /// knob-change regression tripwire, not a unit test: a commit that touches
+    /// neither `*Knobs` nor a sim module can't trip it, so running it on every
+    /// `cargo test` is wasted wall-clock. It runs in the PR-required fast
+    /// suite's absence deliberately — CI instead runs it nightly and on any PR
+    /// touching `*Knobs`, `development`, `match_engine`, `market`,
+    /// `valuation`, `club_ai`, or `pool`. `#[ignore]` here is a scheduling
+    /// choice, not neglect; run it locally with `cargo test --features
+    /// slow-tests`.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn aggregates_are_in_a_believable_ballpark() {
         // Phase-2a engine (MATCH_MODEL.md). The calibration harness
