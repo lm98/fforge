@@ -513,6 +513,21 @@ following from it (a club hitting the cap can lose a keeper to retirement faster
 it buy a replacement). Both point at `club_ai`/`pool` selling and youth-intake balance, not at `beta`
 or `revenue_per_reputation` — outside this pass's scope fence, flagged for a future re-fit pass.
 
+**Squad-pinning residual addressed.** `UtilityPolicy::sell_decisions` (`club_ai`) gained a third,
+squad-size-driven selling trigger (`UtilityKnobs::squad_pressure_start`/`_exponent`/`_max_listings`):
+as a club's roster approaches `squad_max`, players in roles sitting *exactly* at their `SQUAD_TEMPLATE`
+count — not yet genuinely surplus — become listable too, through a quota that grows continuously
+(back-loaded, so it is negligible in the middle of the range and rises sharply near the cap) and stays
+bounded per window rather than purging a squad in one shot. Goalkeepers are excluded from this
+mechanism, since `SQUAD_TEMPLATE`'s GK count (3) sits only one above `min_goalkeepers` (2) and
+squeezing it is exactly what produced the GK-coverage violations above. §6's hard stabilizers
+(`squad_min`/`squad_max`, `≥2 GK`) are unchanged — this is a policy widening, not a bound change.
+Read against the real pipeline (`market::calibrate`'s `below_cap_share`/`share_clubs_majority_pinned`,
+8 seeds × 15 seasons): squad-size snapshots sit below `squad_max` ~74% of the time (was a spike at the
+ceiling) and only ~9% of clubs are majority-pinned across their run (was "every seed"), with
+GK-coverage violations back at the pre-existing ~1.5-per-run reading (not worsened). Transfer volume
+was not materially moved by this change and remains the other open residual above.
+
 ---
 
 ## 10. Human transfer decisions — deferred, with the seam left open

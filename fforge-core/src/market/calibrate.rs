@@ -77,6 +77,14 @@ fn is_hoarding(club: &Club) -> bool {
 /// reads whether the stabilizer actually held.
 const MIN_GOALKEEPERS: usize = 2;
 
+/// Squad-size ceiling (`TRANSFER_MODEL.md` §6, `club_ai::UtilityKnobs::squad_max`
+/// default) — duplicated here for the same reason as `MIN_GOALKEEPERS`: the
+/// harness reads whether a club is pinned against the cap, it never decides
+/// squad policy. §9's open residual ("squads pin at `squad_max` in every
+/// seed") is exactly what `worst_club_cap_fraction`/`below_cap_share` below
+/// are built to catch.
+const SQUAD_MAX: usize = 30;
+
 /// Number of transfer windows resolved per season (`TRANSFER_MODEL.md` §7:
 /// summer + winter) — known by construction, not observed, so
 /// "transfers per club per window" needs no window-boundary bookkeeping from
@@ -265,6 +273,14 @@ pub struct MarketTelemetry {
     rank_churns: Vec<f64>,
     role_coverage_violations: u32,
 
+    /// Per-club squad size at each season-end snapshot — the individual-club
+    /// counterpart to `squad_size_min_by_season`/`_max_by_season`'s
+    /// league-wide extremes. §9's "squads pin at `squad_max` in every seed"
+    /// residual is a per-club pathology (one club sitting *at* the cap
+    /// persistently), which a league-wide min/max cannot distinguish from a
+    /// healthy league where different clubs take turns brushing the ceiling.
+    club_squad_sizes_by_season: BTreeMap<ClubId, Vec<usize>>,
+
     prev_ranks: Option<BTreeMap<ClubId, usize>>,
 }
 
@@ -340,6 +356,13 @@ impl MarketTelemetry {
         self.squad_size_max_by_season
             .push(sizes.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
 
+        for (&club_id, club) in &world.clubs {
+            self.club_squad_sizes_by_season
+                .entry(club_id)
+                .or_default()
+                .push(club.players.len());
+        }
+
         for gk in gk_counts(world) {
             if gk < MIN_GOALKEEPERS {
                 self.role_coverage_violations += 1;
@@ -389,6 +412,24 @@ pub struct MarketReport {
     squad_size_min: Vec<f64>,
     squad_size_max: Vec<f64>,
     role_coverage_violations: Vec<f64>,
+    /// Per seed: the *worst-case single club's* fraction of season-end
+    /// snapshots sitting at `SQUAD_MAX` — reported for visibility only. A max
+    /// over ~20 clubs pooled across a handful of seeds is a noisy,
+    /// upward-biased order statistic (one ambitious, cash-rich club that
+    /// rationally keeps a full squad through like-for-like churn will push
+    /// this near/above 0.5 on its own, no matter how responsive selling is)
+    /// — not a sound thing to gate a knob-change tripwire on.
+    worst_club_cap_fraction: Vec<f64>,
+    /// Per seed: the share of all (club, season) snapshots sitting strictly
+    /// below `SQUAD_MAX` — mass below the cap, as opposed to a spike at it.
+    below_cap_share: Vec<f64>,
+    /// Per seed: the share of clubs whose *own* fraction of seasons at
+    /// `SQUAD_MAX` exceeds one half — "no club sits at squad_max for a
+    /// majority of windows" read as a population statement (how widespread
+    /// the pinning pathology is) rather than the worst single case. This is
+    /// the metric the §9 residual actually described: *every* club ratcheted
+    /// to the ceiling, not one perpetually-full outlier.
+    share_clubs_majority_pinned: Vec<f64>,
 }
 
 impl MarketReport {
@@ -442,6 +483,37 @@ impl MarketReport {
         );
         self.role_coverage_violations
             .push(t.role_coverage_violations as f64);
+
+        let mut worst_cap_fraction = 0.0f64;
+        let mut below_cap = 0usize;
+        let mut total = 0usize;
+        let mut clubs_seen = 0usize;
+        let mut clubs_majority_pinned = 0usize;
+        for sizes in t.club_squad_sizes_by_season.values() {
+            if sizes.is_empty() {
+                continue;
+            }
+            let at_cap = sizes.iter().filter(|&&s| s >= SQUAD_MAX).count();
+            let fraction = at_cap as f64 / sizes.len() as f64;
+            worst_cap_fraction = worst_cap_fraction.max(fraction);
+            below_cap += sizes.iter().filter(|&&s| s < SQUAD_MAX).count();
+            total += sizes.len();
+            clubs_seen += 1;
+            if fraction > 0.5 {
+                clubs_majority_pinned += 1;
+            }
+        }
+        self.worst_club_cap_fraction.push(worst_cap_fraction);
+        self.below_cap_share.push(if total > 0 {
+            below_cap as f64 / total as f64
+        } else {
+            f64::NAN
+        });
+        self.share_clubs_majority_pinned.push(if clubs_seen > 0 {
+            clubs_majority_pinned as f64 / clubs_seen as f64
+        } else {
+            f64::NAN
+        });
     }
 
     pub fn transfers_per_club_per_window(&self) -> SeedSpread {
@@ -488,6 +560,15 @@ impl MarketReport {
     }
     pub fn role_coverage_violations(&self) -> SeedSpread {
         seed_spread(&self.role_coverage_violations)
+    }
+    pub fn worst_club_cap_fraction(&self) -> SeedSpread {
+        seed_spread(&self.worst_club_cap_fraction)
+    }
+    pub fn below_cap_share(&self) -> SeedSpread {
+        seed_spread(&self.below_cap_share)
+    }
+    pub fn share_clubs_majority_pinned(&self) -> SeedSpread {
+        seed_spread(&self.share_clubs_majority_pinned)
     }
 }
 
@@ -636,6 +717,21 @@ pub fn print_report(report: &MarketReport) {
         &report.role_coverage_violations(),
         "0 (hard stabilizer)",
     );
+    row(
+        "Worst-case club's fraction of seasons at squad_max",
+        &report.worst_club_cap_fraction(),
+        "diagnostic only (noisy max-of-20 statistic)",
+    );
+    row(
+        "Squad-size snapshots strictly below squad_max",
+        &report.below_cap_share(),
+        "> 0.5 (mass below the cap, not a spike at it)",
+    );
+    row(
+        "Share of clubs majority-pinned at squad_max",
+        &report.share_clubs_majority_pinned(),
+        "well under 1.0 (not every club ratcheted to the ceiling)",
+    );
 }
 
 #[cfg(test)]
@@ -771,6 +867,22 @@ mod tests {
             violations.mean < 1.0,
             "goalkeeper-coverage stabilizer was violated {:.1} times on average",
             violations.mean
+        );
+
+        // --- §9's open residual: squads must not pin at squad_max ---
+        let below_cap = report.below_cap_share();
+        assert!(
+            below_cap.mean > 0.5,
+            "squad-size snapshots have no mass below squad_max: only {:.2} sit \
+             strictly below the cap — a spike at the ceiling rather than a spread",
+            below_cap.mean
+        );
+        let pinned_share = report.share_clubs_majority_pinned();
+        assert!(
+            pinned_share.mean < 0.5,
+            "{:.2} of clubs sit at squad_max for a majority of their seasons — \
+             selling isn't responsive enough to squad size",
+            pinned_share.mean
         );
     }
 }
