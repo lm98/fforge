@@ -486,47 +486,61 @@ band (1.9–2.0 vs 1.5–1.7) but reopened the concentration drift (0.60 → 0.7
 of keeping the harder-to-fix competitive-balance axis stable; volume sitting just under its target
 band is the accepted residual (see below).
 
-*Reading at the banked knobs (pooled, 8 seeds × 15 seasons):*
+*Reading at the banked knobs (pooled, 24 seeds × 15 seasons — widened from the original 8-seed pool once
+`club_ai`'s squad-size selling pressure landed, below, to get a noise-resistant re-read rather than
+banking off the smaller sample):*
 
 | Metric | Reading | Target |
 |---|---|---|
-| Transfers / club / window | ~1.6 | ~2–5 |
-| Fee median / p90 | ~1.3M / ~3.5M | p90 well above median |
-| Points-Gini, early → late | 0.314 → 0.298 | stable, not rising |
-| Season-to-season rank churn | ~1.13 | non-zero |
-| Top-3 share of top-20, early → late | 0.63 → 0.64 | elevated, non-rising |
-| Median fee, last season / first season | ~0.67× | < ~2× |
-| Clubs insolvent | ~5.0 / 20 | neither zero nor unbounded |
-| Clubs hoarding cash | ~0.9 / 20 | neither zero nor unbounded |
-| League mean age | ~27.6 | stable, plausible |
-| Squad size, min / max across the run | ~22.9 / 30 | in [18, 30] |
-| Role-coverage violations (< 2 GK) | ~1.9 (up to 6 in a seed) | 0 (hard stabilizer) |
+| Transfers / club / window | ~1.75 | ~2–5 |
+| Fee median / p90 | ~1.2M / ~3.1M | p90 well above median |
+| Points-Gini, early → late | 0.313 → 0.302 | stable, not rising |
+| Season-to-season rank churn | ~1.08 | non-zero |
+| Top-3 share of top-20, early → late | 0.633 → 0.649 | elevated, non-rising |
+| Median fee, last season / first season | ~0.68× | < ~2× |
+| Clubs insolvent | ~5.3 / 20 | neither zero nor unbounded |
+| Clubs hoarding cash | ~0.7 / 20 | neither zero nor unbounded |
+| League mean age | ~27.5 | stable, plausible |
+| Squad size, min / max across the run | ~22.6 / 30 | in [18, 30] |
+| Role-coverage violations (< 2 GK) | ~2.5 (sd 3.4, up to 13 in a seed) | 0 (hard stabilizer) |
+| Squad-size snapshots strictly below `squad_max` | ~0.74 | mass below the cap, not a spike at it |
+| Share of clubs majority-pinned at `squad_max` | ~0.07 | well under 1.0 |
 
 Read §2.6 before reacting to the concentration row: v1's omniscient valuers make it an upper bound,
 not a prediction of the fogged Phase-5 game — it is reported flat/bounded here because that is the
 believable band for *this* baseline, not because fog-of-war would reproduce the same number.
+Role-coverage violations carry real seed-to-seed spread (sd 3.4 against a mean of 2.5) — with 24 seeds
+pooled instead of 8, a couple of unlucky GK-retirement seeds surface a higher single-seed max (13 vs the
+prior pool's 6) without moving the mean outside the earlier ~1.5–1.9 reading's own noise band; treated
+as the same reading at a steadier sample, not a regression.
 
-**Two open residuals, reported rather than chased** (harness plumbing never feeds back into the knob
-table by itself — this is that boundary): transfer volume sits just under the ~2–5 band, and squad
-sizes pin at the `squad_max = 30` ceiling in every seed with a handful of GK-coverage violations
-following from it (a club hitting the cap can lose a keeper to retirement faster than the market lets
-it buy a replacement). Both point at `club_ai`/`pool` selling and youth-intake balance, not at `beta`
-or `revenue_per_reputation` — outside this pass's scope fence, flagged for a future re-fit pass.
+**Squad-pinning residual closed by a policy fix, not a knob change.** `UtilityPolicy::sell_decisions`
+(`club_ai`) gained a third, squad-size-driven selling trigger (`UtilityKnobs::squad_pressure_start`/
+`_exponent`/`_max_listings`): as a club's roster approaches `squad_max`, players in roles sitting
+*exactly* at their `SQUAD_TEMPLATE` count — not yet genuinely surplus — become listable too, through a
+quota that grows continuously (back-loaded, so it is negligible in the middle of the range and rises
+sharply near the cap) and stays bounded per window rather than purging a squad in one shot. Goalkeepers
+are excluded from this mechanism, since `SQUAD_TEMPLATE`'s GK count (3) sits only one above
+`min_goalkeepers` (2) and squeezing it is exactly what first regressed the GK-coverage row above during
+tuning. §6's hard stabilizers (`squad_min`/`squad_max`, `≥2` GK) are unchanged — this is a policy
+widening, not a bound change. Re-read at the fuller 24-seed pool: squad-size snapshots sit below
+`squad_max` ~74% of the time (was a spike at the ceiling in every seed) and only ~7% of clubs are
+majority-pinned across their run (was "every seed") — the fix holds at scale, not just at the 8-seed
+sample it was tuned against.
 
-**Squad-pinning residual addressed.** `UtilityPolicy::sell_decisions` (`club_ai`) gained a third,
-squad-size-driven selling trigger (`UtilityKnobs::squad_pressure_start`/`_exponent`/`_max_listings`):
-as a club's roster approaches `squad_max`, players in roles sitting *exactly* at their `SQUAD_TEMPLATE`
-count — not yet genuinely surplus — become listable too, through a quota that grows continuously
-(back-loaded, so it is negligible in the middle of the range and rises sharply near the cap) and stays
-bounded per window rather than purging a squad in one shot. Goalkeepers are excluded from this
-mechanism, since `SQUAD_TEMPLATE`'s GK count (3) sits only one above `min_goalkeepers` (2) and
-squeezing it is exactly what produced the GK-coverage violations above. §6's hard stabilizers
-(`squad_min`/`squad_max`, `≥2 GK`) are unchanged — this is a policy widening, not a bound change.
-Read against the real pipeline (`market::calibrate`'s `below_cap_share`/`share_clubs_majority_pinned`,
-8 seeds × 15 seasons): squad-size snapshots sit below `squad_max` ~74% of the time (was a spike at the
-ceiling) and only ~9% of clubs are majority-pinned across their run (was "every seed"), with
-GK-coverage violations back at the pre-existing ~1.5-per-run reading (not worsened). Transfer volume
-was not materially moved by this change and remains the other open residual above.
+**Transfer volume residual: still open, and not squad-pinning after all.** The original diagnosis named
+squad pinning as "the likely root cause of the ~1.6 transfers/club/window reading." With pinning now
+resolved, volume moved from ~1.6 to only ~1.75 across the fuller pool — an inch, not a landing in the
+~2–5 band. The watch condition on this re-read was concentration: had volume climbed *and* concentration
+drifted the way the rejected `revenue_per_reputation` = 550k/600k did (0.60 → 0.71–0.76, §9 above),
+that would have meant this policy fix was quietly buying the same volume the finance knob was rejected
+for buying. It didn't — early→late concentration held at 0.633 → 0.649 (Δ+0.016), statistically the same
+flat, non-drifting read as the original 8-seed bank's 0.63 → 0.64 (Δ+0.01). So the fix is confirmed
+clean at scale, but the corollary is the harder finding: squad-size headroom was not, in fact, the
+market's binding constraint on volume — relieving it barely moved the number. The next investigation
+into this residual should look at the buy side and the clearing loop (`market::resolve_window`'s round
+cap, or `club_ai`'s buy shortlist thresholds) rather than squad-side selling pressure again. Still outside
+this pass's scope fence: `beta` and `revenue_per_reputation` remain untouched.
 
 ---
 
