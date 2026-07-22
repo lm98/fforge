@@ -15,6 +15,22 @@ The standalone friendly-match viewer (`watch_friendly_flow`) that also rendered 
 view still exists but is currently unreachable from `game_loop`'s menu — the "watch a
 friendly" option was removed (kept `#[allow(dead_code)]` rather than deleted).
 
+The transfer-market menu (`TRANSFER_MODEL.md` §10's pre-commitment model) is wired in
+as menu option `[9]`: browse candidate signings and the human's own squad (both priced
+against one frozen `club_ai::observe`/`valuation::value_all` snapshot, rebuilt only on
+entry and after a submit), build a local draft of `Bid`/`List` decisions, reorder it
+(draft order is bid priority — `market::resolve_window` tries the first still-biddable
+entry each round), and submit it in one shot via `Command::SubmitTransferDecision`.
+Cash and wage headroom are shown in the screen header throughout, since those are what
+`market::filter_affordable`'s resolve-time gate silently drops a plan on. When
+`AdvanceMatchday` crosses a window's close date, `advance_flow` reports every
+`Event::TransferCompleted` touching the human's club (in/out) plus a league-wide deal
+count, right alongside that matchday's results — this is presentation only: nothing
+here decides which transfers clear, `fforge-core::market` already did that inside the
+event batch `AdvanceMatchday` returned. Deliberately function-only, no layout/IA work
+(that is a later batch's job): plain numbered lists and `[key]`-style prompts, matching
+the rest of `main.rs`'s existing screens.
+
 ## Function map (`main.rs`)
 
 | Group | Functions | Does |
@@ -22,7 +38,8 @@ friendly" option was removed (kept `#[allow(dead_code)]` rather than deleted).
 | Entry / flow | `main`, `new_game_flow`, `load_flow`, `game_loop` | top menu, world creation, save loading, the per-matchday menu loop |
 | Screens | `header`, `squad_screen`, `table_screen`, `fixtures_screen`, `stats_screen`, `season_end_screen` | read-only renders of `Session` state |
 | Lineup | `set_lineup_flow`, `auto_fill` | formation + XI picker, submits `Command::SubmitLineup` |
-| Advance | `advance_flow` | calls `fforge_core::player_match_preview` on the pre-advance state to get the human's own match's trace, submits `Command::AdvanceMatchday`, renders that trace via `print_humble_text_view` before printing the matchday's plain results |
+| Transfers | `transfer_flow`, `build_transfer_context`, `print_transfer_header`, `browse_targets_screen`, `prompt_role_filter`, `add_bid`, `squad_transfer_screen`, `toggle_list`, `shortlist_screen`, `decision_summary`, `submit_draft`, `prompt_money` | the §10 pre-commitment UI: builds/edits a local `Vec<TransferDecision>` draft against a frozen `ClubObservation`, submits it via `Command::SubmitTransferDecision` |
+| Advance | `advance_flow`, `print_transfer_window_outcome` | calls `fforge_core::player_match_preview` on the pre-advance state to get the human's own match's trace, submits `Command::AdvanceMatchday`, renders that trace via `print_humble_text_view` before printing the matchday's plain results, then reports any transfer window this advance closed (`Event::TransferWindowClosed`/`TransferCompleted`) |
 | Friendly (unreachable, `#[allow(dead_code)]`) | `watch_friendly_flow` | picks two clubs, runs `match_engine::play_match` directly (not through `Session::execute` — unrecorded, no `Event`), renders the raw event stream via `print_humble_text_view` — no longer wired into `game_loop`'s menu |
 | Helpers | `print_humble_text_view`, `key_pressed_within`, `print_result`, `table_position`, `club_avg_ca`, `ordinal`, `do_save` | small pure/IO utilities used by the screens above; `key_pressed_within` polls for a keypress with a timeout (via `crossterm`) so `print_humble_text_view` can pace playback and skip on demand |
 | Input primitives | `read_line`, `prompt_choice`, `prompt_number`, `prompt_seed` | the only functions that touch stdin |
