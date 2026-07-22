@@ -426,6 +426,35 @@ impl ClubPolicy for UtilityPolicy {
     }
 }
 
+/// `TRANSFER_MODEL.md` §10's pre-commitment model, promoted from "the seam
+/// is left open" to a real second `ClubPolicy`: replays a human's already-
+/// validated, already-submitted `TransferDecision`s verbatim, every round,
+/// never adapting to how the window unfolds — the client-visible meaning of
+/// "pre-commitment." A club with nothing submitted gets an empty list, not a
+/// fallback to `UtilityPolicy`: §10 is explicit that a human who ignores the
+/// market does nothing in it, exactly as before this seam existed.
+/// Affordability, squad bounds, and every other stabilizer are *not* this
+/// policy's job — §5's clearing loop applies the same resolve-time filter to
+/// every club's decisions regardless of which `ClubPolicy` produced them
+/// (`market::filter_affordable`), so a submitted plan that has gone stale or
+/// unaffordable by the time its window resolves is dropped there, silently.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordedPolicy {
+    pub decisions: Vec<TransferDecision>,
+}
+
+impl RecordedPolicy {
+    pub fn new(decisions: Vec<TransferDecision>) -> Self {
+        RecordedPolicy { decisions }
+    }
+}
+
+impl ClubPolicy for RecordedPolicy {
+    fn transfer_decisions(&self, _obs: &ClubObservation) -> Vec<TransferDecision> {
+        self.decisions.clone()
+    }
+}
+
 /// Build a `ClubObservation` from the world (§6.1: reading `World` happens
 /// here, at the edge — the seam `ClubPolicy` itself never crosses).
 /// `valuations` is the §2.7 frozen-snapshot cache (`valuation::value_all`),
@@ -895,6 +924,39 @@ mod tests {
         assert!(
             any_bid,
             "no club in a real 6-club league produced a single Bid — asking_markup regression"
+        );
+    }
+
+    #[test]
+    fn recorded_policy_replays_exactly_what_was_submitted() {
+        let obs = baseline_observation();
+        let decisions = vec![
+            TransferDecision::List {
+                player: obs.squad[0].player,
+            },
+            TransferDecision::Bid {
+                player: PlayerId(9001),
+                from: Some(ClubId(1)),
+                role: Role::St,
+                price: Money(1_000_000),
+            },
+        ];
+        let policy = RecordedPolicy::new(decisions.clone());
+        assert_eq!(policy.transfer_decisions(&obs), decisions);
+        // A second, differently-shaped observation must not perturb the
+        // replay — it is not a function of `obs` at all, by design.
+        let mut other = obs.clone();
+        other.squad.clear();
+        assert_eq!(policy.transfer_decisions(&other), decisions);
+    }
+
+    #[test]
+    fn recorded_policy_with_nothing_submitted_produces_no_decisions() {
+        let policy = RecordedPolicy::default();
+        let decisions = policy.transfer_decisions(&baseline_observation());
+        assert!(
+            decisions.is_empty(),
+            "no submission must mean no decisions, never a UtilityPolicy fallback: {decisions:?}"
         );
     }
 

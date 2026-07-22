@@ -30,7 +30,10 @@ pub mod state;
 pub mod valuation;
 pub mod worldgen;
 
-pub use club_ai::{ClubObservation, ClubPolicy, TransferDecision, UtilityKnobs, UtilityPolicy, observe};
+pub use club_ai::{
+    ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs, UtilityPolicy,
+    observe,
+};
 pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
 pub use development::{DEV_STREAM_NS, DevKnobs};
 pub use event::{AttrStep, Event};

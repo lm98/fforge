@@ -19,6 +19,7 @@
 //!    deltas, *not* the seed, so the growth model can evolve without rewriting a
 //!    recorded career — the fold only integer-adds the deltas.
 
+use crate::club_ai::TransferDecision;
 use fforge_domain::{
     Attribute, ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId,
     World,
@@ -134,4 +135,23 @@ pub enum Event {
         date: GameDate,
         deltas: Vec<(ClubId, Money)>,
     },
+    /// The human manager's resolved, validated transfer plan for the
+    /// upcoming window (`TRANSFER_MODEL.md` §10's pre-commitment model,
+    /// promoted from "the seam is left open"): the exact `TransferDecision`s
+    /// `club_ai::RecordedPolicy` will replay, unchanged, in every round of
+    /// that window's clearing loop — the same "record the resolved proposal,
+    /// never the raw command" rule `LineupSubmitted` already follows.
+    /// Overwrites any previously pending plan; consumed and cleared by the
+    /// next `TransferWindowClosed`.
+    TransferDecisionSubmitted {
+        date: GameDate,
+        club: ClubId,
+        decisions: Vec<TransferDecision>,
+    },
+    /// A transfer window's clearing loop has resolved (`TRANSFER_MODEL.md`
+    /// §5, §7) — emitted unconditionally for every window boundary crossed,
+    /// even one that clears zero transfers, so the fold has a reliable point
+    /// to expire a pre-committed human plan rather than letting it silently
+    /// carry into the *next* window it was never meant for.
+    TransferWindowClosed { date: GameDate, window_index: u64 },
 }

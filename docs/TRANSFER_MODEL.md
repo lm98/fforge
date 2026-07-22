@@ -20,11 +20,12 @@ depends on.
   utility-based buy/sell policy; simultaneous market clearing inside time-gated windows; club
   finances and player contracts; youth intake and retirement (the pool's two ends); the append-only
   event-log seam; the market pathology harness.
-- **Deferred:** **human transfer decisions** (§10 — the human's club is AI-run in the market for
-  v1); **form as a valuation input** (§2.5 — no per-player performance signal exists yet);
+- **Deferred:** **form as a valuation input** (§2.5 — no per-player performance signal exists yet);
   **loans**, **agents/negotiation rounds**, **multi-league transfers**, **transfer clauses**
   (release clauses, sell-on percentages); **scouting fog-of-war** (§2.6 — Phase 5, a wrapper on this
-  function, not a change to it).
+  function, not a change to it). **Human transfer decisions** (§10) were originally deferred with v1
+  the human's club AI-run in the market; the seam that decision left open has since been promoted —
+  §10 records the implementation, not a plan.
 
 ### 1.1 On the missing Python scratchpad — a deliberate departure
 
@@ -254,12 +255,14 @@ journalist agent will want ("*City's third bid rejected*"), so the Trace is not 
 out of the fold.
 
 ```rust
-TransferCompleted { date, player, from: Option<ClubId>, to: ClubId, fee: Money, contract: Contract }
-PlayerReleased    { date, player, club }
-ContractRenewed   { date, player, club, contract }
-YouthIntake       { date, club, players: Vec<Player> }
-PlayerRetired     { date, player }
-FinanceTick       { date, deltas: Vec<(ClubId, Money)> }
+TransferCompleted         { date, player, from: Option<ClubId>, to: ClubId, fee: Money, contract: Contract }
+PlayerReleased            { date, player, club }
+ContractRenewed           { date, player, club, contract }
+YouthIntake               { date, club, players: Vec<Player> }
+PlayerRetired             { date, player }
+FinanceTick               { date, deltas: Vec<(ClubId, Money)> }
+TransferDecisionSubmitted { date, club, decisions: Vec<TransferDecision> }  // §10
+TransferWindowClosed      { date, window_index: u64 }                       // §10
 ```
 
 `YouthIntake` records the **generated players** themselves, not a seed — the same choice `GameStarted`
@@ -282,6 +285,8 @@ symmetry is not decorative — it means `commands::step` grows one more tick emi
 | `YouthIntake` | insert players into `World.players`; push ids onto the club's roster |
 | `PlayerRetired` | remove from roster; `contract = None`; mark retired (see §8.2) |
 | `FinanceTick` | integer-add each delta to the club's `balance` |
+| `TransferDecisionSubmitted` | `pending_transfer_decisions = decisions` (overwrites) — §10 |
+| `TransferWindowClosed` | `pending_transfer_decisions.clear()` — §10 |
 
 Rosters are `Vec<PlayerId>`; keep them **sorted** after mutation so the fold's output is
 order-independent and `GameState` equality stays meaningful across replay paths.
@@ -544,35 +549,68 @@ this pass's scope fence: `beta` and `revenue_per_reputation` remain untouched.
 
 ---
 
-## 10. Human transfer decisions — deferred, with the seam left open
+## 10. Human transfer decisions — the pre-commitment model
 
-**Decision: for v1 every club, including the human's, is AI-run in the transfer market.**
+**Original decision (superseded below): for v1 every club, including the human's, would be AI-run in
+the transfer market.** Phase 4's deliverable per `DESIGN.md` §9 is "club decision AI, the shared
+valuation function, windows; stress-test for pathologies" — the *market machinery*. Human agency over
+that machinery reads as a management-UI concern, and `DESIGN.md` §9 places UI/UX in Phase 6, so this
+seam was deliberately left open rather than closed: for the duration of Phase 4 the game would be, in
+the transfer window, a spectator sport. That scoping call bought §5 and §6 time to settle before
+anything human-facing had to commit to their shape — and it has now paid off exactly as anticipated:
+the seam described below turned out to be small precisely *because* §5 and §6 were built first.
 
-Phase 4's deliverable per `DESIGN.md` §9 is "club decision AI, the shared valuation function, windows;
-stress-test for pathologies" — the *market machinery*. Human agency over that machinery is a
-management-UI concern, and `DESIGN.md` §9 places UI/UX in Phase 6. Folding it in now would widen Phase
-4 by a command, a validation surface, a CLI interaction loop, and a set of "what can the human legally
-do mid-window" rules that are better designed once the market's own dynamics are known.
-
-**This is a deliberate scoping call, recorded so it is not mistaken for an oversight.** It has a real
-cost: for the duration of Phase 4 the game is, in the transfer window, a spectator sport.
-
-**The seam is left open, not closed.** The follow-on is small precisely because §5 and §6 are built
-first:
+**Promoted.** The human submits a transfer plan once per window; it is validated, recorded, and
+replayed **unchanged** through every round of that window's clearing loop — never renegotiated,
+never adapted round to round. This is what "pre-commitment" means here, and it is the whole of the
+scope: **no negotiation, no counter-offers, no in-window re-bidding.** A human who says nothing gets
+nothing — §6's `UtilityPolicy` never steps in on their behalf, by design; a spectator who ignores the
+market does exactly what they did before this seam existed.
 
 ```rust
-Command::SubmitTransferDecision(TransferDecision)   // → Event::TransferDecisionSubmitted
+Command::SubmitTransferDecision(Vec<TransferDecision>)   // → Event::TransferDecisionSubmitted { date, club, decisions }
 ```
 
-It slots into the identical propose-then-validate gate as `Command::SubmitLineup` — a human proposal,
-validated in `commands::step` (squad bounds, cash, wage headroom, target availability), recorded as a
-resolved decision, and entering §5's clearing loop as one more bidder among twenty. `ClubPolicy`
-(§6.1) is the substitution point: the human's club swaps its utility policy for a "read the recorded
-decision" policy, which is the *same* substitution Phase 5 performs for LLM agents. Building it for
-the human first would have been building it twice.
+It slots into the identical propose-then-validate gate as `Command::SubmitLineup`:
 
-**Tracked as a Phase-6 task** (`PHASE4_TASKS.md`, "Deferred / follow-on"), promotable to late Phase 4
-if the spectator-window feel proves intolerable before Phase 5 arrives.
+- **Submit-time validation (shape, `commands::validate_transfer_decisions`):** every named player
+  exists; a `Bid`'s target is not already the submitting club's own player and its reservation price
+  is not negative; a `List`'s target is the club's own player. New `CommandError` variants
+  (`UnknownPlayer`, `AlreadyOwned`, `NegativePrice`) sit alongside `NotInSquad`/`DuplicatePlayers`.
+- **Resolve-time validation (affordability, `market::filter_affordable`):** cash, wage headroom,
+  squad bounds, the GK floor, and *availability* — applied inside the clearing loop, uniformly, to
+  every club's decisions regardless of which `ClubPolicy` produced them. A no-op for `UtilityPolicy`
+  output (already compliant by construction); the actual gate for a human plan, which bypasses that
+  producer-side filtering by submitting decisions directly. A plan that was affordable at submission
+  time but no longer is by the time its window resolves — or by a later round within the same window
+  — is dropped silently, never an error, never a panic. (Availability closed a real latent gap: a
+  `Bid`'s `from: None` "this is a free agent" claim was previously trusted unconditionally by the
+  bid-collection loop, safe only because `UtilityPolicy` always regenerates it fresh each round.
+  `RecordedPolicy`'s static replay can outlive that claim's truth within a single window — a target
+  bought by a third club mid-window — so `filter_affordable` now re-checks the claimed seller against
+  the round's live observation for every policy, not just this one.)
+- **`club_ai::RecordedPolicy`** implements `ClubPolicy` by replaying the submitted `decisions`
+  verbatim, every round, never adapting — the same substitution seam Phase 5's LLM agents will use.
+  The human's club runs it; every other club still runs `UtilityPolicy`. A club with nothing submitted
+  gets an empty list from it — never a `UtilityPolicy` fallback.
+- **`GameState.pending_transfer_decisions`** holds the current plan, set by
+  `Event::TransferDecisionSubmitted` (overwriting whatever was pending) and cleared by
+  `Event::TransferWindowClosed` — emitted unconditionally for every window boundary crossed, even one
+  that clears zero transfers, so a plan is good for exactly the one window it was pending for, never
+  silently carried into the next.
+
+**The harness needed a compensating fix, not a free ride.** `market::calibrate`'s pathology harness
+(§11) drives the same real command pipeline a live game does, with `player_club = ClubId(0)` — before
+this seam existed that was irrelevant to market dynamics (only lineup selection cared), but this seam
+makes `player_club` matter to the market for the first time. Left alone, club 0 would have gone
+permanently passive (no submissions, ever, in a harness with no human) and silently stopped being "20
+uniform AI clubs," corrupting exactly the pinning/volume/concentration statistics the harness exists to
+read. `market::calibrate::submit_player_clubs_ai_equivalent_plan` compensates: right before a window
+closes, it submits whatever `UtilityPolicy` itself would have decided for club 0, so the harness models
+"a manager who always follows the AI's advice" rather than either a real human or a silently-broken
+club. Re-read at the fuller 24-seed pool this fix was verified against: transfers/window 1.759 (bank:
+1.75), below-cap share 0.735 (bank: 0.74), concentration 0.660 → 0.656 (bank: 0.633 → 0.649,
+similarly flat) — statistically the same league this harness read before the seam existed.
 
 ---
 

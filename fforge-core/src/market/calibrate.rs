@@ -43,10 +43,11 @@
 //! re-fit is a human reading these numbers and editing the knob tables
 //! (`TRANSFER_MODEL.md` §9).
 
+use crate::club_ai::{observe, ClubPolicy, UtilityKnobs, UtilityPolicy};
 use crate::development::DevKnobs;
 use crate::event::Event;
 use crate::observer::EventObserver;
-use crate::state::league_table;
+use crate::state::{league_table, GameState};
 use crate::valuation::{MarketContext, ValueKnobs, value_all};
 use crate::{Command, Session, WorldGenConfig, new_game};
 use fforge_domain::{Club, ClubId, Fixture, FixtureId, GameDate, Money, PlayerId, Role, World};
@@ -572,6 +573,62 @@ impl MarketReport {
     }
 }
 
+/// Whether the *next* `Command::AdvanceMatchday` (a fixed 7-day step,
+/// `commands::advance_matchday`) would cross a transfer-window close date —
+/// mirroring `commands::transfer_window_events`'s own boundary check
+/// (season-start derivation included) closely enough to predict it, without
+/// being able to call that private helper from here. Used only to decide
+/// when `submit_player_clubs_ai_equivalent_plan` below is worth the extra
+/// `value_all` pass, not to make any market decision itself.
+fn window_will_close_on_next_advance(state: &GameState) -> bool {
+    let season_start = state
+        .date
+        .add_days(-((state.current_matchday as i64 - 1) * 7));
+    let new_date = state.date.add_days(7);
+    let summer = super::summer_window_close(season_start);
+    let winter = super::winter_window_close(season_start, state.last_matchday);
+    [summer, winter]
+        .into_iter()
+        .any(|close| state.date < close && close <= new_date)
+}
+
+/// `TRANSFER_MODEL.md` §10's pre-commitment seam changes `player_club`'s
+/// market participation from "always `UtilityPolicy`, like every other club"
+/// to "`RecordedPolicy`, empty unless something was submitted" — correct for
+/// a real human who may choose to ignore the market, wrong for this harness,
+/// which has no human at all and exists specifically to stress-test *uniform*
+/// AI dynamics across every club. Rather than special-case `player_club` out
+/// of the market, this harness models it as a manager who always follows the
+/// AI's own recommendation: right before a window closes, submit exactly
+/// what `UtilityPolicy` would have decided for it. That keeps every pooled
+/// §11 statistic (squad-size pinning, transfer volume, concentration, ...)
+/// reading the same 20-uniformly-AI-club league this harness read before the
+/// seam existed, while still genuinely exercising `RecordedPolicy` and
+/// `Command::SubmitTransferDecision` on every run. Only runs on a matchday
+/// that actually crosses a window boundary (`window_will_close_on_next_advance`)
+/// — the `value_all` pass this needs is real work, and `resolve_window`
+/// redoes it anyway once the window resolves.
+fn submit_player_clubs_ai_equivalent_plan(
+    session: &mut Session,
+    club: ClubId,
+    value_knobs: &ValueKnobs,
+    dev_knobs: &DevKnobs,
+    utility_knobs: &UtilityKnobs,
+) {
+    if !window_will_close_on_next_advance(&session.state) {
+        return;
+    }
+    let world = &session.state.world;
+    let today = session.state.date;
+    let ctx = MarketContext::from_world(world, value_knobs);
+    let valuations = value_all(world, today, &ctx, value_knobs, dev_knobs);
+    let obs = observe(world, club, today, &valuations, dev_knobs, utility_knobs);
+    let decisions = UtilityPolicy::new(*utility_knobs).transfer_decisions(&obs);
+    session
+        .execute(Command::SubmitTransferDecision(decisions), &mut [])
+        .expect("submit player_club's AI-equivalent transfer plan");
+}
+
 /// Trace one world seed across `seasons` full seasons, driving the *real*
 /// command pipeline (worldgen → matches → development → finance → pool →
 /// market, all via `Session`/`Command::AdvanceMatchday` /
@@ -580,12 +637,21 @@ impl MarketReport {
 fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> MarketTelemetry {
     let value_knobs = ValueKnobs::default();
     let dev_knobs = DevKnobs::default();
-    let log = new_game(seed, cfg, fforge_domain::ClubId(0));
+    let utility_knobs = UtilityKnobs::default();
+    let player_club = fforge_domain::ClubId(0);
+    let log = new_game(seed, cfg, player_club);
     let mut telemetry = MarketTelemetry::default();
     let mut session = Session::from_events(log, &mut [&mut telemetry]);
 
     for s in 0..seasons {
         while !session.state.season_over() {
+            submit_player_clubs_ai_equivalent_plan(
+                &mut session,
+                player_club,
+                &value_knobs,
+                &dev_knobs,
+                &utility_knobs,
+            );
             session
                 .execute(Command::AdvanceMatchday, &mut [&mut telemetry])
                 .expect("advance matchday");

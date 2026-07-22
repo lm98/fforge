@@ -5,7 +5,7 @@
 //! happens here, and only resolved, validated values become events. `step`
 //! never mutates state — callers apply the returned events through the fold.
 
-use crate::club_ai::UtilityKnobs;
+use crate::club_ai::{TransferDecision, UtilityKnobs};
 use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
@@ -33,6 +33,16 @@ pub enum Command {
     /// over — the multi-season continuity development needs (`DEVELOPMENT_MODEL.md`
     /// §5). Runs the offseason development ticks, then resets the calendar.
     StartNextSeason,
+    /// Submit the human club's transfer plan for the window currently open
+    /// (`TRANSFER_MODEL.md` §10's pre-commitment model): validated here for
+    /// shape only (targets exist, aren't already owned, prices aren't
+    /// negative, sell-list entries are the club's own players), then
+    /// replayed verbatim by `club_ai::RecordedPolicy` in every round of that
+    /// window's clearing loop once it resolves. Affordability, squad
+    /// bounds, and every other resolve-time stabilizer are checked later,
+    /// inside the clearing loop itself, against whatever the world actually
+    /// looks like when the window closes — not here.
+    SubmitTransferDecision(Vec<TransferDecision>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +52,12 @@ pub enum CommandError {
     UnknownFormation(u8),
     DuplicatePlayers,
     NotInSquad(PlayerId),
+    /// A transfer decision names a player who does not exist in the world.
+    UnknownPlayer(PlayerId),
+    /// A `Bid` names a player already on the submitting club's own books.
+    AlreadyOwned(PlayerId),
+    /// A `Bid`'s reservation price is negative.
+    NegativePrice(PlayerId),
 }
 
 impl fmt::Display for CommandError {
@@ -52,6 +68,11 @@ impl fmt::Display for CommandError {
             CommandError::UnknownFormation(i) => write!(f, "unknown formation index {i}"),
             CommandError::DuplicatePlayers => write!(f, "a player appears twice in the lineup"),
             CommandError::NotInSquad(p) => write!(f, "player {p} is not in your squad"),
+            CommandError::UnknownPlayer(p) => write!(f, "player {p} does not exist"),
+            CommandError::AlreadyOwned(p) => write!(f, "player {p} is already on your books"),
+            CommandError::NegativePrice(p) => {
+                write!(f, "player {p}'s reservation price cannot be negative")
+            }
         }
     }
 }
@@ -86,10 +107,58 @@ pub fn step(state: &GameState, command: Command) -> Result<Vec<Event>, CommandEr
                     }])
                 }
                 Command::AdvanceMatchday => Ok(advance_matchday(state)),
+                Command::SubmitTransferDecision(decisions) => {
+                    validate_transfer_decisions(state, &decisions)?;
+                    Ok(vec![Event::TransferDecisionSubmitted {
+                        date: state.date,
+                        club: state.player_club,
+                        decisions,
+                    }])
+                }
                 Command::StartNextSeason => unreachable!("handled above"),
             }
         }
     }
+}
+
+/// Submit-time shape validation for `Command::SubmitTransferDecision`
+/// (`TRANSFER_MODEL.md` §10): every named player must exist; a `Bid`'s
+/// target must not already be the submitting club's own player and its
+/// price must not be negative; a `List`'s target must actually be the
+/// submitting club's player. This is shape only — whether the plan is
+/// actually affordable, or the target still available, is resolve-time
+/// validation inside `market::resolve_window`'s clearing loop, checked
+/// against the world as it is when the window closes, not as it was at
+/// submission time.
+fn validate_transfer_decisions(
+    state: &GameState,
+    decisions: &[TransferDecision],
+) -> Result<(), CommandError> {
+    let squad = &state.world.club(state.player_club).players;
+    for d in decisions {
+        match *d {
+            TransferDecision::Bid { player, price, .. } => {
+                if !state.world.players.contains_key(&player) {
+                    return Err(CommandError::UnknownPlayer(player));
+                }
+                if squad.contains(&player) {
+                    return Err(CommandError::AlreadyOwned(player));
+                }
+                if price.0 < 0 {
+                    return Err(CommandError::NegativePrice(player));
+                }
+            }
+            TransferDecision::List { player } => {
+                if !state.world.players.contains_key(&player) {
+                    return Err(CommandError::UnknownPlayer(player));
+                }
+                if !squad.contains(&player) {
+                    return Err(CommandError::NotInSquad(player));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandError> {
@@ -405,6 +474,8 @@ fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, 
             &value_knobs,
             &utility_knobs,
             &market_knobs,
+            Some(state.player_club),
+            &state.pending_transfer_decisions,
         );
         for t in &outcome.transfers {
             apply_transfer_completed(&mut work_world, t.player, t.from, t.to, t.fee, t.contract);
@@ -417,6 +488,14 @@ fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, 
                 contract: t.contract,
             });
         }
+        // Emitted unconditionally, even for a window that clears zero
+        // transfers (§10's pre-commitment model): the fold's only reliable
+        // signal to expire a human plan that was good for *this* window,
+        // not the next one it was never submitted for.
+        events.push(Event::TransferWindowClosed {
+            date: close_date,
+            window_index,
+        });
     }
     events
 }
@@ -438,5 +517,201 @@ fn next_season_start(date: GameDate) -> GameDate {
         candidate
     } else {
         GameDate::from_year_day(date.year() + 1, SEASON_START_DOY)
+    }
+}
+
+#[cfg(test)]
+mod transfer_decision_tests {
+    //! `TRANSFER_MODEL.md` §10's pre-commitment model:
+    //! `Command::SubmitTransferDecision`'s submit-time shape validation and
+    //! its threading through the real `AdvanceMatchday` pipeline.
+
+    use super::*;
+    use crate::worldgen::{generate, WorldGenConfig};
+    use fforge_domain::{Money, Role};
+
+    fn base_log(seed: u64) -> (Vec<Event>, GameState) {
+        let (world, schedule, start_date) = generate(seed, &WorldGenConfig::default());
+        let event = Event::GameStarted {
+            seed,
+            start_date,
+            player_club: ClubId(0),
+            world,
+            schedule,
+        };
+        let state = GameState::replay(std::slice::from_ref(&event));
+        (vec![event], state)
+    }
+
+    /// `step` the command, fold its events into `state`, and append them to
+    /// `log` — the same append-fold-notify sequence `Session::execute`
+    /// performs, reproduced by hand since `commands` cannot depend on
+    /// `session` (the dependency runs the other way).
+    fn drive(state: &mut GameState, log: &mut Vec<Event>, command: Command) {
+        let events = step(state, command).expect("valid command");
+        for e in &events {
+            state.apply(e);
+        }
+        log.extend(events);
+    }
+
+    #[test]
+    fn rejects_a_bid_on_an_unknown_player() {
+        let (_, state) = base_log(1);
+        let decisions = vec![TransferDecision::List {
+            player: PlayerId(999_999),
+        }];
+        assert_eq!(
+            step(&state, Command::SubmitTransferDecision(decisions)),
+            Err(CommandError::UnknownPlayer(PlayerId(999_999)))
+        );
+    }
+
+    #[test]
+    fn rejects_bidding_on_your_own_player() {
+        let (_, state) = base_log(2);
+        let own = state.world.club(state.player_club).players[0];
+        let decisions = vec![TransferDecision::Bid {
+            player: own,
+            from: None,
+            role: Role::St,
+            price: Money(1),
+        }];
+        assert_eq!(
+            step(&state, Command::SubmitTransferDecision(decisions)),
+            Err(CommandError::AlreadyOwned(own))
+        );
+    }
+
+    #[test]
+    fn rejects_a_negative_reservation_price() {
+        let (_, state) = base_log(3);
+        let other_club = state
+            .world
+            .competition
+            .clubs
+            .iter()
+            .copied()
+            .find(|&c| c != state.player_club)
+            .expect("more than one club");
+        let target = state.world.club(other_club).players[0];
+        let decisions = vec![TransferDecision::Bid {
+            player: target,
+            from: Some(other_club),
+            role: Role::St,
+            price: Money(-1),
+        }];
+        assert_eq!(
+            step(&state, Command::SubmitTransferDecision(decisions)),
+            Err(CommandError::NegativePrice(target))
+        );
+    }
+
+    #[test]
+    fn rejects_listing_a_player_not_in_your_squad() {
+        let (_, state) = base_log(4);
+        let other_club = state
+            .world
+            .competition
+            .clubs
+            .iter()
+            .copied()
+            .find(|&c| c != state.player_club)
+            .expect("more than one club");
+        let not_mine = state.world.club(other_club).players[0];
+        let decisions = vec![TransferDecision::List { player: not_mine }];
+        assert_eq!(
+            step(&state, Command::SubmitTransferDecision(decisions)),
+            Err(CommandError::NotInSquad(not_mine))
+        );
+    }
+
+    #[test]
+    fn a_valid_plan_is_recorded_pending_and_cleared_once_its_window_closes() {
+        let (mut log, mut state) = base_log(5);
+        let mine = state.world.club(state.player_club).players[0];
+        let decisions = vec![TransferDecision::List { player: mine }];
+
+        let submitted_at = state.date;
+        drive(
+            &mut state,
+            &mut log,
+            Command::SubmitTransferDecision(decisions.clone()),
+        );
+        assert_eq!(
+            log.last(),
+            Some(&Event::TransferDecisionSubmitted {
+                date: submitted_at,
+                club: state.player_club,
+                decisions: decisions.clone(),
+            })
+        );
+        assert_eq!(state.pending_transfer_decisions, decisions);
+
+        loop {
+            let before = log.len();
+            drive(&mut state, &mut log, Command::AdvanceMatchday);
+            let closed = log[before..]
+                .iter()
+                .any(|e| matches!(e, Event::TransferWindowClosed { .. }));
+            if closed {
+                break;
+            }
+            assert!(
+                !state.season_over(),
+                "season ended before any window closed"
+            );
+        }
+        assert!(
+            state.pending_transfer_decisions.is_empty(),
+            "a window closing must clear the pending plan"
+        );
+    }
+
+    #[test]
+    fn replay_reconstructs_identical_state_across_a_submitted_plan_and_window_close() {
+        let (mut log, mut state) = base_log(6);
+        let mine = state.world.club(state.player_club).players[0];
+        drive(
+            &mut state,
+            &mut log,
+            Command::SubmitTransferDecision(vec![TransferDecision::List { player: mine }]),
+        );
+        loop {
+            let before = log.len();
+            drive(&mut state, &mut log, Command::AdvanceMatchday);
+            let closed = log[before..]
+                .iter()
+                .any(|e| matches!(e, Event::TransferWindowClosed { .. }));
+            if closed || state.season_over() {
+                break;
+            }
+        }
+        let replayed = GameState::replay(&log);
+        assert_eq!(
+            state, replayed,
+            "replay must reconstruct identical state across §10's new events"
+        );
+        // Determinism: replaying the same log twice must agree, too.
+        assert_eq!(GameState::replay(&log), GameState::replay(&log));
+    }
+
+    #[test]
+    fn human_club_that_submits_nothing_completes_no_transfers_across_a_real_season() {
+        let (mut log, mut state) = base_log(8);
+        while !state.season_over() {
+            drive(&mut state, &mut log, Command::AdvanceMatchday);
+        }
+        let touched_human = log.iter().any(|e| {
+            matches!(
+                e,
+                Event::TransferCompleted { from, to, .. }
+                    if *to == state.player_club || *from == Some(state.player_club)
+            )
+        });
+        assert!(
+            !touched_human,
+            "a human club that never submits a transfer plan must complete no transfers of its own"
+        );
     }
 }
