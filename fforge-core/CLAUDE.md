@@ -43,6 +43,22 @@ fix once §10 landed: `player_club` (the harness has no real human) now submits 
 `UtilityPolicy`-equivalent plan each window so it keeps behaving like every other AI
 club, not a silently-passive one (`calibrate::submit_player_clubs_ai_equivalent_plan`).
 
+R2's `news` module is implemented: a Trace-side, structured, replay-safe notification
+stream (`NewsItem { date, kind: NewsKind, sources: Vec<EventRef>, salience, audience }`)
+plus a deterministic `TemplateRenderer`, homed in `fforge-core::news`. `NewsObserver` has
+three entry points, none of which widen `EventObserver`: `on_event` (category 1,
+event-derived — match results, transfers completed, youth intake, retirements),
+`check_conditions(&GameState)` (category 2, state-condition — contracts expiring,
+finance warnings, role-coverage gaps — the same "sees state, not events" seam
+`market::calibrate::MarketTelemetry` established for `record_season_end`), and
+`observe_rejected_bids` (a third, narrower path for `WindowOutcome`'s Trace, which is
+never an `Event` and never a `GameState` fact — sourced live, the same way
+`player_match_preview` re-derives `MatchOutcome`'s commentary rather than persisting it,
+so a cold replay never re-populates that one slice of the inbox). Wiring this into the
+live game loop (`commands.rs` calling `check_conditions` after every command,
+`fforge-game` rendering the inbox) is explicitly out of scope here — that is
+B2.5/Batch 4's job; this task is the module and its own test suite only.
+
 `fforge-core` is the active development front.
 
 ## Module map
@@ -56,6 +72,7 @@ club, not a silently-passive one (`calibrate::submit_player_clubs_ai_equivalent_
 | `commands` | `Command` enum, `step()` — validates a proposal and produces the events for it; `player_match_preview()` — a pure query, re-deriving the same lineup selection and RNG stream `advance_matchday` is about to use, for live-viewing the human's own fixture before it's recorded. `Command::SubmitTransferDecision` (§10) runs `validate_transfer_decisions` (submit-time shape only: targets exist, aren't already owned, prices aren't negative, sell targets are the club's own) before recording `Event::TransferDecisionSubmitted` — affordability is resolve-time, inside `market::filter_affordable`, not here. `dev_ticks_between` returns its compounded working `World` alongside the events, so `transfer_window_events` (fired from `advance_matchday` on a §7 boundary crossing) resolves against this advance's developed attributes and finance deltas, not the pre-tick world, passes `Some(state.player_club)`/`state.pending_transfer_decisions` through to `resolve_window`, and emits `Event::TransferWindowClosed` for every crossed boundary regardless of outcome so a pre-committed plan expires on schedule; `season_start_date` derives the season's kickoff from `state.date`/`current_matchday` rather than storing it |
 | `session` | `Session` — owns the log + folded state, routes commands, notifies observers; `save_log`/`load_log` (JSON-lines) |
 | `observer` | `EventObserver` trait, `SeasonTelemetry` — passive event-stream consumers (trace/telemetry spine) |
+| `news` | The R2 notification Trace: `NewsItem`/`NewsKind`/`EventRef`/`Audience`, `NewsRenderer` + `TemplateRenderer`, and `NewsObserver` (`EventObserver` for event-derived news; `check_conditions(&GameState)` for state-condition news; `observe_rejected_bids` for `WindowOutcome`'s Trace). Maintains small incremental indices (fixture→clubs, squad membership, each player's/club's most recent contract/finance/squad-affecting `EventRef`) purely from events already seen, so `check_conditions` — which only ever sees `&GameState`, never the log — can still attach real provenance to a state-condition item. `warned_*` sets make every state-condition check edge-triggered (fires once per newly-true condition, re-arms on recovery) so a season-long inbox stays bounded rather than repeating the same fact every call. Not wired into `commands.rs`/`session.rs`/`fforge-game` yet — a self-contained module + test suite, by explicit scope fence |
 | `match_engine` | Phase-2a engine: `play_match` (`MatchOutcome { home_goals, away_goals, stream }`), `lineup_strength`, `ai_pick_lineup`. Submodules: `zone` (five-zone state + role→zone presence table), `knobs` (the fitted `Knobs` table), `contest` (attribute→contest maps, the logistic resolver, fatigue), `resolve` (the possession loop), `stream` (`MatchEvent` schema + commentary rendering) |
 | `development` | Phase-3 growth engine (`DEVELOPMENT_MODEL.md` §2–§5): the `DevKnobs` table (sibling of `match_engine::Knobs`), the per-category age envelope, PA-scaled targets, `resolve_dev_profile`/`resolve_coaching` (worldgen edge), and `tick_changes` — the growth math producing a `DevelopmentTick`'s resolved deltas. The per-attribute rate law is factored into `attr_rate`, shared verbatim with `valuation`'s projection so there is one law (no second integrator to drift). All RNG/math lives here; `apply` only integer-adds via `apply_attr_step` |
 | `valuation` | Phase-4 centralized value function (`TRANSFER_MODEL.md` §2): `value` / `value_all` (the §2.7 per-window `BTreeMap<PlayerId, Money>` cache), `project_ca` (runs `development::attr_rate` forward, jitter off, minutes/coaching neutral), `project_ca_batch` (many players, one shared knob-derived `DevTables` — `club_ai::observe`'s per-squad projection), the `ValueKnobs` §9 table (plausibility-picked, sibling of `DevKnobs`), and `MarketContext` (bounded league-wide role scarcity). `value_with` integrates each player's whole 0..=horizon_years trajectory in one pass (`project_ca_series`) rather than once per year — same numbers, no redundant re-integration of the shared prefix. A pure Layer-2 function — prices, never decides; no market/club-AI here (Phase 4 §5–§6) |

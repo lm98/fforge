@@ -21,6 +21,7 @@ pub mod event;
 pub mod finance;
 pub mod market;
 pub mod match_engine;
+pub mod news;
 pub mod observer;
 pub mod pool;
 pub mod rng;
