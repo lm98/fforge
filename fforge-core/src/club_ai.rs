@@ -149,6 +149,29 @@ pub struct UtilityKnobs {
     /// capable of producing a signing at all until §12's fog-of-war wrapper
     /// gives sellers a genuinely independent ask.
     pub asking_markup: f64,
+
+    // --- squad-size selling pressure (§9's open residual: squads pinning
+    // at `squad_max` because the two triggers above never fire hard enough
+    // to trim a squad that's simply *full*, not depth-surplus or
+    // contract-expiring anywhere). A *policy* term, not a stabilizer:
+    // `squad_min`/`squad_max` above remain the hard bounds this never
+    // touches — it only ever widens what the *policy* is willing to list,
+    // by a bounded, continuously-growing quota each window, never by
+    // dropping a role below its `SQUAD_TEMPLATE` count in one shot. ---
+    /// Fraction of `squad_max` below which squad-size pressure is zero —
+    /// selling behaves exactly as if this whole mechanism didn't exist.
+    pub squad_pressure_start: f64,
+    /// Exponent shaping the pressure's ramp over `[squad_pressure_start,
+    /// squad_max]`. `>1` back-loads it — willingness to list rises *sharply*
+    /// near the cap rather than linearly across the whole range.
+    pub squad_pressure_exponent: f64,
+    /// The most at-template (`count == SQUAD_TEMPLATE` for that role, i.e.
+    /// not already genuinely surplus) players the pressure term may add to
+    /// one window's sell list, reached only at `squad_max` itself. Bounds
+    /// the mechanism to a steady release valve rather than a one-window
+    /// purge: a squad pinned at the cap sheds a few players a window until
+    /// it has real headroom again, rather than emptying toward `squad_min`.
+    pub squad_pressure_max_listings: usize,
 }
 
 impl Default for UtilityKnobs {
@@ -166,6 +189,9 @@ impl Default for UtilityKnobs {
             expiring_within_years: 1.0,
             renew_worth_margin: 4.0,
             asking_markup: 0.95,
+            squad_pressure_start: 0.75,
+            squad_pressure_exponent: 1.5,
+            squad_pressure_max_listings: 5,
         }
     }
 }
@@ -285,41 +311,82 @@ impl UtilityPolicy {
             .collect()
     }
 
-    /// Sell list (§6's first two of three triggers): surplus to depth, or
-    /// expiring within the year and not worth renewing. The third trigger —
-    /// a standing offer above value — needs a live offer, which does not
-    /// exist without §5's clearing loop; not modeled here. `≥2 GK` and
-    /// `squad_min` are hard stabilizers: listing never proposes dropping
+    /// Squad-size pressure (§9's open residual: squads pinning at
+    /// `squad_max` because nothing makes a club *want* to sell when it's
+    /// merely full, not depth-surplus or contract-expiring anywhere). `0.0`
+    /// below `squad_pressure_start`; ramps to `1.0` at `squad_max`,
+    /// back-loaded by `squad_pressure_exponent` so it is negligible in the
+    /// middle of the range and rises sharply near the cap.
+    fn squad_pressure(&self, squad_len: usize) -> f64 {
+        let max = self.knobs.squad_max as f64;
+        let start = self.knobs.squad_pressure_start * max;
+        let span = (max - start).max(1.0);
+        let pressure = ((squad_len as f64 - start) / span).clamp(0.0, 1.0);
+        pressure.powf(self.knobs.squad_pressure_exponent)
+    }
+
+    /// Sell list: §6's first two triggers (surplus to depth; expiring within
+    /// the year and not worth renewing) plus squad-size pressure. The third
+    /// §6 trigger — a standing offer above value — needs a live offer, which
+    /// does not exist without §5's clearing loop; not modeled here. `≥2 GK`
+    /// and `squad_min` are hard stabilizers: listing never proposes dropping
     /// below either.
+    ///
+    /// **Squad-size pressure** (§9 residual) adds a third, bounded source of
+    /// listings: players in a role sitting *exactly* at its `SQUAD_TEMPLATE`
+    /// count — not already genuinely surplus — become eligible too, up to a
+    /// quota that grows continuously with `squad_pressure` and is capped at
+    /// `squad_pressure_max_listings`. It is a quota, not a threshold change,
+    /// specifically so a squad pinned at the cap sheds a *few* players a
+    /// window rather than every at-template role at once the instant
+    /// pressure engages — approached and relieved over successive windows,
+    /// not purged in one.
     fn sell_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision> {
         if obs.squad.len() <= self.knobs.squad_min {
             return Vec::new();
         }
         let target = self.target_ca(obs.reputation);
+        let pressure = self.squad_pressure(obs.squad.len());
+        let pressure_quota =
+            (pressure * self.knobs.squad_pressure_max_listings as f64).round() as usize;
         let mut counts: BTreeMap<Role, usize> = BTreeMap::new();
         for m in &obs.squad {
             *counts.entry(m.natural_role).or_default() += 1;
         }
         let mut gk_count = counts.get(&Role::Gk).copied().unwrap_or(0);
 
-        let mut expendable: Vec<&SquadMember> = obs
+        // `bool` tags whether a member is expendable only through the
+        // squad-pressure quota (never through a genuine §6 trigger) — the
+        // quota below caps only those, never the real triggers.
+        let mut expendable: Vec<(&SquadMember, bool)> = obs
             .squad
             .iter()
-            .filter(|m| {
+            .filter_map(|m| {
                 let template = SQUAD_TEMPLATE
                     .iter()
                     .find(|(r, _)| *r == m.natural_role)
                     .map(|&(_, c)| c)
                     .unwrap_or(0);
-                let surplus_to_depth = counts.get(&m.natural_role).copied().unwrap_or(0) > template;
+                let count = counts.get(&m.natural_role).copied().unwrap_or(0);
+                let surplus_to_depth = count > template;
                 let expiring_and_declining = m.years_left_on_contract
                     <= self.knobs.expiring_within_years
                     && (m.projected_ca as f64) < target - self.knobs.renew_worth_margin;
-                surplus_to_depth || expiring_and_declining
+                if surplus_to_depth || expiring_and_declining {
+                    return Some((m, false));
+                }
+                // GK is excluded from pressure-only eligibility: its
+                // template (3) sits only one above `min_goalkeepers` (2), so
+                // squeezing it for squad-size relief is exactly what
+                // produces the GK-coverage violations `TRANSFER_MODEL.md` §9
+                // already flags as a *consequence* of pinning, not a
+                // separate problem pressure should go looking to cause.
+                let at_template = template > 0 && count == template && m.natural_role != Role::Gk;
+                at_template.then_some((m, true))
             })
             .collect();
         // Weakest / most expendable first, deterministic tie-break.
-        expendable.sort_by(|a, b| {
+        expendable.sort_by(|(a, _), (b, _)| {
             a.current_ca
                 .cmp(&b.current_ca)
                 .then(a.player.cmp(&b.player))
@@ -327,9 +394,13 @@ impl UtilityPolicy {
 
         let mut decisions = Vec::new();
         let mut remaining = obs.squad.len();
-        for m in expendable {
+        let mut pressure_used = 0usize;
+        for (m, pressure_only) in expendable {
             if remaining <= self.knobs.squad_min {
                 break;
+            }
+            if pressure_only && pressure_used >= pressure_quota {
+                continue;
             }
             if m.natural_role == Role::Gk {
                 if gk_count <= self.knobs.min_goalkeepers {
@@ -339,6 +410,9 @@ impl UtilityPolicy {
             }
             decisions.push(TransferDecision::List { player: m.player });
             remaining -= 1;
+            if pressure_only {
+                pressure_used += 1;
+            }
         }
         decisions
     }
@@ -349,6 +423,35 @@ impl ClubPolicy for UtilityPolicy {
         let mut decisions = self.buy_decisions(obs);
         decisions.extend(self.sell_decisions(obs));
         decisions
+    }
+}
+
+/// `TRANSFER_MODEL.md` §10's pre-commitment model, promoted from "the seam
+/// is left open" to a real second `ClubPolicy`: replays a human's already-
+/// validated, already-submitted `TransferDecision`s verbatim, every round,
+/// never adapting to how the window unfolds — the client-visible meaning of
+/// "pre-commitment." A club with nothing submitted gets an empty list, not a
+/// fallback to `UtilityPolicy`: §10 is explicit that a human who ignores the
+/// market does nothing in it, exactly as before this seam existed.
+/// Affordability, squad bounds, and every other stabilizer are *not* this
+/// policy's job — §5's clearing loop applies the same resolve-time filter to
+/// every club's decisions regardless of which `ClubPolicy` produced them
+/// (`market::filter_affordable`), so a submitted plan that has gone stale or
+/// unaffordable by the time its window resolves is dropped there, silently.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordedPolicy {
+    pub decisions: Vec<TransferDecision>,
+}
+
+impl RecordedPolicy {
+    pub fn new(decisions: Vec<TransferDecision>) -> Self {
+        RecordedPolicy { decisions }
+    }
+}
+
+impl ClubPolicy for RecordedPolicy {
+    fn transfer_decisions(&self, _obs: &ClubObservation) -> Vec<TransferDecision> {
+        self.decisions.clone()
     }
 }
 
@@ -547,6 +650,130 @@ mod tests {
     }
 
     #[test]
+    fn squad_size_pressure_lists_at_template_players_once_pinned_at_the_ceiling() {
+        // §9's open residual: a squad at `squad_max` where only one role
+        // (`St`, bumped from its template of 3 up to 9) is genuinely
+        // depth-surplus. Every other role sits exactly at its
+        // `SQUAD_TEMPLATE` count. Before this fix, only the 9 overflowing
+        // strikers would ever be sell-eligible and the other 21 players
+        // would never budge — exactly the "pinned at the ceiling" failure
+        // mode. The fix's squad-size pressure must additionally surface a
+        // bounded number of at-template players once the squad is genuinely
+        // full.
+        let mut squad = Vec::new();
+        let mut next_id = 0u32;
+        for &(role, count) in SQUAD_TEMPLATE.iter() {
+            let n = if role == Role::St { count + 6 } else { count };
+            for _ in 0..n {
+                squad.push(member(next_id, role, role, 65, 65));
+                next_id += 1;
+            }
+        }
+        let knobs = UtilityKnobs::default();
+        assert_eq!(
+            squad.len(),
+            knobs.squad_max,
+            "test setup must land exactly at squad_max"
+        );
+
+        let mut obs = baseline_observation();
+        obs.squad = squad;
+
+        let policy = UtilityPolicy::new(knobs);
+        let decisions = policy.transfer_decisions(&obs);
+        let listed: BTreeSet<PlayerId> = decisions
+            .iter()
+            .filter_map(|d| match d {
+                TransferDecision::List { player } => Some(*player),
+                _ => None,
+            })
+            .collect();
+
+        let st_ids: BTreeSet<PlayerId> = obs
+            .squad
+            .iter()
+            .filter(|m| m.natural_role == Role::St)
+            .map(|m| m.player)
+            .collect();
+        let non_st_listed: Vec<PlayerId> = listed
+            .iter()
+            .filter(|p| !st_ids.contains(p))
+            .copied()
+            .collect();
+
+        assert!(
+            !non_st_listed.is_empty(),
+            "squad-size pressure must list at least one at-template player \
+             once the squad is pinned at squad_max, got {decisions:?}"
+        );
+        assert!(
+            non_st_listed.len() <= knobs.squad_pressure_max_listings,
+            "pressure-driven listings must stay within the quota, got {non_st_listed:?}"
+        );
+    }
+
+    #[test]
+    fn squad_size_pressure_never_lists_an_understaffed_role() {
+        // `Cb` is understaffed (1 against a template of 4); `St` is bumped
+        // to bring the squad to `squad_max` so pressure is at its sharpest.
+        // Squad-size pressure must never pull a player from a role that is
+        // already short of its template — that would be actively harmful,
+        // not a relief valve.
+        let mut squad = Vec::new();
+        let mut next_id = 0u32;
+        for &(role, count) in SQUAD_TEMPLATE.iter() {
+            let n = match role {
+                Role::Cb => 1,
+                Role::St => count + 9,
+                _ => count,
+            };
+            for _ in 0..n {
+                squad.push(member(next_id, role, role, 65, 65));
+                next_id += 1;
+            }
+        }
+        let knobs = UtilityKnobs::default();
+        assert_eq!(squad.len(), knobs.squad_max);
+
+        let mut obs = baseline_observation();
+        obs.squad = squad;
+
+        let policy = UtilityPolicy::new(knobs);
+        let decisions = policy.transfer_decisions(&obs);
+        let cb_ids: BTreeSet<PlayerId> = obs
+            .squad
+            .iter()
+            .filter(|m| m.natural_role == Role::Cb)
+            .map(|m| m.player)
+            .collect();
+
+        assert!(
+            decisions.iter().all(|d| match d {
+                TransferDecision::List { player } => !cb_ids.contains(player),
+                _ => true,
+            }),
+            "an understaffed role must never be listed under squad-size pressure: {decisions:?}"
+        );
+    }
+
+    #[test]
+    fn squad_size_pressure_is_negligible_well_below_the_ceiling() {
+        // A full-template squad (24, well under `squad_max = 30`) has no
+        // depth surplus, no expiring contracts, and sits below
+        // `squad_pressure_start` (0.75 * 30 = 22.5) — squad-size pressure
+        // must not manufacture listings out of nothing here.
+        let obs = baseline_observation();
+        let policy = UtilityPolicy::default();
+        let decisions = policy.transfer_decisions(&obs);
+        assert!(
+            decisions
+                .iter()
+                .all(|d| !matches!(d, TransferDecision::List { .. })),
+            "a comfortably-sized squad must not be pressured into listing: {decisions:?}"
+        );
+    }
+
+    #[test]
     fn club_with_no_cash_produces_no_buy_decisions() {
         let mut obs = baseline_observation();
         obs.squad.retain(|m| m.natural_role != Role::Gk); // create real need
@@ -697,6 +924,39 @@ mod tests {
         assert!(
             any_bid,
             "no club in a real 6-club league produced a single Bid — asking_markup regression"
+        );
+    }
+
+    #[test]
+    fn recorded_policy_replays_exactly_what_was_submitted() {
+        let obs = baseline_observation();
+        let decisions = vec![
+            TransferDecision::List {
+                player: obs.squad[0].player,
+            },
+            TransferDecision::Bid {
+                player: PlayerId(9001),
+                from: Some(ClubId(1)),
+                role: Role::St,
+                price: Money(1_000_000),
+            },
+        ];
+        let policy = RecordedPolicy::new(decisions.clone());
+        assert_eq!(policy.transfer_decisions(&obs), decisions);
+        // A second, differently-shaped observation must not perturb the
+        // replay — it is not a function of `obs` at all, by design.
+        let mut other = obs.clone();
+        other.squad.clear();
+        assert_eq!(policy.transfer_decisions(&other), decisions);
+    }
+
+    #[test]
+    fn recorded_policy_with_nothing_submitted_produces_no_decisions() {
+        let policy = RecordedPolicy::default();
+        let decisions = policy.transfer_decisions(&baseline_observation());
+        assert!(
+            decisions.is_empty(),
+            "no submission must mean no decisions, never a UtilityPolicy fallback: {decisions:?}"
         );
     }
 

@@ -5,6 +5,7 @@
 //! only consumes them. `replay(events)` is therefore save-loading, bug
 //! reproduction, and (later) counterfactual branch points, all in one.
 
+use crate::club_ai::TransferDecision;
 use crate::development::apply_attr_step;
 use crate::event::Event;
 use fforge_domain::{
@@ -123,6 +124,13 @@ pub struct GameState {
     /// unsigned" reading (`TRANSFER_MODEL.md` §8.2). Cleared when the player
     /// signs again (`TransferCompleted`) or retires (`PlayerRetired`).
     pub unsigned_since: BTreeMap<PlayerId, GameDate>,
+    /// The human's pre-committed transfer plan for the window currently
+    /// open, if any submitted (`TRANSFER_MODEL.md` §10's pre-commitment
+    /// model). Set by `TransferDecisionSubmitted` (overwriting whatever was
+    /// pending before), cleared by the next `TransferWindowClosed` whether
+    /// or not it was ever consumed — a plan is good for one window, never
+    /// carried into the next.
+    pub pending_transfer_decisions: Vec<TransferDecision>,
 }
 
 impl GameState {
@@ -156,6 +164,7 @@ impl GameState {
                     appearances_since_tick: BTreeMap::new(),
                     club_matches_since_tick: BTreeMap::new(),
                     unsigned_since: BTreeMap::new(),
+                    pending_transfer_decisions: Vec::new(),
                 }
             }
             other => panic!("event log must start with GameStarted, found {other:?}"),
@@ -271,6 +280,12 @@ impl GameState {
             Event::FinanceTick { deltas, .. } => {
                 apply_finance_deltas(&mut self.world, deltas);
             }
+            Event::TransferDecisionSubmitted { decisions, .. } => {
+                self.pending_transfer_decisions = decisions.clone();
+            }
+            Event::TransferWindowClosed { .. } => {
+                self.pending_transfer_decisions.clear();
+            }
         }
     }
 
@@ -375,10 +390,11 @@ pub fn league_table(
 
 #[cfg(test)]
 mod transfer_event_tests {
-    //! `TRANSFER_MODEL.md` §4's event-log seam: the six new fold arms above.
-    //! Events and fold only (this task's scope fence) — no decision logic, no
-    //! clearing loop, no valuation calls, so every event here is hand-built
-    //! rather than produced by a command.
+    //! `TRANSFER_MODEL.md` §4's event-log seam (six fold arms) plus §10's
+    //! pre-commitment seam (two more: `TransferDecisionSubmitted`,
+    //! `TransferWindowClosed`). Events and fold only (this task's scope
+    //! fence) — no decision logic, no clearing loop, no valuation calls, so
+    //! every event here is hand-built rather than produced by a command.
 
     use super::*;
     use crate::event::Event;
@@ -671,5 +687,57 @@ mod transfer_event_tests {
 
         assert_eq!(log, loaded, "log must round-trip through JSON exactly");
         assert_eq!(GameState::replay(&log), GameState::replay(&loaded));
+    }
+
+    #[test]
+    fn transfer_decision_submitted_sets_pending_and_window_closed_clears_it() {
+        let (mut log, state) = base_log(31);
+        let club = ClubId(0);
+        let target = state.world.club(club).players[0];
+        let decisions = vec![TransferDecision::List { player: target }];
+
+        log.push(Event::TransferDecisionSubmitted {
+            date: state.date,
+            club,
+            decisions: decisions.clone(),
+        });
+        let after_submit = GameState::replay(&log);
+        assert_eq!(after_submit.pending_transfer_decisions, decisions);
+
+        log.push(Event::TransferWindowClosed {
+            date: state.date,
+            window_index: 0,
+        });
+        let after_close = GameState::replay(&log);
+        assert!(
+            after_close.pending_transfer_decisions.is_empty(),
+            "TransferWindowClosed must clear whatever was pending, consumed or not"
+        );
+
+        // Idempotent, deterministic replay across both new event kinds.
+        assert_eq!(GameState::replay(&log), GameState::replay(&log));
+    }
+
+    #[test]
+    fn a_second_submission_overwrites_the_first_pending_plan() {
+        let (mut log, state) = base_log(32);
+        let club = ClubId(0);
+        let squad = state.world.club(club).players.clone();
+        log.push(Event::TransferDecisionSubmitted {
+            date: state.date,
+            club,
+            decisions: vec![TransferDecision::List { player: squad[0] }],
+        });
+        log.push(Event::TransferDecisionSubmitted {
+            date: state.date,
+            club,
+            decisions: vec![TransferDecision::List { player: squad[1] }],
+        });
+        let replayed = GameState::replay(&log);
+        assert_eq!(
+            replayed.pending_transfer_decisions,
+            vec![TransferDecision::List { player: squad[1] }],
+            "the latest submission must replace, not accumulate onto, the prior one"
+        );
     }
 }

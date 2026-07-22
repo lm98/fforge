@@ -20,11 +20,12 @@ depends on.
   utility-based buy/sell policy; simultaneous market clearing inside time-gated windows; club
   finances and player contracts; youth intake and retirement (the pool's two ends); the append-only
   event-log seam; the market pathology harness.
-- **Deferred:** **human transfer decisions** (§10 — the human's club is AI-run in the market for
-  v1); **form as a valuation input** (§2.5 — no per-player performance signal exists yet);
+- **Deferred:** **form as a valuation input** (§2.5 — no per-player performance signal exists yet);
   **loans**, **agents/negotiation rounds**, **multi-league transfers**, **transfer clauses**
   (release clauses, sell-on percentages); **scouting fog-of-war** (§2.6 — Phase 5, a wrapper on this
-  function, not a change to it).
+  function, not a change to it). **Human transfer decisions** (§10) were originally deferred with v1
+  the human's club AI-run in the market; the seam that decision left open has since been promoted —
+  §10 records the implementation, not a plan.
 
 ### 1.1 On the missing Python scratchpad — a deliberate departure
 
@@ -254,12 +255,14 @@ journalist agent will want ("*City's third bid rejected*"), so the Trace is not 
 out of the fold.
 
 ```rust
-TransferCompleted { date, player, from: Option<ClubId>, to: ClubId, fee: Money, contract: Contract }
-PlayerReleased    { date, player, club }
-ContractRenewed   { date, player, club, contract }
-YouthIntake       { date, club, players: Vec<Player> }
-PlayerRetired     { date, player }
-FinanceTick       { date, deltas: Vec<(ClubId, Money)> }
+TransferCompleted         { date, player, from: Option<ClubId>, to: ClubId, fee: Money, contract: Contract }
+PlayerReleased            { date, player, club }
+ContractRenewed           { date, player, club, contract }
+YouthIntake               { date, club, players: Vec<Player> }
+PlayerRetired             { date, player }
+FinanceTick               { date, deltas: Vec<(ClubId, Money)> }
+TransferDecisionSubmitted { date, club, decisions: Vec<TransferDecision> }  // §10
+TransferWindowClosed      { date, window_index: u64 }                       // §10
 ```
 
 `YouthIntake` records the **generated players** themselves, not a seed — the same choice `GameStarted`
@@ -282,6 +285,8 @@ symmetry is not decorative — it means `commands::step` grows one more tick emi
 | `YouthIntake` | insert players into `World.players`; push ids onto the club's roster |
 | `PlayerRetired` | remove from roster; `contract = None`; mark retired (see §8.2) |
 | `FinanceTick` | integer-add each delta to the club's `balance` |
+| `TransferDecisionSubmitted` | `pending_transfer_decisions = decisions` (overwrites) — §10 |
+| `TransferWindowClosed` | `pending_transfer_decisions.clear()` — §10 |
 
 Rosters are `Vec<PlayerId>`; keep them **sorted** after mutation so the fold's output is
 order-independent and `GameState` equality stays meaningful across replay paths.
@@ -486,64 +491,126 @@ band (1.9–2.0 vs 1.5–1.7) but reopened the concentration drift (0.60 → 0.7
 of keeping the harder-to-fix competitive-balance axis stable; volume sitting just under its target
 band is the accepted residual (see below).
 
-*Reading at the banked knobs (pooled, 8 seeds × 15 seasons):*
+*Reading at the banked knobs (pooled, 24 seeds × 15 seasons — widened from the original 8-seed pool once
+`club_ai`'s squad-size selling pressure landed, below, to get a noise-resistant re-read rather than
+banking off the smaller sample):*
 
 | Metric | Reading | Target |
 |---|---|---|
-| Transfers / club / window | ~1.6 | ~2–5 |
-| Fee median / p90 | ~1.3M / ~3.5M | p90 well above median |
-| Points-Gini, early → late | 0.314 → 0.298 | stable, not rising |
-| Season-to-season rank churn | ~1.13 | non-zero |
-| Top-3 share of top-20, early → late | 0.63 → 0.64 | elevated, non-rising |
-| Median fee, last season / first season | ~0.67× | < ~2× |
-| Clubs insolvent | ~5.0 / 20 | neither zero nor unbounded |
-| Clubs hoarding cash | ~0.9 / 20 | neither zero nor unbounded |
-| League mean age | ~27.6 | stable, plausible |
-| Squad size, min / max across the run | ~22.9 / 30 | in [18, 30] |
-| Role-coverage violations (< 2 GK) | ~1.9 (up to 6 in a seed) | 0 (hard stabilizer) |
+| Transfers / club / window | ~1.75 | ~2–5 |
+| Fee median / p90 | ~1.2M / ~3.1M | p90 well above median |
+| Points-Gini, early → late | 0.313 → 0.302 | stable, not rising |
+| Season-to-season rank churn | ~1.08 | non-zero |
+| Top-3 share of top-20, early → late | 0.633 → 0.649 | elevated, non-rising |
+| Median fee, last season / first season | ~0.68× | < ~2× |
+| Clubs insolvent | ~5.3 / 20 | neither zero nor unbounded |
+| Clubs hoarding cash | ~0.7 / 20 | neither zero nor unbounded |
+| League mean age | ~27.5 | stable, plausible |
+| Squad size, min / max across the run | ~22.6 / 30 | in [18, 30] |
+| Role-coverage violations (< 2 GK) | ~2.5 (sd 3.4, up to 13 in a seed) | 0 (hard stabilizer) |
+| Squad-size snapshots strictly below `squad_max` | ~0.74 | mass below the cap, not a spike at it |
+| Share of clubs majority-pinned at `squad_max` | ~0.07 | well under 1.0 |
 
 Read §2.6 before reacting to the concentration row: v1's omniscient valuers make it an upper bound,
 not a prediction of the fogged Phase-5 game — it is reported flat/bounded here because that is the
 believable band for *this* baseline, not because fog-of-war would reproduce the same number.
+Role-coverage violations carry real seed-to-seed spread (sd 3.4 against a mean of 2.5) — with 24 seeds
+pooled instead of 8, a couple of unlucky GK-retirement seeds surface a higher single-seed max (13 vs the
+prior pool's 6) without moving the mean outside the earlier ~1.5–1.9 reading's own noise band; treated
+as the same reading at a steadier sample, not a regression.
 
-**Two open residuals, reported rather than chased** (harness plumbing never feeds back into the knob
-table by itself — this is that boundary): transfer volume sits just under the ~2–5 band, and squad
-sizes pin at the `squad_max = 30` ceiling in every seed with a handful of GK-coverage violations
-following from it (a club hitting the cap can lose a keeper to retirement faster than the market lets
-it buy a replacement). Both point at `club_ai`/`pool` selling and youth-intake balance, not at `beta`
-or `revenue_per_reputation` — outside this pass's scope fence, flagged for a future re-fit pass.
+**Squad-pinning residual closed by a policy fix, not a knob change.** `UtilityPolicy::sell_decisions`
+(`club_ai`) gained a third, squad-size-driven selling trigger (`UtilityKnobs::squad_pressure_start`/
+`_exponent`/`_max_listings`): as a club's roster approaches `squad_max`, players in roles sitting
+*exactly* at their `SQUAD_TEMPLATE` count — not yet genuinely surplus — become listable too, through a
+quota that grows continuously (back-loaded, so it is negligible in the middle of the range and rises
+sharply near the cap) and stays bounded per window rather than purging a squad in one shot. Goalkeepers
+are excluded from this mechanism, since `SQUAD_TEMPLATE`'s GK count (3) sits only one above
+`min_goalkeepers` (2) and squeezing it is exactly what first regressed the GK-coverage row above during
+tuning. §6's hard stabilizers (`squad_min`/`squad_max`, `≥2` GK) are unchanged — this is a policy
+widening, not a bound change. Re-read at the fuller 24-seed pool: squad-size snapshots sit below
+`squad_max` ~74% of the time (was a spike at the ceiling in every seed) and only ~7% of clubs are
+majority-pinned across their run (was "every seed") — the fix holds at scale, not just at the 8-seed
+sample it was tuned against.
+
+**Transfer volume residual: still open, and not squad-pinning after all.** The original diagnosis named
+squad pinning as "the likely root cause of the ~1.6 transfers/club/window reading." With pinning now
+resolved, volume moved from ~1.6 to only ~1.75 across the fuller pool — an inch, not a landing in the
+~2–5 band. The watch condition on this re-read was concentration: had volume climbed *and* concentration
+drifted the way the rejected `revenue_per_reputation` = 550k/600k did (0.60 → 0.71–0.76, §9 above),
+that would have meant this policy fix was quietly buying the same volume the finance knob was rejected
+for buying. It didn't — early→late concentration held at 0.633 → 0.649 (Δ+0.016), statistically the same
+flat, non-drifting read as the original 8-seed bank's 0.63 → 0.64 (Δ+0.01). So the fix is confirmed
+clean at scale, but the corollary is the harder finding: squad-size headroom was not, in fact, the
+market's binding constraint on volume — relieving it barely moved the number. The next investigation
+into this residual should look at the buy side and the clearing loop (`market::resolve_window`'s round
+cap, or `club_ai`'s buy shortlist thresholds) rather than squad-side selling pressure again. Still outside
+this pass's scope fence: `beta` and `revenue_per_reputation` remain untouched.
 
 ---
 
-## 10. Human transfer decisions — deferred, with the seam left open
+## 10. Human transfer decisions — the pre-commitment model
 
-**Decision: for v1 every club, including the human's, is AI-run in the transfer market.**
+**Original decision (superseded below): for v1 every club, including the human's, would be AI-run in
+the transfer market.** Phase 4's deliverable per `DESIGN.md` §9 is "club decision AI, the shared
+valuation function, windows; stress-test for pathologies" — the *market machinery*. Human agency over
+that machinery reads as a management-UI concern, and `DESIGN.md` §9 places UI/UX in Phase 6, so this
+seam was deliberately left open rather than closed: for the duration of Phase 4 the game would be, in
+the transfer window, a spectator sport. That scoping call bought §5 and §6 time to settle before
+anything human-facing had to commit to their shape — and it has now paid off exactly as anticipated:
+the seam described below turned out to be small precisely *because* §5 and §6 were built first.
 
-Phase 4's deliverable per `DESIGN.md` §9 is "club decision AI, the shared valuation function, windows;
-stress-test for pathologies" — the *market machinery*. Human agency over that machinery is a
-management-UI concern, and `DESIGN.md` §9 places UI/UX in Phase 6. Folding it in now would widen Phase
-4 by a command, a validation surface, a CLI interaction loop, and a set of "what can the human legally
-do mid-window" rules that are better designed once the market's own dynamics are known.
-
-**This is a deliberate scoping call, recorded so it is not mistaken for an oversight.** It has a real
-cost: for the duration of Phase 4 the game is, in the transfer window, a spectator sport.
-
-**The seam is left open, not closed.** The follow-on is small precisely because §5 and §6 are built
-first:
+**Promoted.** The human submits a transfer plan once per window; it is validated, recorded, and
+replayed **unchanged** through every round of that window's clearing loop — never renegotiated,
+never adapted round to round. This is what "pre-commitment" means here, and it is the whole of the
+scope: **no negotiation, no counter-offers, no in-window re-bidding.** A human who says nothing gets
+nothing — §6's `UtilityPolicy` never steps in on their behalf, by design; a spectator who ignores the
+market does exactly what they did before this seam existed.
 
 ```rust
-Command::SubmitTransferDecision(TransferDecision)   // → Event::TransferDecisionSubmitted
+Command::SubmitTransferDecision(Vec<TransferDecision>)   // → Event::TransferDecisionSubmitted { date, club, decisions }
 ```
 
-It slots into the identical propose-then-validate gate as `Command::SubmitLineup` — a human proposal,
-validated in `commands::step` (squad bounds, cash, wage headroom, target availability), recorded as a
-resolved decision, and entering §5's clearing loop as one more bidder among twenty. `ClubPolicy`
-(§6.1) is the substitution point: the human's club swaps its utility policy for a "read the recorded
-decision" policy, which is the *same* substitution Phase 5 performs for LLM agents. Building it for
-the human first would have been building it twice.
+It slots into the identical propose-then-validate gate as `Command::SubmitLineup`:
 
-**Tracked as a Phase-6 task** (`PHASE4_TASKS.md`, "Deferred / follow-on"), promotable to late Phase 4
-if the spectator-window feel proves intolerable before Phase 5 arrives.
+- **Submit-time validation (shape, `commands::validate_transfer_decisions`):** every named player
+  exists; a `Bid`'s target is not already the submitting club's own player and its reservation price
+  is not negative; a `List`'s target is the club's own player. New `CommandError` variants
+  (`UnknownPlayer`, `AlreadyOwned`, `NegativePrice`) sit alongside `NotInSquad`/`DuplicatePlayers`.
+- **Resolve-time validation (affordability, `market::filter_affordable`):** cash, wage headroom,
+  squad bounds, the GK floor, and *availability* — applied inside the clearing loop, uniformly, to
+  every club's decisions regardless of which `ClubPolicy` produced them. A no-op for `UtilityPolicy`
+  output (already compliant by construction); the actual gate for a human plan, which bypasses that
+  producer-side filtering by submitting decisions directly. A plan that was affordable at submission
+  time but no longer is by the time its window resolves — or by a later round within the same window
+  — is dropped silently, never an error, never a panic. (Availability closed a real latent gap: a
+  `Bid`'s `from: None` "this is a free agent" claim was previously trusted unconditionally by the
+  bid-collection loop, safe only because `UtilityPolicy` always regenerates it fresh each round.
+  `RecordedPolicy`'s static replay can outlive that claim's truth within a single window — a target
+  bought by a third club mid-window — so `filter_affordable` now re-checks the claimed seller against
+  the round's live observation for every policy, not just this one.)
+- **`club_ai::RecordedPolicy`** implements `ClubPolicy` by replaying the submitted `decisions`
+  verbatim, every round, never adapting — the same substitution seam Phase 5's LLM agents will use.
+  The human's club runs it; every other club still runs `UtilityPolicy`. A club with nothing submitted
+  gets an empty list from it — never a `UtilityPolicy` fallback.
+- **`GameState.pending_transfer_decisions`** holds the current plan, set by
+  `Event::TransferDecisionSubmitted` (overwriting whatever was pending) and cleared by
+  `Event::TransferWindowClosed` — emitted unconditionally for every window boundary crossed, even one
+  that clears zero transfers, so a plan is good for exactly the one window it was pending for, never
+  silently carried into the next.
+
+**The harness needed a compensating fix, not a free ride.** `market::calibrate`'s pathology harness
+(§11) drives the same real command pipeline a live game does, with `player_club = ClubId(0)` — before
+this seam existed that was irrelevant to market dynamics (only lineup selection cared), but this seam
+makes `player_club` matter to the market for the first time. Left alone, club 0 would have gone
+permanently passive (no submissions, ever, in a harness with no human) and silently stopped being "20
+uniform AI clubs," corrupting exactly the pinning/volume/concentration statistics the harness exists to
+read. `market::calibrate::submit_player_clubs_ai_equivalent_plan` compensates: right before a window
+closes, it submits whatever `UtilityPolicy` itself would have decided for club 0, so the harness models
+"a manager who always follows the AI's advice" rather than either a real human or a silently-broken
+club. Re-read at the fuller 24-seed pool this fix was verified against: transfers/window 1.759 (bank:
+1.75), below-cap share 0.735 (bank: 0.74), concentration 0.660 → 0.656 (bank: 0.633 → 0.649,
+similarly flat) — statistically the same league this harness read before the seam existed.
 
 ---
 

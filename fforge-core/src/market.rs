@@ -15,14 +15,29 @@
 //! `unfilled_needs` are a Trace — the journalist agent's raw material
 //! ("City's third bid rejected") — kept, but never fed to the fold.
 //!
-//! **Scope fence.** No human command surface (`TRANSFER_MODEL.md` §10 — the
-//! human's club is AI-run in the market for v1), no loans, no negotiation
-//! rounds, no transfer clauses.
+//! **Human decisions** (`TRANSFER_MODEL.md` §10's pre-commitment model,
+//! promoted from "the seam is left open"): `resolve_window`'s `human_club`
+//! substitutes `club_ai::RecordedPolicy` for that one club, replaying
+//! whatever was pre-committed via `Command::SubmitTransferDecision`
+//! unchanged in every round; every other club still runs `UtilityPolicy`.
+//! `filter_affordable` applies the same resolve-time affordability/squad-
+//! bounds/GK-floor gate to every club's decisions regardless of which
+//! policy produced them — a no-op for `UtilityPolicy` output (already
+//! compliant by construction), the actual gate for a human's plan, which
+//! bypasses `UtilityPolicy`'s own producer-side filtering entirely.
+//!
+//! **Scope fence.** No loans, no negotiation rounds, no transfer clauses, no
+//! in-window re-bidding — a submitted plan is replayed exactly as
+//! submitted, never adapted round to round (that is what "pre-commitment"
+//! means here).
 
 pub mod calibrate;
 pub use calibrate::{print_report, run_market_calibration, MarketReport, MarketTelemetry, SeedSpread};
 
-use crate::club_ai::{observe, ClubPolicy, TransferDecision, UtilityKnobs, UtilityPolicy};
+use crate::club_ai::{
+    observe, ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs,
+    UtilityPolicy,
+};
 use crate::development::DevKnobs;
 use crate::rng::derive_stream;
 use crate::state::apply_transfer_completed;
@@ -153,6 +168,14 @@ pub struct WindowOutcome {
 /// `world` is never mutated — a working copy absorbs each round's completed
 /// transfers so later rounds see updated squads, cash, and committed wages,
 /// exactly as a real window would.
+///
+/// `human_club`/`human_decisions` are §10's pre-commitment seam: when
+/// `human_club` is `Some(club)`, that one club's decisions each round are
+/// `human_decisions` replayed verbatim via `RecordedPolicy` rather than
+/// `UtilityPolicy`'s own fresh-each-round reasoning — every other club is
+/// unaffected. `human_club: None` (every existing caller before this seam
+/// existed, and any context that wants a pure all-AI league) reproduces the
+/// prior behaviour exactly.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_window(
     world: &World,
@@ -163,13 +186,16 @@ pub fn resolve_window(
     value_knobs: &ValueKnobs,
     utility_knobs: &UtilityKnobs,
     market_knobs: &MarketKnobs,
+    human_club: Option<ClubId>,
+    human_decisions: &[TransferDecision],
 ) -> WindowOutcome {
     // Step 1 (§5): freeze the world snapshot and the valuation cache. Every
     // club's `Candidate.value` this whole window comes from this one map,
     // computed once — §2.7's simultaneity guarantee.
     let ctx = MarketContext::from_world(world, value_knobs);
     let valuations = value_all(world, today, &ctx, value_knobs, dev);
-    let policy = UtilityPolicy::new(*utility_knobs);
+    let ai_policy = UtilityPolicy::new(*utility_knobs);
+    let human_policy = RecordedPolicy::new(human_decisions.to_vec());
 
     let mut work_world = world.clone();
     let mut transfers = Vec::new();
@@ -196,7 +222,12 @@ pub fn resolve_window(
         let mut club_decisions: Vec<(ClubId, Vec<TransferDecision>)> = Vec::new();
         for &club in &club_ids {
             let obs = observe(&work_world, club, today, &valuations, dev, utility_knobs);
-            let decisions = policy.transfer_decisions(&obs);
+            let raw_decisions = if Some(club) == human_club {
+                human_policy.transfer_decisions(&obs)
+            } else {
+                ai_policy.transfer_decisions(&obs)
+            };
+            let decisions = filter_affordable(&obs, &raw_decisions, utility_knobs);
             for d in &decisions {
                 if let TransferDecision::List { player } = d {
                     listed.insert(*player, club);
@@ -317,7 +348,7 @@ pub fn resolve_window(
         }
     }
 
-    let unfilled_needs = final_unfilled_needs(&work_world, today, &valuations, dev, &policy);
+    let unfilled_needs = final_unfilled_needs(&work_world, today, &valuations, dev, &ai_policy);
 
     WindowOutcome {
         transfers,
@@ -326,6 +357,89 @@ pub fn resolve_window(
         unfilled_needs,
         rounds_used,
     }
+}
+
+/// Resolve-time sanity filter (§10's pre-commitment model): the same
+/// affordability, wage-headroom, squad-bounds, GK-floor, and availability
+/// stabilizers `UtilityPolicy`'s own producer-side filtering already
+/// guarantees for every AI club's decisions apply here too, uniformly, to
+/// whichever policy produced `decisions` — a no-op for `UtilityPolicy`
+/// output (already compliant by construction, so this never changes a
+/// pre-existing AI-vs-AI outcome), the actual gate for a human's
+/// `RecordedPolicy` plan, which bypasses that producer-side filtering by
+/// submitting decisions directly and — being static, replayed unchanged
+/// every round — can go stale *within* a single window, not just between
+/// windows. Checked against this round's own `obs` (the round-start
+/// snapshot), so a plan that was affordable, or a target that was
+/// available, at submission time but no longer is by the time its window
+/// resolves — or by a later round within the same window — is silently
+/// dropped: never an error, never a panic.
+///
+/// **Availability** is the subtle one: a `Bid`'s `from: None` claims "this
+/// player is a free agent," and the bid-collection loop below trusts that
+/// claim unconditionally (`from: None => true`, no re-check) because
+/// `UtilityPolicy` regenerates it fresh every round off the live
+/// `ClubObservation`, so it is never stale *for that policy*. A static
+/// `RecordedPolicy` plan has no such guarantee: if the claimed free agent
+/// gets signed by a third club in an earlier round of the same window, the
+/// stale `from: None` would otherwise stay "biddable" forever after,
+/// contending for a player who was never on offer to that bidder. Requiring
+/// `candidate.club == from` here — the *current* observed owner, matched
+/// against whatever the decision itself claims — closes that hole for any
+/// policy, not just this one.
+fn filter_affordable(
+    obs: &ClubObservation,
+    decisions: &[TransferDecision],
+    knobs: &UtilityKnobs,
+) -> Vec<TransferDecision> {
+    let spendable = obs.balance.0 - knobs.cash_reserve_floor.0;
+    let wage_room = obs.wage_budget.0 - obs.committed_wages.0;
+    let mut gk_count = obs
+        .squad
+        .iter()
+        .filter(|m| m.natural_role == Role::Gk)
+        .count();
+    let mut squad_len = obs.squad.len();
+
+    let mut kept = Vec::new();
+    for d in decisions {
+        match *d {
+            TransferDecision::Bid {
+                player,
+                from,
+                price,
+                ..
+            } => {
+                if squad_len >= knobs.squad_max || price.0 < 0 || price.0 > spendable {
+                    continue;
+                }
+                let Some(candidate) = obs.candidates.iter().find(|c| c.player == player) else {
+                    continue;
+                };
+                if candidate.club != from || candidate.wage.0 > wage_room {
+                    continue;
+                }
+                kept.push(*d);
+            }
+            TransferDecision::List { player } => {
+                if squad_len <= knobs.squad_min {
+                    continue;
+                }
+                let Some(member) = obs.squad.iter().find(|m| m.player == player) else {
+                    continue;
+                };
+                if member.natural_role == Role::Gk {
+                    if gk_count <= knobs.min_goalkeepers {
+                        continue;
+                    }
+                    gk_count -= 1;
+                }
+                squad_len -= 1;
+                kept.push(*d);
+            }
+        }
+    }
+    kept
 }
 
 /// Probability a player consents to a move (§5 step 3): independent wage and
@@ -564,6 +678,8 @@ mod tests {
             &ValueKnobs::default(),
             &relaxed_utility_knobs(),
             &market_knobs,
+            None,
+            &[],
         );
 
         assert!(
@@ -605,6 +721,8 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
+            None,
+            &[],
         );
         let b = resolve_window(
             &world,
@@ -615,6 +733,8 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
+            None,
+            &[],
         );
         assert_eq!(
             a, b,
@@ -647,6 +767,8 @@ mod tests {
             &ValueKnobs::default(),
             &uk,
             &market_knobs,
+            None,
+            &[],
         );
         let world_b = two_bidder_world(1, 0); // ClubId(1) = high reputation
         let outcome_b = resolve_window(
@@ -658,6 +780,8 @@ mod tests {
             &ValueKnobs::default(),
             &uk,
             &market_knobs,
+            None,
+            &[],
         );
 
         assert_eq!(outcome_a.transfers.len(), 1);
@@ -690,6 +814,8 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
+            None,
+            &[],
         );
         let mut seen = BTreeSet::new();
         for t in &outcome.transfers {
@@ -718,6 +844,8 @@ mod tests {
             &ValueKnobs::default(),
             &knobs,
             &MarketKnobs::default(),
+            None,
+            &[],
         );
 
         let mut post = world.clone();
@@ -747,5 +875,128 @@ mod tests {
                 club.finances.wage_budget.0
             );
         }
+    }
+
+    // --- §10's pre-commitment model ---
+
+    #[test]
+    fn human_club_submitting_utility_policys_own_decisions_reproduces_the_same_outcome() {
+        // The equivalence property the seam is built on: RecordedPolicy
+        // replaying exactly what UtilityPolicy would have decided must not
+        // change the clearing loop's outcome at all — the substitution is
+        // behaviour-preserving. Guaranteed consent isolates the single
+        // GK contest to one round, so a static (never-adapting) replay
+        // cannot diverge from the live, freshly-recomputed original.
+        let market_knobs = MarketKnobs {
+            reputation_expectation_at_min_ca: 0.0,
+            reputation_expectation_at_max_ca: 0.0,
+            ..MarketKnobs::default()
+        };
+        let uk = relaxed_utility_knobs();
+        let world = two_bidder_world(0, 1);
+        let dev = DevKnobs::default();
+        let vk = ValueKnobs::default();
+
+        let baseline = resolve_window(
+            &world,
+            TODAY,
+            7,
+            0,
+            &dev,
+            &vk,
+            &uk,
+            &market_knobs,
+            None,
+            &[],
+        );
+
+        // Exactly what UtilityPolicy decides for ClubId(0) against the same
+        // round-1 snapshot `resolve_window` itself starts from.
+        let ctx = MarketContext::from_world(&world, &vk);
+        let valuations = value_all(&world, TODAY, &ctx, &vk, &dev);
+        let obs = observe(&world, ClubId(0), TODAY, &valuations, &dev, &uk);
+        let ai_decisions = UtilityPolicy::new(uk).transfer_decisions(&obs);
+
+        let substituted = resolve_window(
+            &world,
+            TODAY,
+            7,
+            0,
+            &dev,
+            &vk,
+            &uk,
+            &market_knobs,
+            Some(ClubId(0)),
+            &ai_decisions,
+        );
+
+        assert_eq!(
+            baseline.transfers, substituted.transfers,
+            "RecordedPolicy replaying UtilityPolicy's own decisions must reproduce the same transfers"
+        );
+    }
+
+    #[test]
+    fn an_unaffordable_pre_committed_bid_is_dropped_without_panicking() {
+        let human = ClubId(0);
+        let world = mk_world(
+            vec![mk_club(human.0, vec![], 50, 1_000, 1_000)],
+            vec![mk_player(9999, Role::Gk, 75, 24, 85, 0, 0)], // free agent
+        );
+        let decisions = vec![TransferDecision::Bid {
+            player: PlayerId(9999),
+            from: None,
+            role: Role::Gk,
+            price: Money(50_000_000), // far beyond the club's cash
+        }];
+
+        let outcome = resolve_window(
+            &world,
+            TODAY,
+            3,
+            0,
+            &DevKnobs::default(),
+            &ValueKnobs::default(),
+            &relaxed_utility_knobs(),
+            &MarketKnobs::default(),
+            Some(human),
+            &decisions,
+        );
+
+        assert!(
+            outcome.transfers.iter().all(|t| t.to != human),
+            "an unaffordable pre-committed bid must never complete a transfer: {:?}",
+            outcome.transfers
+        );
+    }
+
+    #[test]
+    fn human_club_with_nothing_submitted_completes_no_transfers_of_its_own() {
+        let cfg = WorldGenConfig {
+            num_clubs: 6,
+            ..Default::default()
+        };
+        let (world, _schedule, start) = generate(23, &cfg);
+        let human = world.competition.clubs[0];
+        let outcome = resolve_window(
+            &world,
+            start,
+            23,
+            0,
+            &DevKnobs::default(),
+            &ValueKnobs::default(),
+            &UtilityKnobs::default(),
+            &MarketKnobs::default(),
+            Some(human),
+            &[],
+        );
+        assert!(
+            outcome
+                .transfers
+                .iter()
+                .all(|t| t.to != human && t.from != Some(human)),
+            "a human club with nothing submitted must complete no transfers of its own: {:?}",
+            outcome.transfers
+        );
     }
 }
