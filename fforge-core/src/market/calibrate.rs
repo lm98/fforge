@@ -811,9 +811,24 @@ mod tests {
     /// are deliberately loose, sized to catch a market that has come loose
     /// from the design (dead, hyperactive, a frozen hierarchy, one club
     /// buying the league, runaway insolvency) rather than to pin a fitted
-    /// number. Pools a handful of real-`worldgen` seeds across a decade-plus
-    /// each — the bin runs more seeds × more seasons for an actual reading;
-    /// this is a faithful, fast tripwire.
+    /// number.
+    ///
+    /// **Pool size: 8 seeds × 15 seasons — the bin's own default (`cargo run
+    /// --bin market`), not an arbitrary shrink.** A prior 2-seed × 8-season
+    /// pool read `role_coverage_violations` at 0 (this metric's per-seed
+    /// range genuinely spans 0 to double digits — a GK-retirement wave in one
+    /// unlucky seed can spike it, per §9's "up to 13 in a seed"), while
+    /// `bin/market` at 24 seeds × 15 seasons reads a mean around 2-3 with an
+    /// sd comparable to the mean itself: a threshold set against the 2-seed
+    /// pool's reading was a threshold set against noise, not against the
+    /// metric, and would have passed or failed by which seeds happened to be
+    /// in the pool rather than by whether the stabilizer actually held. At 8
+    /// seeds the mean already lands in the same range the 24-seed pool reads
+    /// (this metric's sd does not shrink much further with more seeds — the
+    /// per-season variance dominates, not sampling noise on the mean — so 8
+    /// seeds is a faithful, not a lucky, sample), which is why the assertion
+    /// band below is sized off the documented 24-seed reading rather than
+    /// re-derived from this smaller pool.
     ///
     /// **Feature-gated behind `slow-tests`, ignored by default.** This is a
     /// knob-change regression tripwire, not a unit test: a commit that touches
@@ -828,8 +843,8 @@ mod tests {
     #[test]
     fn market_is_in_a_believable_ballpark() {
         let cfg = WorldGenConfig::default();
-        let seeds: Vec<u64> = (0..2).collect();
-        let report = run_market_calibration(&seeds, 8, &cfg);
+        let seeds: Vec<u64> = (0..8).collect();
+        let report = run_market_calibration(&seeds, 15, &cfg);
 
         // --- transfer volume: neither dead nor hyperactive ---
         let tpw = report.transfers_per_club_per_window();
@@ -929,9 +944,19 @@ mod tests {
             smax.mean
         );
         let violations = report.role_coverage_violations();
+        // Banded against the documented 24-seed × 15-season reading
+        // (`TRANSFER_MODEL.md` §9: mean ~2.5, sd 3.4, up to 13 in a single
+        // seed), not the tighter "<1.0" a 2-seed pool's near-zero read had
+        // suggested — that threshold was set against noise, not the metric
+        // (see the doc comment above). 10.0 sits comfortably above the
+        // documented mean+2sd (~9.3) and the single-seed max (13 is a
+        // per-seed count, not a pooled mean), so a mean this high still means
+        // the hard stabilizer is failing broadly across the pool, not that
+        // one unlucky seed skewed the average.
         assert!(
-            violations.mean < 1.0,
-            "goalkeeper-coverage stabilizer was violated {:.1} times on average",
+            violations.mean < 10.0,
+            "goalkeeper-coverage stabilizer was violated {:.1} times on average — \
+             well above the documented ~2.5 (sd 3.4) pooled reading",
             violations.mean
         );
 
