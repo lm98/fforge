@@ -37,6 +37,13 @@ All design decisions originate in these files at the workspace root:
   clearing loop, club finances, the player pool (youth intake/retirement), and the market
   pathology harness. `fforge-core::{valuation, club_ai, market, pool}` is a Rust
   transcription of this document.
+- **`docs/TACTICS_MODEL.md`** — the Phase 2e tactics design record (*drafted,
+  pre-implementation*): the four-instruction surface, per-side resolution into effective
+  knobs, the neutral-tactics bit-for-bit invariant, the structural rock-paper-scissors
+  interaction model, the `Tactics`-on-`Lineup` event-log seam, and the AI tactics policy /
+  Phase-5 seam. The rest of Phase 2e (condition/recovery, injuries, fouls & cards,
+  substitutions, ratings, character activation) is drafted as `MATCH_MODEL.md` §11–§18. No
+  2e Rust exists yet — these notes are the gate (design-note-first).
 
 When the code and the design docs diverge, treat the design docs as authoritative and
 file the discrepancy as a bug.
@@ -88,7 +95,9 @@ calibrated: the Rust harness (`fforge-core::match_engine::calibrate`, `bin/calib
 real `worldgen` + `ai_pick_lineup` + `play_match` pooled over many seeds, re-fit `b_beat`
 against it, and guards the result with `favourite_discrimination_regression_guard`. Deferred
 to Phase 2e behind the same `play_match` call site: tactics, cards/fouls, injuries, set
-pieces, substitutions, and the character/hidden attributes.
+pieces, substitutions, and the character/hidden attributes. The 2e *design* is now drafted
+(`TACTICS_MODEL.md`; `MATCH_MODEL.md` §11–§18) — no 2e Rust yet; set pieces stay deferred
+beyond 2e (`MATCH_MODEL.md` §11).
 
 Phase 3 (player development, `DEVELOPMENT_MODEL.md`) is implemented in `fforge-core::development`
 — a monthly `DevelopmentTick` records resolved attribute deltas the fold integer-adds. Its
@@ -106,5 +115,7 @@ loans, negotiation rounds, transfer clauses (`TRANSFER_MODEL.md` §1).
 
 `fforge-core` is the active development front. Changes to `fforge-domain` at this stage are
 corrections or clarifications to the Phase 0 deliverable plus the sanctioned Phase 4 finance
-extension (`Money`, `Contract`, `Finances`, `Club.reputation` — `TRANSFER_MODEL.md` §3), not
-open-ended new features.
+extension (`Money`, `Contract`, `Finances`, `Club.reputation` — `TRANSFER_MODEL.md` §3) and,
+once Phase 2e implementation begins, the sanctioned 2e extension (`Tactics`/`Lineup.tactics`,
+`Lineup.bench`, `Character.natural_fitness`, `Player.condition`/`Player.injured_until` —
+`MATCH_MODEL.md` §12), not open-ended new features.
