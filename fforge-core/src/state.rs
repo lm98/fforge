@@ -8,10 +8,22 @@
 use crate::club_ai::TransferDecision;
 use crate::development::apply_attr_step;
 use crate::event::Event;
+use crate::match_engine::Card;
 use fforge_domain::{
     ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId, World,
 };
 use std::collections::BTreeMap;
+
+/// Horizon of the rolling appearance window (`recent_appearances`): six weekly
+/// matchdays — generously more than any plausible §13 recovery/load law reads,
+/// while keeping the window a constant-size bound rather than a season-long
+/// accumulation (`MATCH_MODEL.md` §13).
+pub const CONDITION_WINDOW_DAYS: i64 = 42;
+
+/// How many most-recent match ratings the fold retains per player
+/// (`recent_ratings`) — the bounded form window future consumers (news, the
+/// deferred `TRANSFER_MODEL.md` §2.5 form multiplier) will read.
+pub const RATING_FORM_WINDOW: usize = 5;
 
 /// Move `player` from `from` (if any) to `to`, exchange `fee` between their
 /// balances, and install `contract` — the resolved effect of a completed
@@ -131,6 +143,25 @@ pub struct GameState {
     /// or not it was ever consumed — a plan is good for one window, never
     /// carried into the next.
     pub pending_transfer_decisions: Vec<TransferDecision>,
+    /// Per-player cards accumulated this season, folded from
+    /// `MatchPlayed.cards` as `(matchday, card)` — the recorded truth from
+    /// which suspensions are *derived* (`MATCH_MODEL.md` §12's
+    /// derived-suspension rule): no ban is ever stored here or anywhere else,
+    /// so the ban rule and the cards can never disagree. Cleared on
+    /// `SeasonStarted` (§15: the season boundary clears the counter).
+    pub season_cards: BTreeMap<PlayerId, Vec<(u8, Card)>>,
+    /// Rolling per-player appearance dates within the trailing
+    /// `CONDITION_WINDOW_DAYS` — the recent-load input the §13
+    /// condition/recovery law reads (`MATCH_MODEL.md` §13). Distinct from
+    /// `appearances_since_tick`: that window is monthly and resets to empty
+    /// on every `DevelopmentTick`; this one slides, pruned as the calendar
+    /// advances and never reset by ticks, so it is bounded by construction
+    /// (≤ one entry per player per matchday inside the horizon).
+    pub recent_appearances: BTreeMap<PlayerId, Vec<GameDate>>,
+    /// Each player's most recent match ratings (tenths, newest last), capped
+    /// at `RATING_FORM_WINDOW` — folded from `MatchPlayed.ratings`
+    /// (`MATCH_MODEL.md` §18). Empty until the rating derivation lands.
+    pub recent_ratings: BTreeMap<PlayerId, Vec<u8>>,
 }
 
 impl GameState {
@@ -165,6 +196,9 @@ impl GameState {
                     club_matches_since_tick: BTreeMap::new(),
                     unsigned_since: BTreeMap::new(),
                     pending_transfer_decisions: Vec::new(),
+                    season_cards: BTreeMap::new(),
+                    recent_appearances: BTreeMap::new(),
+                    recent_ratings: BTreeMap::new(),
                 }
             }
             other => panic!("event log must start with GameStarted, found {other:?}"),
@@ -186,20 +220,53 @@ impl GameState {
             }
             Event::MatchPlayed {
                 fixture,
+                matchday,
                 home_goals,
                 away_goals,
                 home_xi,
                 away_xi,
-                ..
+                injuries,
+                cards,
+                ratings,
             } => {
                 self.results.insert(*fixture, (*home_goals, *away_goals));
                 // Accrue the playing-time window (DEVELOPMENT_MODEL.md §3).
                 for &pid in home_xi.iter().chain(away_xi) {
                     *self.appearances_since_tick.entry(pid).or_default() += 1;
+                    // And the rolling condition window (MATCH_MODEL.md §13) —
+                    // `self.date` is still this matchday's date here; the
+                    // `MatchdayAdvanced` that moves it folds after.
+                    self.recent_appearances.entry(pid).or_default().push(self.date);
                 }
                 if let Some(fx) = self.schedule.iter().find(|f| f.id == *fixture) {
                     *self.club_matches_since_tick.entry(fx.home).or_default() += 1;
                     *self.club_matches_since_tick.entry(fx.away).or_default() += 1;
+                }
+                // The 2e boundary consequences (MATCH_MODEL.md §12): pure
+                // assignment/bookkeeping over already-resolved values — no
+                // RNG, no engine calls, per fold invariant 2.
+                for injury in injuries {
+                    if let Some(p) = self.world.players.get_mut(&injury.player) {
+                        let until = self.date.add_days(injury.days_out as i64);
+                        // Never shorten an existing longer layoff.
+                        p.injured_until = Some(match p.injured_until {
+                            Some(existing) if existing > until => existing,
+                            _ => until,
+                        });
+                    }
+                }
+                for card in cards {
+                    self.season_cards
+                        .entry(card.player)
+                        .or_default()
+                        .push((*matchday, card.card));
+                }
+                for &(pid, rating) in ratings {
+                    let window = self.recent_ratings.entry(pid).or_default();
+                    window.push(rating);
+                    if window.len() > RATING_FORM_WINDOW {
+                        window.remove(0);
+                    }
                 }
             }
             Event::MatchdayAdvanced { new_date, .. } => {
@@ -208,6 +275,7 @@ impl GameState {
                 }
                 self.date = *new_date;
                 self.current_matchday += 1;
+                self.prune_recent_appearances();
             }
             Event::DevelopmentTick { changes, .. } => {
                 // Pure integer add, clamped — no RNG, no growth math (invariant
@@ -233,6 +301,12 @@ impl GameState {
                 self.results.clear();
                 self.pending_lineup = None;
                 self.champion = None;
+                // Cards do not carry across the season boundary
+                // (MATCH_MODEL.md §15); injuries (`Player.injured_until`) do.
+                self.season_cards.clear();
+                // The offseason gap exceeds the rolling horizon, so this
+                // prune empties last season's tail.
+                self.prune_recent_appearances();
                 // `world` (developed) and `last_lineup` carry over; the
                 // appearance window is managed by the offseason ticks that
                 // precede this event.
@@ -287,6 +361,18 @@ impl GameState {
                 self.pending_transfer_decisions.clear();
             }
         }
+    }
+
+    /// Drop appearance entries older than `CONDITION_WINDOW_DAYS` behind
+    /// `self.date` (and players left with none) — called wherever the fold
+    /// moves the date, so the rolling window is bounded by construction. A
+    /// pure function of state, safe inside the fold.
+    fn prune_recent_appearances(&mut self) {
+        let horizon = self.date.days - CONDITION_WINDOW_DAYS;
+        self.recent_appearances.retain(|_, dates| {
+            dates.retain(|d| d.days > horizon);
+            !dates.is_empty()
+        });
     }
 
     pub fn season_over(&self) -> bool {
@@ -739,5 +825,307 @@ mod transfer_event_tests {
             vec![TransferDecision::List { player: squad[1] }],
             "the latest submission must replace, not accumulate onto, the prior one"
         );
+    }
+}
+
+#[cfg(test)]
+mod match_boundary_tests {
+    //! `MATCH_MODEL.md` §12's extended `MatchOutcome`/`MatchPlayed` boundary
+    //! (R6), grown once for all three consumers — injuries, cards, ratings —
+    //! with the engine populating nothing yet. Plumbing only (the task's
+    //! scope fence): no injury model, no foul contest, no rating formula, so
+    //! every populated event here is hand-built, exactly as
+    //! `transfer_event_tests` builds its events.
+
+    use super::*;
+    use crate::commands::{Command, step};
+    use crate::event::Event;
+    use crate::match_engine::{Card, CardOutcome, InjuryOutcome};
+    use crate::session::{load_log, save_log};
+    use crate::worldgen::{generate, WorldGenConfig};
+
+    fn base_log(seed: u64) -> (Vec<Event>, GameState) {
+        let (world, schedule, start_date) = generate(seed, &WorldGenConfig::default());
+        let event = Event::GameStarted {
+            seed,
+            start_date,
+            player_club: ClubId(0),
+            world,
+            schedule,
+        };
+        let state = GameState::replay(std::slice::from_ref(&event));
+        (vec![event], state)
+    }
+
+    /// A hand-built `MatchPlayed` for the first scheduled fixture, carrying
+    /// resolved injuries/cards/ratings for real players of the two clubs.
+    fn populated_match_played(state: &GameState) -> (Event, PlayerId, PlayerId, PlayerId) {
+        let fx = state.schedule[0].clone();
+        let home_xi: Vec<PlayerId> = state.world.club(fx.home).players[..11].to_vec();
+        let away_xi: Vec<PlayerId> = state.world.club(fx.away).players[..11].to_vec();
+        let injured = home_xi[0];
+        let booked = home_xi[1];
+        let sent_off = away_xi[2];
+        let event = Event::MatchPlayed {
+            fixture: fx.id,
+            matchday: fx.matchday,
+            home_goals: 2,
+            away_goals: 1,
+            home_xi,
+            away_xi,
+            injuries: vec![InjuryOutcome {
+                player: injured,
+                days_out: 21,
+            }],
+            cards: vec![
+                CardOutcome {
+                    player: booked,
+                    card: Card::Yellow,
+                    minute: 34,
+                },
+                CardOutcome {
+                    player: sent_off,
+                    card: Card::SecondYellow,
+                    minute: 88,
+                },
+            ],
+            ratings: vec![(injured, 61), (booked, 74)],
+        };
+        (event, injured, booked, sent_off)
+    }
+
+    #[test]
+    fn the_fold_applies_each_consequence_exactly_once_and_replay_is_idempotent() {
+        let (mut log, state) = base_log(1);
+        let match_date = state.date;
+        let (event, injured, booked, sent_off) = populated_match_played(&state);
+        let matchday = state.schedule[0].matchday;
+        log.push(event);
+
+        let replayed = GameState::replay(&log);
+
+        // Injury: recorded days_out becomes Player.injured_until, exactly once.
+        assert_eq!(
+            replayed.world.player(injured).injured_until,
+            Some(match_date.add_days(21)),
+            "the fold must set injured_until = match date + recorded days_out"
+        );
+
+        // Cards: recorded truth accumulates; no ban is stored anywhere (the
+        // derived-suspension rule — there is no field to check because none
+        // may exist).
+        assert_eq!(
+            replayed.season_cards.get(&booked),
+            Some(&vec![(matchday, Card::Yellow)])
+        );
+        assert_eq!(
+            replayed.season_cards.get(&sent_off),
+            Some(&vec![(matchday, Card::SecondYellow)])
+        );
+
+        // Ratings: the bounded form window holds exactly the folded values.
+        assert_eq!(replayed.recent_ratings.get(&injured), Some(&vec![61]));
+        assert_eq!(replayed.recent_ratings.get(&booked), Some(&vec![74]));
+
+        // Appearances accrued exactly once in *both* windows.
+        assert_eq!(replayed.appearances_since_tick.get(&injured), Some(&1));
+        assert_eq!(
+            replayed.recent_appearances.get(&injured),
+            Some(&vec![match_date])
+        );
+
+        // Idempotent under replay: folding the same log from scratch twice
+        // reproduces identical state — nothing accumulates across replays.
+        assert_eq!(replayed, GameState::replay(&log));
+    }
+
+    #[test]
+    fn the_rating_form_window_is_capped() {
+        let (mut log, state) = base_log(2);
+        let fx = state.schedule[0].clone();
+        let home_xi: Vec<PlayerId> = state.world.club(fx.home).players[..11].to_vec();
+        let away_xi: Vec<PlayerId> = state.world.club(fx.away).players[..11].to_vec();
+        let pid = home_xi[0];
+        for i in 0..(RATING_FORM_WINDOW as u8 + 3) {
+            log.push(Event::MatchPlayed {
+                fixture: fx.id,
+                matchday: fx.matchday,
+                home_goals: 0,
+                away_goals: 0,
+                home_xi: home_xi.clone(),
+                away_xi: away_xi.clone(),
+                injuries: Vec::new(),
+                cards: Vec::new(),
+                ratings: vec![(pid, 60 + i)],
+            });
+        }
+        let replayed = GameState::replay(&log);
+        let window = replayed.recent_ratings.get(&pid).expect("rated player");
+        assert_eq!(window.len(), RATING_FORM_WINDOW, "window must be capped");
+        let newest = 60 + RATING_FORM_WINDOW as u8 + 2;
+        assert_eq!(
+            *window,
+            ((newest + 1 - RATING_FORM_WINDOW as u8)..=newest).collect::<Vec<u8>>(),
+            "the cap must evict oldest-first, newest last"
+        );
+    }
+
+    #[test]
+    fn a_longer_layoff_is_never_shortened_by_a_later_injury() {
+        let (mut log, state) = base_log(3);
+        let (event, injured, _, _) = populated_match_played(&state); // 21 days
+        log.push(event);
+        let fx = state.schedule[0].clone();
+        let home_xi: Vec<PlayerId> = state.world.club(fx.home).players[..11].to_vec();
+        let away_xi: Vec<PlayerId> = state.world.club(fx.away).players[..11].to_vec();
+        log.push(Event::MatchPlayed {
+            fixture: fx.id,
+            matchday: fx.matchday,
+            home_goals: 0,
+            away_goals: 0,
+            home_xi,
+            away_xi,
+            injuries: vec![InjuryOutcome {
+                player: injured,
+                days_out: 2,
+            }],
+            cards: Vec::new(),
+            ratings: Vec::new(),
+        });
+        let replayed = GameState::replay(&log);
+        assert_eq!(
+            replayed.world.player(injured).injured_until,
+            Some(state.date.add_days(21)),
+            "a knock during an existing 21-day layoff must not shorten it"
+        );
+    }
+
+    #[test]
+    fn save_load_round_trips_the_extended_fields() {
+        let (mut log, state) = base_log(4);
+        let (event, _, _, _) = populated_match_played(&state);
+        log.push(event);
+
+        let dir = std::env::temp_dir().join("fforge-test-match-boundary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("roundtrip.fml");
+        save_log(&path, &log).unwrap();
+        let loaded = load_log(&path).unwrap();
+
+        assert_eq!(log, loaded, "populated 2e fields must round-trip exactly");
+        assert_eq!(GameState::replay(&log), GameState::replay(&loaded));
+    }
+
+    #[test]
+    fn an_old_log_without_the_new_fields_still_loads() {
+        // Backward: a pre-2e MatchPlayed line (no injuries/cards/ratings keys)
+        // must deserialize to the extended event with all three empty.
+        let json = r#"{"MatchPlayed":{"fixture":7,"matchday":3,"home_goals":1,"away_goals":0,"home_xi":[1,2],"away_xi":[3,4]}}"#;
+        let event: Event = serde_json::from_str(json).expect("old-format line must load");
+        assert_eq!(
+            event,
+            Event::MatchPlayed {
+                fixture: FixtureId(7),
+                matchday: 3,
+                home_goals: 1,
+                away_goals: 0,
+                home_xi: vec![PlayerId(1), PlayerId(2)],
+                away_xi: vec![PlayerId(3), PlayerId(4)],
+                injuries: Vec::new(),
+                cards: Vec::new(),
+                ratings: Vec::new(),
+            }
+        );
+
+        // Forward: with the vectors empty (as the engine emits today), the
+        // serialized form *is* the old shape — no new keys — so a new save
+        // stays readable by the pre-extension schema too.
+        let out = serde_json::to_string(&event).unwrap();
+        assert!(
+            !out.contains("injuries") && !out.contains("cards") && !out.contains("ratings"),
+            "empty 2e fields must serialize to the pre-2e byte shape, got {out}"
+        );
+    }
+
+    #[test]
+    fn season_start_clears_cards_but_not_injuries() {
+        let (mut log, state) = base_log(5);
+        let (event, injured, booked, _) = populated_match_played(&state);
+        log.push(event);
+        log.push(Event::SeasonStarted {
+            start_date: state.date.add_days(90),
+            schedule: state.schedule.clone(),
+        });
+        let replayed = GameState::replay(&log);
+        assert!(
+            replayed.season_cards.is_empty(),
+            "cards must not carry across the season boundary (MATCH_MODEL.md §15)"
+        );
+        assert_eq!(
+            replayed.world.player(injured).injured_until,
+            Some(state.date.add_days(21)),
+            "an injury spans the boundary — only cards clear"
+        );
+        assert!(
+            replayed.recent_appearances.is_empty(),
+            "the offseason gap exceeds the rolling horizon, so the window empties"
+        );
+        assert!(
+            replayed.recent_ratings.contains_key(&booked),
+            "the rating form window is a rolling last-N, not season-scoped"
+        );
+    }
+
+    #[test]
+    fn the_rolling_appearance_window_stays_bounded_across_a_full_season() {
+        let (mut log, mut state) = base_log(6);
+        let max_entries = (CONDITION_WINDOW_DAYS / 7) as usize;
+        let mut saw_tick_reset_divergence = false;
+
+        while !state.season_over() {
+            let before = log.len();
+            let events = step(&state, Command::AdvanceMatchday).expect("advance");
+            for e in &events {
+                state.apply(e);
+            }
+            log.extend(events);
+
+            let horizon = state.date.days - CONDITION_WINDOW_DAYS;
+            for (pid, dates) in &state.recent_appearances {
+                assert!(
+                    dates.len() <= max_entries,
+                    "player {pid}: window holds {} entries, bound is {max_entries}",
+                    dates.len()
+                );
+                assert!(
+                    dates.iter().all(|d| d.days > horizon),
+                    "player {pid}: stale appearance beyond the {CONDITION_WINDOW_DAYS}-day horizon"
+                );
+            }
+
+            // Distinctness from the monthly window: on an advance where a
+            // DevelopmentTick fired, `appearances_since_tick` was reset while
+            // the rolling window kept this matchday's appearances.
+            let ticked = log[before..]
+                .iter()
+                .any(|e| matches!(e, Event::DevelopmentTick { .. }));
+            if ticked
+                && state.appearances_since_tick.is_empty()
+                && !state.recent_appearances.is_empty()
+            {
+                saw_tick_reset_divergence = true;
+            }
+        }
+
+        assert!(
+            !state.recent_appearances.is_empty(),
+            "a season in progress must be tracking recent appearances"
+        );
+        assert!(
+            saw_tick_reset_divergence,
+            "the rolling window must survive the monthly reset that empties appearances_since_tick"
+        );
+        // And the whole run replays to identical state, new windows included.
+        assert_eq!(state, GameState::replay(&log));
     }
 }

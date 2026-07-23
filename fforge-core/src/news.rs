@@ -941,6 +941,7 @@ mod tests {
                 expires: GameDate { days: 2031 * 365 },
             }),
             retired: false,
+            injured_until: None,
         };
         let p1 = mk_player(0, "Alpha");
         let mut players = BTreeMap::new();

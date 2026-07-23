@@ -28,6 +28,39 @@ use crate::rng::Rng;
 use fforge_domain::{
     ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
 };
+use serde::{Deserialize, Serialize};
+
+/// A resolved injury (`MATCH_MODEL.md` §12, §14): the *days out*, decided at
+/// match time — never a severity category for the fold to re-roll, so the
+/// severity model can evolve without rewriting anyone's recorded medical
+/// history (the `DevelopmentTick` argument verbatim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjuryOutcome {
+    pub player: PlayerId,
+    /// Days unavailable, counted from the match date. The fold turns this
+    /// into `Player.injured_until`.
+    pub days_out: u16,
+}
+
+/// The card itself (`MATCH_MODEL.md` §15). A second yellow is recorded as
+/// `SecondYellow` — a red by bookkeeping — so no consumer ever has to
+/// reconstruct the distinction from minute ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Card {
+    Yellow,
+    SecondYellow,
+    Red,
+}
+
+/// A resolved card (`MATCH_MODEL.md` §12, §15): the recorded truth from which
+/// suspensions are *derived* in the fold — a ban is never stored and never its
+/// own event (the derived-suspension rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardOutcome {
+    pub player: PlayerId,
+    pub card: Card,
+    pub minute: u8,
+}
 
 /// Mean CA-in-slot-role over the eleven — a squad-quality scalar independent
 /// of any particular match-resolution model. Used for display and by
@@ -52,6 +85,16 @@ pub struct MatchOutcome {
     pub home_goals: u8,
     pub away_goals: u8,
     pub stream: Vec<MatchEvent>,
+    /// Resolved per-player consequences that outlive the match
+    /// (`MATCH_MODEL.md` §12): unlike `stream`, these *do* ride into
+    /// `Event::MatchPlayed`. The boundary is grown once, ahead of the models
+    /// that fill it — the engine emits all three empty until the §14 injury
+    /// model, §15 foul/card contest, and §18 rating derivation land, so
+    /// nothing here may touch the RNG draw sequence.
+    pub injuries: Vec<InjuryOutcome>,
+    pub cards: Vec<CardOutcome>,
+    /// Per-player rating in tenths (`68` = 6.8), `MATCH_MODEL.md` §18.
+    pub ratings: Vec<(PlayerId, u8)>,
 }
 
 /// Simulate one match: `(lineups, world, rng)` in, score + trace out. A pure
@@ -159,6 +202,25 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn boundary_consequences_stay_empty_until_the_2e_models_land() {
+        // MATCH_MODEL.md §12/§11 sequencing step 1: the boundary is grown
+        // ahead of the models that fill it, so the engine must emit all
+        // three vectors empty — anything else here means an unsanctioned
+        // model (and its RNG draws) sneaked in ahead of its design gate.
+        let (world, home, away) = tiny_world_and_lineups();
+        for seed in 0..32u64 {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &home, &away, &mut rng);
+            assert!(
+                outcome.injuries.is_empty()
+                    && outcome.cards.is_empty()
+                    && outcome.ratings.is_empty(),
+                "seed {seed}: the 2a engine must populate no 2e consequences"
+            );
         }
     }
 

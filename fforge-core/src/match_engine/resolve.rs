@@ -684,6 +684,13 @@ fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> M
         home_goals: goals[0].min(u8::MAX as u32) as u8,
         away_goals: goals[1].min(u8::MAX as u32) as u8,
         stream,
+        // The 2e boundary fields (MATCH_MODEL.md §12), empty by design until
+        // the §14/§15/§18 models land: constructing empty vectors draws
+        // nothing, so the 2a RNG sequence — and every calibration reading —
+        // is untouched.
+        injuries: Vec::new(),
+        cards: Vec::new(),
+        ratings: Vec::new(),
     }
 }
 

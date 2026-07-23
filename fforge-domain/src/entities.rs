@@ -121,6 +121,12 @@ pub struct Player {
     /// a future consumer exclude them from development/the market without
     /// confusing them with an ordinary out-of-contract free agent.
     pub retired: bool,
+    /// Fit again on this date; `None` (or a past date) = fit now. Set by the
+    /// `MatchPlayed` fold arm from a recorded injury's resolved `days_out`
+    /// (`MATCH_MODEL.md` §12, §14) — part of the sanctioned Phase-2e domain
+    /// extension. `serde(default)` so pre-2e world snapshots load unchanged.
+    #[serde(default)]
+    pub injured_until: Option<GameDate>,
 }
 
 impl Player {

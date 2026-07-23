@@ -339,6 +339,11 @@ per-draw-count.
 
 ## 12. The extended `MatchOutcome` / `MatchPlayed` boundary (R6)
 
+*Status: landed (sequencing step 1) for the three consumers below that have models drafted
+— `injuries`, `cards`, `ratings` — with the engine emitting all of them empty; `minutes`
+and `cond_drain` join the struct when §16/§13 land, behind the same serde-default seam.
+Calibration readings verified unchanged.*
+
 2e produces per-player consequences that outlive the match. The §7 rule (record outcomes; the
 fold consumes without re-running engines) dictates the boundary: **every consequence that
 mutates world state rides in `MatchPlayed` as a resolved value**; the minute-by-minute stream

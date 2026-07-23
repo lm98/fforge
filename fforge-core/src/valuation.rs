@@ -535,6 +535,7 @@ mod tests {
                 expires: TODAY.add_days(4 * 365), // full-value (3+ yr) contract
             }),
             retired: false,
+            injured_until: None,
         }
     }
 

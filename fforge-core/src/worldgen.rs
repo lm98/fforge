@@ -218,6 +218,7 @@ pub(crate) fn gen_player(
         development,
         contract,
         retired: false,
+        injured_until: None,
     }
 }
 
