@@ -350,6 +350,17 @@ need(club, role) = w_depth · depth_gap + w_quality · quality_gap + w_age · su
 **Utility of a signing** = `need(role) · (value − asking_price)`, filtered by cash and wage headroom.
 Surplus, not price: a bargain in a position of no need is still not worth the squad slot.
 
+**Role-coverage priority override.** §11 calls the per-role minima below a *hard stabilizer, target 0
+violations* — but `need`'s weighted sum cannot deliver that by construction: `w_age`/`w_quality`/
+`w_depth` only ever bias the sum, and `need · surplus` lets an unusually large `surplus` elsewhere
+outweigh any finite bias. A club below a role's hard minimum (today, `< min_goalkeepers`) therefore
+**overrides** the ranking rather than joining it: that role's candidates rank above every ordinary
+`need · surplus` bid, exempt from the positive-surplus filter too — filling the gap outranks quality
+gaps, succession risk, and surplus value alike, exactly as §11 requires. The override still resolves
+inside the existing hard filters (cash, wage headroom, `squad_max`), so a club with no headroom must
+sell first to open it — the "may force a sale to fund it, even at a discount" behaviour this stabilizer
+implies (`club_ai::UtilityPolicy::hard_minimum_violations`).
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.

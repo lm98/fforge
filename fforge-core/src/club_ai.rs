@@ -261,10 +261,52 @@ impl UtilityPolicy {
         Role::ALL.iter().map(|&r| (r, self.need(obs, r))).collect()
     }
 
+    /// §6's hard per-role minimum, if `role` has one — today just `Gk` (`≥ 2
+    /// GK`, "a club with no keeper is a crash, not a strategy"). Written as a
+    /// match rather than a single `Gk`-only check so a future hard minimum on
+    /// another role is one arm, not a new mechanism.
+    fn hard_minimum(&self, role: Role) -> Option<usize> {
+        match role {
+            Role::Gk => Some(self.knobs.min_goalkeepers),
+            _ => None,
+        }
+    }
+
+    /// Roles currently below their §6 hard minimum — the role-coverage
+    /// override's trigger (`TRANSFER_MODEL.md` §11, "hard stabilizer, target
+    /// 0 violations"). Only ever `Gk` today, but resolved generically against
+    /// `hard_minimum` rather than hardcoding the one existing case at the call
+    /// site.
+    fn hard_minimum_violations(&self, obs: &ClubObservation) -> BTreeSet<Role> {
+        Role::ALL
+            .iter()
+            .copied()
+            .filter(|&role| {
+                self.hard_minimum(role).is_some_and(|min| {
+                    let count = obs.squad.iter().filter(|m| m.natural_role == role).count();
+                    count < min
+                })
+            })
+            .collect()
+    }
+
     /// Buy shortlist (§6): candidates ranked by `need(role) · (value −
     /// asking_price)`, filtered to a positive need, a positive surplus, and
     /// the cash/wage-headroom stabilizers. Squad-ceiling stabilizer: no
     /// buying at/above `squad_max`.
+    ///
+    /// **Role-coverage override** (`TRANSFER_MODEL.md` §11's hard
+    /// stabilizer): a candidate in a role currently below its §6 hard
+    /// minimum (`hard_minimum_violations`) is ranked ahead of every ordinary
+    /// candidate, independent of `need · surplus` — an override on the
+    /// ranking, not a large weight, so no ordinary opportunity's utility,
+    /// however large, can ever outbid it. It is also exempt from the
+    /// positive-surplus filter ordinary candidates face: filling the gap
+    /// outranks quality gaps, succession risk, *and* surplus value. The hard
+    /// cash/wage/squad-ceiling stabilizers above still apply unchanged — the
+    /// override re-ranks among what's affordable, it does not waive
+    /// affordability; a club with no headroom must sell first (§6) to open
+    /// it, which is the "may force a sale to fund it" behaviour in practice.
     fn buy_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision> {
         if obs.squad.len() >= self.knobs.squad_max {
             return Vec::new();
@@ -278,31 +320,37 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let needs = self.needs(obs);
+        let violations = self.hard_minimum_violations(obs);
 
-        let mut scored: Vec<(f64, &Candidate)> = obs
+        let mut scored: Vec<(bool, f64, &Candidate)> = obs
             .candidates
             .iter()
             .filter(|c| c.asking_price.0 <= spendable && c.wage.0 <= wage_room)
             .filter_map(|c| {
+                let surplus = (c.value.0 - c.asking_price.0) as f64;
+                if violations.contains(&c.role) {
+                    return Some((true, surplus, c));
+                }
                 let need = *needs.get(&c.role)?;
                 if need <= 0.0 {
                     return None;
                 }
-                let surplus = (c.value.0 - c.asking_price.0) as f64;
                 let utility = need * surplus;
-                (utility > 0.0).then_some((utility, c))
+                (utility > 0.0).then_some((false, utility, c))
             })
             .collect();
-        // Deterministic: utility descending, ties broken by PlayerId — never
-        // iteration-order accident.
+        // Deterministic: override candidates first, then utility (or, within
+        // the override tier, surplus) descending, ties broken by PlayerId —
+        // never iteration-order accident.
         scored.sort_by(|a, b| {
-            b.0.total_cmp(&a.0)
-                .then_with(|| a.1.player.cmp(&b.1.player))
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.total_cmp(&a.1))
+                .then_with(|| a.2.player.cmp(&b.2.player))
         });
 
         scored
             .into_iter()
-            .map(|(_, c)| TransferDecision::Bid {
+            .map(|(_, _, c)| TransferDecision::Bid {
                 player: c.player,
                 from: c.club,
                 role: c.role,
@@ -616,6 +664,65 @@ mod tests {
             *top_role,
             Role::Gk,
             "the role missing entirely must rank highest, got needs {needs:?}"
+        );
+    }
+
+    #[test]
+    fn role_coverage_override_ranks_a_gk_bid_first_regardless_of_other_needs() {
+        // TRANSFER_MODEL.md §11's hard stabilizer: a club below a role's hard
+        // minimum (here, one keeper against `min_goalkeepers = 2`) must rank
+        // filling it above every ordinary need — even an outlandishly
+        // attractive opportunity elsewhere must not outbid it. Reduced to one
+        // keeper, kept otherwise full-depth so nothing else is a genuine
+        // depth gap; only the GK hard minimum is violated.
+        let mut obs = baseline_observation();
+        let mut gks_seen = 0;
+        obs.squad.retain(|m| {
+            if m.natural_role != Role::Gk {
+                return true;
+            }
+            gks_seen += 1;
+            gks_seen <= 1
+        });
+
+        // A merely-adequate goalkeeper candidate...
+        obs.candidates.push(Candidate {
+            player: PlayerId(9001),
+            club: Some(ClubId(1)),
+            role: Role::Gk,
+            value: Money(1_000_000),
+            asking_price: Money(900_000),
+            wage: Money(100_000),
+        });
+        // ...against a strike candidate whose enormous surplus would win
+        // under plain `need · surplus` ranking even though the club's
+        // strikers are already at full template depth (need for `St` is low,
+        // but `need · surplus` is unbounded in surplus).
+        obs.candidates.push(Candidate {
+            player: PlayerId(9002),
+            club: Some(ClubId(2)),
+            role: Role::St,
+            value: Money(50_000_000),
+            asking_price: Money(1_000_000),
+            wage: Money(100_000),
+        });
+
+        let policy = UtilityPolicy::default();
+        let decisions = policy.transfer_decisions(&obs);
+        let top_bid = decisions
+            .iter()
+            .find(|d| matches!(d, TransferDecision::Bid { .. }))
+            .expect("at least one bid");
+        assert_eq!(
+            *top_bid,
+            TransferDecision::Bid {
+                player: PlayerId(9001),
+                from: Some(ClubId(1)),
+                role: Role::Gk,
+                price: Money(900_000),
+            },
+            "a club below its GK hard minimum must bid on a keeper first, \
+             regardless of what else its squad needs: {decisions:?}"
         );
     }
 
