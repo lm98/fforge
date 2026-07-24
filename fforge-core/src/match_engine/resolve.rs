@@ -691,6 +691,14 @@ fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> M
         injuries: Vec::new(),
         cards: Vec::new(),
         ratings: Vec::new(),
+        // T4 (§12, §16, R7): every starter plays the full 90 until T10/T11/T12
+        // make partial minutes possible. No RNG, so this is as draw-free as
+        // the empty vectors above.
+        minutes: home
+            .iter()
+            .chain(away)
+            .map(|p| (p.pid, 90u8))
+            .collect(),
     }
 }
 

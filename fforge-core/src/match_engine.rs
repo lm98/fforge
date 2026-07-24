@@ -95,6 +95,12 @@ pub struct MatchOutcome {
     pub cards: Vec<CardOutcome>,
     /// Per-player rating in tenths (`68` = 6.8), `MATCH_MODEL.md` §18.
     pub ratings: Vec<(PlayerId, u8)>,
+    /// True minutes played, substitutions included (`MATCH_MODEL.md` §12,
+    /// §16, R7). Every starting-XI player at 90 until T10/T11/T12 (injuries,
+    /// red cards, substitutions) make partial minutes possible — there is no
+    /// bench yet, so "0 otherwise" is simply absence from this vec, not a
+    /// recorded entry.
+    pub minutes: Vec<(PlayerId, u8)>,
 }
 
 /// Simulate one match: `(lineups, world, rng)` in, score + trace out. A pure

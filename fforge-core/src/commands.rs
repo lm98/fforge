@@ -231,7 +231,7 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
     let mut new_results = state.results.clone();
     // The playing-time window accumulated so far, plus this matchday's matches —
     // exactly what `state.appearances_since_tick` will be right before any tick
-    // this advance fires (DEVELOPMENT_MODEL.md §3).
+    // this advance fires (DEVELOPMENT_MODEL.md §3). Minutes-valued since T4.
     let mut window_apps = state.appearances_since_tick.clone();
     let mut window_club_matches = state.club_matches_since_tick.clone();
 
@@ -256,8 +256,11 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
         new_results.insert(fixture.id, (hg, ag));
         let home_xi = home_lineup.players.to_vec();
         let away_xi = away_lineup.players.to_vec();
-        for &pid in home_xi.iter().chain(&away_xi) {
-            *window_apps.entry(pid).or_default() += 1;
+        // §2.8/T4: the window now accumulates *minutes*, not appearance
+        // counts — `window_club_matches` stays the denominator's basis
+        // (available minutes = 90 × matches).
+        for &(pid, mins) in &outcome.minutes {
+            *window_apps.entry(pid).or_default() += mins as u32;
         }
         *window_club_matches.entry(fixture.home).or_default() += 1;
         *window_club_matches.entry(fixture.away).or_default() += 1;
@@ -274,6 +277,7 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             injuries: outcome.injuries,
             cards: outcome.cards,
             ratings: outcome.ratings,
+            minutes: outcome.minutes,
         });
     }
 

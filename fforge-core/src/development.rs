@@ -240,10 +240,15 @@ pub struct DevKnobs {
     /// Monthly jitter added to the annual rate before quantization (§2.3).
     pub jitter_sigma: f64,
 
-    // --- playing-time multiplier, coarse appeared/benched/absent (§3) ---
-    /// Appearance share (of the club's window matches) at/above which a player
-    /// counts as a regular.
+    // --- playing-time multiplier, minutes-share bands (§3, T4/§2.8) ---
+    /// Minutes share (of the club's available minutes — 90 × matches — in
+    /// the window) at/above which a player counts as a regular.
     pub minutes_regular_share: f64,
+    /// Minutes share *below* which a player counts as absent, even if he
+    /// appeared. Without this floor the change is nearly inert: a player
+    /// appearing in every match for five minutes would still read as
+    /// rotation, essentially today's appeared/benched/absent behaviour.
+    pub minutes_absent_share: f64,
     pub minutes_regular: f64,
     pub minutes_rotation: f64,
     pub minutes_absent: f64,
@@ -346,6 +351,7 @@ impl Default for DevKnobs {
             phi_sigma: 1.8,
             jitter_sigma: 0.35,
             minutes_regular_share: 0.5,
+            minutes_absent_share: 0.10,
             minutes_regular: 1.0,
             minutes_rotation: 0.65,
             minutes_absent: 0.3,
@@ -497,12 +503,15 @@ pub(crate) fn attr_rate(
     }
 }
 
-/// The coarse appeared/benched/absent playing-time multiplier (§3), from the
-/// player's appearances vs their club's matches in the tick's window.
+/// The minutes-share playing-time multiplier (§3, T4/§2.8): regular /
+/// rotation / absent bands read on the player's share of his club's
+/// *available* minutes (90 × matches) in the tick's window, not raw
+/// appearance count — so a five-minute cameo and a full ninety are no
+/// longer the same signal once substitutions exist (T12).
 fn minutes_multiplier(
     pid: PlayerId,
     club: ClubId,
-    appearances: &BTreeMap<PlayerId, u32>,
+    minutes: &BTreeMap<PlayerId, u32>,
     club_matches: &BTreeMap<ClubId, u32>,
     knobs: &DevKnobs,
 ) -> f64 {
@@ -510,11 +519,15 @@ fn minutes_multiplier(
     if matches == 0 {
         return knobs.minutes_absent; // no matches in window (e.g. offseason)
     }
-    let apps = appearances.get(&pid).copied().unwrap_or(0);
-    if apps == 0 {
+    let available = matches as f64 * 90.0;
+    let mins = minutes.get(&pid).copied().unwrap_or(0) as f64;
+    if mins <= 0.0 {
         return knobs.minutes_absent;
     }
-    if apps as f64 / matches as f64 >= knobs.minutes_regular_share {
+    let share = mins / available;
+    if share < knobs.minutes_absent_share {
+        knobs.minutes_absent
+    } else if share >= knobs.minutes_regular_share {
         knobs.minutes_regular
     } else {
         knobs.minutes_rotation
@@ -571,15 +584,15 @@ pub fn apply_attr_step(world: &mut World, step: &AttrStep) {
 /// Produce one development tick's resolved changes (§2, §5): the sparse set of
 /// integer attribute steps that crossed a boundary this month. Reads world
 /// attributes + the once-resolved per-player `E`/`φ` + coaching + the window's
-/// appearances; draws jitter + a Bernoulli fractional step per attribute from
-/// the tick's own seed stream, in `(player id, attribute)` order so replay of
-/// the recorded deltas is exact and same-seed runs are identical.
+/// minutes (T4/§2.8); draws jitter + a Bernoulli fractional step per attribute
+/// from the tick's own seed stream, in `(player id, attribute)` order so
+/// replay of the recorded deltas is exact and same-seed runs are identical.
 pub fn tick_changes(
     world: &World,
     seed: u64,
     period: i64,
     tick_date: GameDate,
-    appearances: &BTreeMap<PlayerId, u32>,
+    minutes: &BTreeMap<PlayerId, u32>,
     club_matches: &BTreeMap<ClubId, u32>,
     knobs: &DevKnobs,
 ) -> Vec<AttrStep> {
@@ -611,7 +624,7 @@ pub fn tick_changes(
         let (coaching, mult) = match player_club.get(&pid) {
             Some(&club) => (
                 world.club(club).coaching(),
-                minutes_multiplier(pid, club, appearances, club_matches, knobs),
+                minutes_multiplier(pid, club, minutes, club_matches, knobs),
             ),
             None => (1.0, knobs.minutes_absent),
         };
@@ -684,6 +697,64 @@ mod tests {
         assert!((27.0..=31.0).contains(&tech), "technical peak {tech}");
         assert!((30.0..=34.0).contains(&ment), "mental peak {ment}");
         assert!(phys < tech && tech < ment, "peak ordering phys<tech<ment");
+    }
+
+    /// T4/§2.8's inertness property: before substitutions exist (T12), every
+    /// starter plays a flat 90 and every non-starter 0, so a minutes share is
+    /// numerically identical to the old appearance share it replaced — the
+    /// proof the redefinition is safe to land early, at zero behavioral cost,
+    /// well ahead of the T12 re-fit that only then becomes meaningful.
+    #[test]
+    fn minutes_share_bands_reproduce_appearance_share_bands_under_degenerate_minutes() {
+        let knobs = DevKnobs::default();
+        let club = ClubId(0);
+        let pid = PlayerId(0);
+        let mut club_matches = BTreeMap::new();
+        club_matches.insert(club, 4u32); // 4 matches this window -> 360 available minutes
+
+        // Appeared in 3/4 matches (share 0.75, old rule: regular).
+        let mut minutes = BTreeMap::new();
+        minutes.insert(pid, 270u32);
+        assert_eq!(
+            minutes_multiplier(pid, club, &minutes, &club_matches, &knobs),
+            knobs.minutes_regular
+        );
+
+        // Appeared in 1/4 matches (share 0.25, old rule: rotation).
+        minutes.insert(pid, 90u32);
+        assert_eq!(
+            minutes_multiplier(pid, club, &minutes, &club_matches, &knobs),
+            knobs.minutes_rotation
+        );
+
+        // Never appeared (share 0.0, old rule: absent).
+        minutes.remove(&pid);
+        assert_eq!(
+            minutes_multiplier(pid, club, &minutes, &club_matches, &knobs),
+            knobs.minutes_absent
+        );
+    }
+
+    /// `minutes_absent_share` is what makes the change non-inert once partial
+    /// minutes exist (T10-T12): a player who racks up a handful of matches at
+    /// a few minutes each — impossible before T10 — must not still read as a
+    /// rotation player just because he "appeared."
+    #[test]
+    fn a_low_minutes_share_reads_absent_even_with_several_appearances() {
+        let knobs = DevKnobs::default();
+        let club = ClubId(0);
+        let pid = PlayerId(0);
+        let mut club_matches = BTreeMap::new();
+        club_matches.insert(club, 4u32); // 360 available minutes
+
+        // 4 cameos of 5' each = 20' total, share ≈ 0.056 < minutes_absent_share.
+        let mut minutes = BTreeMap::new();
+        minutes.insert(pid, 20u32);
+        assert_eq!(
+            minutes_multiplier(pid, club, &minutes, &club_matches, &knobs),
+            knobs.minutes_absent,
+            "a below-threshold minutes share must read absent despite appearing every match"
+        );
     }
 
     #[test]
