@@ -15,7 +15,8 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    ELO_SCALE_S, StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, run_head_to_head,
+    CONSISTENCY_NS, ELO_SCALE_S, Knobs, StreamTelemetry, ai_pick_lineup_vs, lineup_strength,
+    play_match, run_head_to_head,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
@@ -45,7 +46,15 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-            let outcome = play_match(&world, &home_lineup, &away_lineup, &mut rng);
+            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
+            let outcome = play_match(
+                &world,
+                &home_lineup,
+                &away_lineup,
+                &mut rng,
+                &mut consistency_rng,
+                &Knobs::default(),
+            );
 
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
             seed_matches += 1;

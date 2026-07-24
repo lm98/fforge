@@ -97,6 +97,17 @@ pub struct Knobs {
     // --- resolution support term: blend actor with team quality ---
     /// 0 = pure actor, 1 = pure team mean.
     pub support: f64,
+
+    // --- consistency: per-match performance-variance scale (MATCH_MODEL.md §17, T8) ---
+    /// `σ(consistency) = consistency_sigma_max · (1 − consistency/100)` — the
+    /// per-match multiplier's standard deviation. Identity `0.0` (§2.1): every
+    /// side's multiplier is then exactly `1.0`, reproducing the pre-2e engine
+    /// bit-for-bit.
+    pub consistency_sigma_max: f64,
+    /// Clamp band for the per-match multiplier — "a bad day is a bad day,
+    /// not a different player" (§2.9).
+    pub consistency_mult_min: f64,
+    pub consistency_mult_max: f64,
 }
 
 impl Default for Knobs {
@@ -139,6 +150,13 @@ impl Default for Knobs {
             fatigue_base: 0.12,
             fatigue_wr: 0.5,
             support: 0.25,
+            // T8: plausibility-picked, not yet B3.9-fitted. At worldgen's
+            // consistency range (25..90), sigma runs from ~0.19 (worst,
+            // consistency=25) to ~0.025 (best, consistency=90) — a visibly
+            // wider match-to-match spread for the least consistent players.
+            consistency_sigma_max: 0.25,
+            consistency_mult_min: 0.7,
+            consistency_mult_max: 1.3,
         }
     }
 }

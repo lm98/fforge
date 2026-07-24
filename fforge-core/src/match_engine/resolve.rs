@@ -22,16 +22,40 @@ struct XiPlayer {
     attrs: Attributes,
 }
 
-fn build_xi(world: &World, lineup: &Lineup) -> Vec<XiPlayer> {
+/// Builds one side's XI, applying the Consistency per-match multiplier
+/// (`MATCH_MODEL.md` §17, T8) to each player's effective attributes for the
+/// whole match. `consistency_rng` is drawn from **unconditionally, one
+/// player at a time in slot order** — fixed count and order regardless of
+/// any attribute value, so stream position stays value-independent
+/// (`development::tick_changes`'s own rule). At `k.consistency_sigma_max ==
+/// 0.0` every multiplier is exactly `1.0` (§2.1's identity), so this
+/// reproduces the pre-2e attributes bit-for-bit even though draws still
+/// happen — they land on `consistency_rng`, a stream wholly separate from
+/// the match's own `rng`, so the main draw sequence is never touched
+/// regardless of `sigma_max`.
+fn build_xi(world: &World, lineup: &Lineup, consistency_rng: &mut Rng, k: &Knobs) -> Vec<XiPlayer> {
     let def = lineup.formation_def();
     lineup
         .players
         .iter()
         .enumerate()
-        .map(|(slot, &pid)| XiPlayer {
-            pid,
-            role: def.slots[slot],
-            attrs: world.player(pid).attributes.clone(),
+        .map(|(slot, &pid)| {
+            let player = world.player(pid);
+            let consistency = player.character.consistency as f64;
+            let sigma = k.consistency_sigma_max * (1.0 - consistency / 100.0);
+            let z = consistency_rng.normal(0.0, 1.0);
+            let mult = (1.0 + sigma * z).clamp(k.consistency_mult_min, k.consistency_mult_max);
+
+            let mut attrs = player.attributes.clone();
+            for attr in Attribute::ALL {
+                let scaled = (attrs.get(attr) as f64 * mult).round().clamp(0.0, 100.0);
+                attrs.set(attr, scaled as u8);
+            }
+            XiPlayer {
+                pid,
+                role: def.slots[slot],
+                attrs,
+            }
         })
         .collect()
 }
@@ -686,21 +710,34 @@ fn step(
     }
 }
 
+/// `consistency_rng` must be a stream **separate from `rng`**
+/// (`MATCH_MODEL.md` §17, T8, §2.1's own-stream rule): the possession loop
+/// only ever draws from `rng`, so a caller who always passes a fresh,
+/// independently-derived `consistency_rng` (e.g. `derive_stream(seed,
+/// CONSISTENCY_NS | fixture.id)`) gets the §4 neutral-adjacent guarantee —
+/// nothing here can perturb `rng`'s own draw sequence, regardless of
+/// `k.consistency_sigma_max`. Takes `k` explicitly (the `notebook_parity`/
+/// `simulate` precedent) so a caller can pin `consistency_sigma_max: 0.0`
+/// independent of whatever `Knobs::default()` currently is in production —
+/// exactly what the T5/T6 identity tests need to keep asserting the
+/// pre-Consistency baseline.
 pub fn play_match(
     world: &World,
     home_lineup: &Lineup,
     away_lineup: &Lineup,
     rng: &mut Rng,
+    consistency_rng: &mut Rng,
+    k: &Knobs,
 ) -> MatchOutcome {
-    let home = build_xi(world, home_lineup);
-    let away = build_xi(world, away_lineup);
+    let home = build_xi(world, home_lineup, consistency_rng, k);
+    let away = build_xi(world, away_lineup, consistency_rng, k);
     simulate(
         &home,
         &away,
         home_lineup.tactics,
         away_lineup.tactics,
         rng,
-        &Knobs::default(),
+        k,
     )
 }
 
@@ -777,6 +814,99 @@ fn simulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rng::derive_stream;
+
+    #[test]
+    fn build_xi_reproduces_raw_attributes_bit_for_bit_at_the_consistency_identity() {
+        // §2.1: consistency_sigma_max = 0.0 must reproduce every attribute
+        // exactly, regardless of the drawn z (unconditional draws still
+        // happen — only the resulting multiplier is pinned to 1.0 exactly).
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (world, _s, _d) = crate::worldgen::generate(7, &cfg);
+        let club = world.competition.clubs[0];
+        let lineup = crate::match_engine::ai_pick_lineup(&world, club);
+        let k = Knobs {
+            consistency_sigma_max: 0.0,
+            ..Knobs::default()
+        };
+        let mut rng = Rng::seed_from(123);
+        let xi = build_xi(&world, &lineup, &mut rng, &k);
+        for player in &xi {
+            let raw = &world.player(player.pid).attributes;
+            for attr in Attribute::ALL {
+                assert_eq!(
+                    player.attrs.get(attr),
+                    raw.get(attr),
+                    "player {}: {attr:?} moved at the consistency identity",
+                    player.pid
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn low_consistency_shows_a_visibly_wider_match_to_match_spread_than_high_consistency() {
+        // §2.9/MATCH_MODEL.md §17: at equal starting CA (same attribute
+        // value), a low-Consistency player's per-match effective attribute
+        // must vary more from match to match than a high-Consistency
+        // player's — the whole point of the split from Concentration.
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (mut world, _s, _d) = crate::worldgen::generate(7, &cfg);
+        let club = world.competition.clubs[0];
+        let lineup = crate::match_engine::ai_pick_lineup(&world, club);
+        let pid = lineup.players[0];
+        world
+            .players
+            .get_mut(&pid)
+            .unwrap()
+            .attributes
+            .set(Attribute::Passing, 60);
+        let k = Knobs::default();
+
+        let mut low_draws = Vec::new();
+        let mut high_draws = Vec::new();
+        for seed in 0..500u64 {
+            world.players.get_mut(&pid).unwrap().character.consistency = 25;
+            let mut rng = derive_stream(seed, 1);
+            let xi = build_xi(&world, &lineup, &mut rng, &k);
+            low_draws.push(
+                xi.iter()
+                    .find(|p| p.pid == pid)
+                    .unwrap()
+                    .attrs
+                    .get(Attribute::Passing) as f64,
+            );
+
+            world.players.get_mut(&pid).unwrap().character.consistency = 90;
+            let mut rng2 = derive_stream(seed, 1);
+            let xi2 = build_xi(&world, &lineup, &mut rng2, &k);
+            high_draws.push(
+                xi2.iter()
+                    .find(|p| p.pid == pid)
+                    .unwrap()
+                    .attrs
+                    .get(Attribute::Passing) as f64,
+            );
+        }
+
+        fn variance(v: &[f64]) -> f64 {
+            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64
+        }
+        let low_var = variance(&low_draws);
+        let high_var = variance(&high_draws);
+        assert!(
+            low_var > high_var * 2.0,
+            "low-consistency (var {low_var:.2}) should spread visibly wider than \
+             high-consistency (var {high_var:.2}) at equal starting CA"
+        );
+    }
 
     #[test]
     fn turnover_mirrors_zones_per_match_model_table() {

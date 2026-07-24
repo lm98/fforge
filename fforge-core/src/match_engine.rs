@@ -33,6 +33,14 @@ use fforge_domain::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Tag namespace for the per-match Consistency RNG stream
+/// (`rng::derive_stream`, `MATCH_MODEL.md` §17, T8) — distinct from
+/// `commands::FIXTURE_STREAM_NS`, `development::DEV_STREAM_NS`, and
+/// `market::TRANSFER_STREAM_NS`, per §2.1's own-stream rule. Callers OR in a
+/// per-fixture component (e.g. `CONSISTENCY_NS | fixture.id`) the same way
+/// the main stream does.
+pub const CONSISTENCY_NS: u64 = 0x434F_4E53_0000_0000; // "CONS"
+
 /// A resolved injury (`MATCH_MODEL.md` §12, §14): the *days out*, decided at
 /// match time — never a severity category for the fold to re-roll, so the
 /// severity model can evolve without rewriting anyone's recorded medical
@@ -106,11 +114,24 @@ pub struct MatchOutcome {
     pub minutes: Vec<(PlayerId, u8)>,
 }
 
-/// Simulate one match: `(lineups, world, rng)` in, score + trace out. A pure
-/// function of its inputs — same seed stream, same outcome, by construction
-/// (`MATCH_MODEL.md` §7).
-pub fn play_match(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
-    resolve::play_match(world, home, away, rng)
+/// Simulate one match: `(lineups, world, rng, consistency_rng, knobs)` in,
+/// score + trace out. A pure function of its inputs — same seed streams,
+/// same outcome, by construction (`MATCH_MODEL.md` §7). `consistency_rng`
+/// must be a stream independent of `rng` (`MATCH_MODEL.md` §17, T8) —
+/// callers typically derive it as `derive_stream(seed, CONSISTENCY_NS |
+/// fixture.id)`, the sibling of however `rng` itself was derived. `k` is
+/// almost always `&Knobs::default()`; tests that need to pin a knob
+/// independent of the production default (the T5/T6 identity tests pinning
+/// `consistency_sigma_max: 0.0`) pass their own.
+pub fn play_match(
+    world: &World,
+    home: &Lineup,
+    away: &Lineup,
+    rng: &mut Rng,
+    consistency_rng: &mut Rng,
+    k: &Knobs,
+) -> MatchOutcome {
+    resolve::play_match(world, home, away, rng, consistency_rng, k)
 }
 
 /// Deterministic AI team selection: for each formation, greedily fill slots
@@ -319,6 +340,23 @@ mod tests {
         super::golden::phase_2a_world_and_lineups()
     }
 
+    /// Test-only convenience: `play_match` with production `Knobs` and an
+    /// arbitrary-but-fixed Consistency stream — for tests that don't care
+    /// about Consistency specifically (most of this module). The T5/T6
+    /// identity tests (`golden` module) call `play_match` directly with
+    /// `consistency_sigma_max: 0.0` pinned instead.
+    fn play(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
+        let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
+        play_match(
+            world,
+            home,
+            away,
+            rng,
+            &mut consistency_rng,
+            &Knobs::default(),
+        )
+    }
+
     #[test]
     fn every_event_names_an_actor_in_the_fielding_sides_xi() {
         // The identity enrichment invariant (MATCH_MODEL.md §9): each beat's
@@ -331,7 +369,7 @@ mod tests {
         let away_xi: std::collections::BTreeSet<_> = away.players.iter().copied().collect();
         for seed in 0..64u64 {
             let mut rng = derive_stream(seed, 1);
-            let outcome = play_match(&world, &home, &away, &mut rng);
+            let outcome = play(&world, &home, &away, &mut rng);
             for event in &outcome.stream {
                 let (fielding, opposing) = match event.side {
                     Side::Home => (&home_xi, &away_xi),
@@ -366,7 +404,7 @@ mod tests {
         let (world, home, away) = tiny_world_and_lineups();
         for seed in 0..32u64 {
             let mut rng = derive_stream(seed, 1);
-            let outcome = play_match(&world, &home, &away, &mut rng);
+            let outcome = play(&world, &home, &away, &mut rng);
             assert!(
                 outcome.injuries.is_empty()
                     && outcome.cards.is_empty()
@@ -381,8 +419,8 @@ mod tests {
         let (world, home, away) = tiny_world_and_lineups();
         let mut r1 = derive_stream(99, 1);
         let mut r2 = derive_stream(99, 1);
-        let a = play_match(&world, &home, &away, &mut r1);
-        let b = play_match(&world, &home, &away, &mut r2);
+        let a = play(&world, &home, &away, &mut r1);
+        let b = play(&world, &home, &away, &mut r2);
         assert_eq!(
             a, b,
             "identical (lineups, world, rng stream) must yield an identical outcome"
@@ -394,8 +432,8 @@ mod tests {
         let (world, home, away) = tiny_world_and_lineups();
         let mut r1 = derive_stream(1, 1);
         let mut r2 = derive_stream(2, 1);
-        let a = play_match(&world, &home, &away, &mut r1);
-        let b = play_match(&world, &home, &away, &mut r2);
+        let a = play(&world, &home, &away, &mut r1);
+        let b = play(&world, &home, &away, &mut r2);
         assert_ne!(
             a.stream, b.stream,
             "different rng streams should not replay identically"
@@ -406,7 +444,7 @@ mod tests {
     fn stream_is_never_empty_and_ends_with_a_final_score_consistent_with_shot_events() {
         let (world, home, away) = tiny_world_and_lineups();
         let mut rng = derive_stream(42, 1);
-        let outcome = play_match(&world, &home, &away, &mut rng);
+        let outcome = play(&world, &home, &away, &mut rng);
         assert!(
             !outcome.stream.is_empty(),
             "a 90-minute match must produce events"
@@ -449,7 +487,7 @@ mod tests {
         let mut away_wins = 0u32;
         for seed in 0..200u64 {
             let mut rng = derive_stream(seed, 1);
-            let outcome = play_match(&world, &lineup, &lineup, &mut rng);
+            let outcome = play(&world, &lineup, &lineup, &mut rng);
             match outcome.home_goals.cmp(&outcome.away_goals) {
                 std::cmp::Ordering::Greater => home_wins += 1,
                 std::cmp::Ordering::Less => away_wins += 1,
@@ -536,6 +574,18 @@ pub(crate) mod golden {
         (19, 0, 863),
     ];
 
+    /// The T5/T6 identity tests below pin `consistency_sigma_max: 0.0`
+    /// (§2.1) explicitly rather than using `Knobs::default()` — T8 gave
+    /// Consistency a real nonzero production default, so these golden
+    /// baselines must keep asserting the *pre*-Consistency engine
+    /// specifically, independent of whatever `Knobs::default()` is today.
+    fn identity_consistency_knobs() -> Knobs {
+        Knobs {
+            consistency_sigma_max: 0.0,
+            ..Knobs::default()
+        }
+    }
+
     #[test]
     fn phase_2a_golden_baseline_reproduces() {
         // Tracks whatever `ai_pick_lineup` currently produces — neutral
@@ -544,9 +594,11 @@ pub(crate) mod golden {
         // and gets re-pinned deliberately (§8's rollout discipline), same as
         // `favourite_discrimination_regression_guard`.
         let (world, home, away) = phase_2a_world_and_lineups();
+        let k = identity_consistency_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
-            let outcome = play_match(&world, &home, &away, &mut rng);
+            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+            let outcome = play_match(&world, &home, &away, &mut rng, &mut consistency_rng, &k);
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
                 (hg, ag, len),
@@ -566,9 +618,11 @@ pub(crate) mod golden {
         let (world, mut home, mut away) = phase_2a_world_and_lineups();
         home.tactics = fforge_domain::Tactics::neutral();
         away.tactics = fforge_domain::Tactics::neutral();
+        let k = identity_consistency_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
-            let outcome = play_match(&world, &home, &away, &mut rng);
+            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+            let outcome = play_match(&world, &home, &away, &mut rng, &mut consistency_rng, &k);
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
                 (hg, ag, len),

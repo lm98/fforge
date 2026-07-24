@@ -10,7 +10,7 @@ use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
-use crate::match_engine::{ai_pick_lineup, ai_pick_lineup_vs, play_match};
+use crate::match_engine::{CONSISTENCY_NS, Knobs, ai_pick_lineup, ai_pick_lineup_vs, play_match};
 use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
@@ -222,7 +222,15 @@ pub fn player_match_preview(
         ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
     };
     let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-    Some(play_match(&state.world, &home_lineup, &away_lineup, &mut rng))
+    let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
+    Some(play_match(
+        &state.world,
+        &home_lineup,
+        &away_lineup,
+        &mut rng,
+        &mut consistency_rng,
+        &Knobs::default(),
+    ))
 }
 
 fn advance_matchday(state: &GameState) -> Vec<Event> {
@@ -247,11 +255,19 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
         };
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
+        let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
         // The minute-by-minute stream is a Trace, not a fold input
         // (MATCH_MODEL.md §7) — only the score is recorded; it rides
         // alongside for live-viewing consumers (fforge-game's friendly
         // viewer) but is never persisted through the event log.
-        let outcome = play_match(&state.world, &home_lineup, &away_lineup, &mut rng);
+        let outcome = play_match(
+            &state.world,
+            &home_lineup,
+            &away_lineup,
+            &mut rng,
+            &mut consistency_rng,
+            &Knobs::default(),
+        );
         let (hg, ag) = (outcome.home_goals, outcome.away_goals);
         new_results.insert(fixture.id, (hg, ag));
         let home_xi = home_lineup.players.to_vec();

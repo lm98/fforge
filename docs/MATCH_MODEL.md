@@ -559,6 +559,50 @@ defenders) but stays positive-skewed (chasing teams attack); gpm ≈ unchanged (
 
 ## 17. Character activation — Consistency & Concentration, and the schema §9 item 2 verdict
 
+**Status: Consistency landed (batch-3 T8); Concentration not yet implemented.** This section
+was written at T2 (design-note-first, before any 2e Rust) describing both halves of the
+schema §9 item 2 resolution as one design; only Consistency was ever assigned an
+implementation task (T8) in the batch-3 task list — Concentration's lapse mechanic has no
+task and is not wired into `fforge-core` (confirmed: no `Attribute::Concentration` reference
+anywhere in the crate). The "split holds" verdict below is therefore only half-tested; treat
+Concentration's half as still a pure design description pending its own task.
+
+Implementation lives in `match_engine::resolve::build_xi`:
+`Knobs::consistency_sigma_max`/`consistency_mult_min`/`consistency_mult_max`
+(`0.25`/`0.7`/`1.3`, plausibility-picked, identity `0.0` per §2.1) and its own RNG stream
+(`match_engine::CONSISTENCY_NS`, "CONS"), drawn once per player at XI-build time (22 draws,
+11 per side, unconditional, fixed slot order) and applied to *every* attribute uniformly for
+the match. `play_match`/`resolve::play_match` gained `consistency_rng: &mut Rng` and `k:
+&Knobs` parameters (the latter so the T5/T6 identity tests can pin
+`consistency_sigma_max: 0.0` independent of the production default, the `notebook_parity`
+precedent). Tests: the identity holds bit-for-bit (`build_xi_reproduces_raw_attributes_bit_
+for_bit_at_the_consistency_identity`, plus the T5/T6 golden/bit-identity tests re-passing with
+`consistency_sigma_max: 0.0` pinned); a low-Consistency player shows visibly (>2×) wider
+match-to-match spread than a high-Consistency player at equal starting CA
+(`low_consistency_shows_a_visibly_wider_match_to_match_spread_than_high_consistency`).
+
+**T8 finding — the mean shift was larger than "roughly unchanged."** At `sigma_max = 0.25`,
+pooled `bin/calibrate` goals/match moved from 2.64 (T6/T7 baseline, `AI_TACTICS_ENABLED =
+false`) to 2.89 at a matched 16-seed pool (+9.5%), not the "roughly unchanged (the multiplier
+is mean-1.0)" this section originally predicted. The per-match multiplier's *expectation* is
+exactly 1.0 by construction, but that does not imply the *engine's output* mean is preserved:
+contest probabilities are sigmoid functions of attribute differences, and a symmetric
+perturbation to a nonlinear function's input does not generally preserve its output's mean
+(the general shape of the effect Jensen's inequality describes). Recorded here rather than
+chased — `consistency_sigma_max` is a plausibility pick explicitly meant to be a B3.9 fit
+target (this section's own §8 impact note below), and T8's scope fence was "do not re-tune
+knobs in this task." T14's re-banking pass inherits this as a concrete, measured number to
+weigh when it proposes a knob table.
+
+**Guard interaction (T8 finding).** `favourite_discrimination_regression_guard`'s pool was
+widened 8 → 24 seeds: Consistency's added per-match variance made the guard's sparsest
+extreme-strength-gap bins (a handful of matches each at 8 seeds) trip the monotonicity
+tolerance — e.g. the `(gap −27, 6 matches) → (gap −25, 18 matches)` pair read `(0.083,
+0.000)`, an 0.083 dip past the 0.05 tolerance, at 8 seeds; the same bin pair at 24 seeds reads
+`(0.023, 0.008)`, an 0.015 dip comfortably inside it. This is test-pool sizing (statistical
+power at the harness's sparsest bins), not a knob re-tune — `consistency_sigma_max` and the
+tolerance itself are unchanged.
+
 The two attributes activate on *different axes*, which is the whole test of whether the split
 holds:
 
