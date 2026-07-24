@@ -206,6 +206,30 @@ with or without agents." Professionalism *also* modestly **reduces the physical 
 **Consistency** (match-to-match variance → Phase 2e), **Injury-proneness** (injury events → Phase 2e),
 **Leadership** (morale/captaincy → Phase 5) — none is a development-rate driver, so none enters here.
 
+**[resolved at Phase 2e: the aging term blends with Natural Fitness — batch-3 T9, `MATCH_MODEL.md`
+§13.]** §4's revisit fired for the recovery job (Natural Fitness split out), but the physical-aging
+term above named itself a *possible later cleanup, not done* — it is now done, on the same trigger:
+once Natural Fitness exists as a real attribute, leaving the aging term Professionalism-only means the
+"consummate professional whose body still gives out" (high Prof, low NF) and "trains casually but is
+built of iron" (low Prof, high NF) archetypes are unrepresentable, even though both attributes now
+exist to represent them. The formula becomes a blend, weighted by a new `DevKnobs` field:
+
+```
+Lmax_Phys scaled by  1 − prof_aging_coeff · (w·Prof + (1−w)·NatFit − 50) / 50
+    where w = aging_prof_weight
+```
+
+`prof_aging_coeff` keeps its calibrated value (§6) — only the term it scales changes, from
+Professionalism alone to the blend. **`w = 1.0` is the identity setting**, bit-for-bit equal to the
+pre-blend formula above (`aging_prof_weight_one_reproduces_the_pre_split_formula_exactly`), so the
+split is verifiable before it is tuned. **Production starts at `w = 0.5`** (§2.4's own starting
+value) — `career_arc` read the peak-age/decline-slope table at `w = 0.5` against real `worldgen` and
+found no reading moved outside its already-banked §6 band (the population's Prof/NF correlation is
+mild by construction — worldgen draws them independently, per `MATCH_MODEL.md` §13 — so the blend's
+population-level effect is a widening of the aging-slope *spread*, not a shift of its mean). `w` is
+the knob to move at a future re-fit if peak-age bands drift; not touched here, per T9's own scope
+fence.
+
 ## 4. Natural Fitness — decision: **not** split out in Phase 3
 
 `ATTRIBUTE_SCHEMA.md` §3 flags Natural Fitness "split out in Phase 3 if recovery modeling needs it."
@@ -224,10 +248,9 @@ It does not. Resolution: **keep it merged; do not add the attribute yet.**
   minimal. Flagged here so the split isn't silently defaulted either way.
 - **[resolved at Phase 2e: split out — `MATCH_MODEL.md` §13.]** The revisit fired as designed:
   condition/recovery modeling arrived and no existing attribute could carry the recovery job without
-  double-dipping, so `Character` gains a hidden `natural_fitness`. **This note's §3 term is
-  untouched:** the physical-aging-resistance scaling stays with Professionalism — migrating it would
-  force a re-fit of this note's calibrated knob table for zero behavioral need. Flagged there as a
-  possible later cleanup, not done.
+  double-dipping, so `Character` gains a hidden `natural_fitness`. **This note's §3 term was flagged
+  as a possible later cleanup, not done — batch-3 T9 has since done it:** the physical-aging-resistance
+  scaling is now a Professionalism/Natural-Fitness blend, §3's own updated text below.
 
 ## 5. Determinism & the event-log seam — the architectural crux
 
@@ -355,6 +378,16 @@ Re-fit readings (8 seeds × 16 seasons; per-seed sd in parentheses): physical pe
 technical onset **~26.9** (0.2), mental onset **~26.7** (0.3), overall CA peak **~29.4** (0.2), PA
 attainment mean **~0.88** (0.01) with p10 **~0.80** and a **~11%** sub-0.80 tail, veteran physical slope
 **~−2.7** (0.1), veteran mental slope **~+0.04** (0.01), wonderkid hit rate **~0.65** (0.07).
+
+**T9 checked, not re-fit: `aging_prof_weight = 0.5` against this table.** Re-running the same 8-seed
+×16-season harness with the blend live (§3's `w = 0.5`) reads physical peak **26.00**, veteran physical
+slope **−2.66**, PA attainment mean **0.86**, wonderkid hit rate **0.59** — every metric inside the
+band above, no re-fit triggered. Expected: worldgen draws Professionalism and Natural Fitness
+independently (`MATCH_MODEL.md` §13), so their population correlation is ~0, and blending two
+uncorrelated ~N(50,·) inputs at `w = 0.5` leaves the *population mean* of the blended term
+unchanged from Professionalism alone — only individual careers move (the archetype the split exists
+to represent), which a population-level peak-age/slope reading is not sensitive to. `w` stays a T14
+knob if a later, more targeted archetype check calls for moving it.
 
 **Two structural findings the harness surfaced (real-`worldgen` shifts, not knob failures).** Both are
 consequences of worldgen seeding squads *near their plateau* rather than on the young envelope the

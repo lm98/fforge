@@ -54,6 +54,7 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                 &mut rng,
                 &mut consistency_rng,
                 &Knobs::default(),
+                &std::collections::BTreeMap::new(),
             );
 
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;

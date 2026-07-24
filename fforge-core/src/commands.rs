@@ -223,6 +223,7 @@ pub fn player_match_preview(
     };
     let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
     let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
+    let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
     Some(play_match(
         &state.world,
         &home_lineup,
@@ -230,7 +231,24 @@ pub fn player_match_preview(
         &mut rng,
         &mut consistency_rng,
         &Knobs::default(),
+        &conditions,
     ))
+}
+
+/// Pre-match condition (`MATCH_MODEL.md` §13, T9) for every player in both
+/// lineups, read off `GameState::condition` — the one seam that turns the
+/// fold-maintained `recent_appearances` window into `play_match`'s RNG-free
+/// `conditions` input.
+fn lineup_conditions(
+    state: &GameState,
+    home: &Lineup,
+    away: &Lineup,
+) -> std::collections::BTreeMap<PlayerId, f64> {
+    home.players
+        .iter()
+        .chain(&away.players)
+        .map(|&pid| (pid, state.condition(pid)))
+        .collect()
 }
 
 fn advance_matchday(state: &GameState) -> Vec<Event> {
@@ -256,6 +274,7 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
         };
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
         let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
+        let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
         // The minute-by-minute stream is a Trace, not a fold input
         // (MATCH_MODEL.md §7) — only the score is recorded; it rides
         // alongside for live-viewing consumers (fforge-game's friendly
@@ -267,6 +286,7 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             &mut rng,
             &mut consistency_rng,
             &Knobs::default(),
+            &conditions,
         );
         let (hg, ag) = (outcome.home_goals, outcome.away_goals);
         new_results.insert(fixture.id, (hg, ag));

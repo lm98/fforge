@@ -403,6 +403,52 @@ mean rating §18).
 
 ## 13. Condition & between-match recovery (R5) — and the Natural Fitness split (R8)
 
+**Status: landed (batch-3 T9).** Implementation lives in the new `fforge_core::condition`
+module: `ConditionKnobs` (plausibility-picked, sibling of `DevKnobs`/`ValueKnobs`) and a pure
+`condition(recent, as_of, natural_fitness, age_years, k) -> f64` — each recorded appearance in
+the caller-supplied `recent` slice leaves a decaying load debt (`drain_per_match`, cleared at
+`recovery_per_day`, which scales up with Natural Fitness and down with age past
+`age_anchor`); condition is `(1.0 − Σ debts).clamp(condition_floor, 1.0)`, and an empty
+`recent` always reads exactly `1.0`. `GameState::condition(pid)` is the one call site that
+turns the already-existing `recent_appearances` rolling window (§12's boundary extension,
+landed ahead of this task) plus `Character.natural_fitness` and `Player::age` into a value —
+no new fold state, no new event, per §2.3's "derived, never stored" rule.
+
+**The identity mechanism differs from Consistency's.** Condition is `GameState`-derived, and
+`match_engine` has no `GameState` — so unlike `Knobs::consistency_sigma_max` (an in-engine
+knob), condition arrives from *outside* `play_match` as a plain `conditions: &BTreeMap<PlayerId,
+f64>` parameter, threaded through `build_xi` into a new `XiPlayer.condition` field (not baked
+into `attrs` like Consistency — it scales only `fatigue_mult`'s starting point, not every
+attribute). A player absent from the map — including the whole map being empty — defaults to
+`1.0`, which *is* the identity setting (§2.1): callers with no real `GameState` (every test,
+`bin/calibrate`, the pooled harnesses) simply never populate the map. `fatigue_mult` gained a
+`condition: f64` parameter; its new starting point at minute 0 is `condition` exactly (was
+always `1.0`), fading further from there exactly as before — "a player at 85% begins the match
+already part-fatigued," §13's own framing, realized as a single multiplication.
+
+**Scope decision: `bin/calibrate` and the four pooled calibration guards stay at the identity
+setting.** None of them tracks a `GameState` across a simulated season (they drive
+worldgen → AI-lineup → `play_match` directly, one fixture at a time, discarding state between
+matches — `bin/calibrate`'s own module doc comment), so there is no accumulated
+`recent_appearances` window for them to read; wiring one in would be new season-tracking
+machinery outside T9's scope, not a data-flow change. This means `bin/calibrate`'s pooled
+readings are unaffected by this task by construction (verified: `cargo run --release --bin
+calibrate -- --seeds 8` reads unchanged goals/match, and all four pooled guards
+— `favourite_discrimination_regression_guard`, `career_arcs_are_in_a_believable_ballpark`,
+`market_is_in_a_believable_ballpark`, `aggregates_are_in_a_believable_ballpark` — pass with no
+threshold change). The real per-player effect is exercised end-to-end through
+`commands::advance_matchday`/`player_match_preview` (both build a real `conditions` map via
+`GameState::condition`) and asserted directly (`condition`'s own unit tests; `fatigue_mult`'s
+extended bounds test; `build_xi_attaches_condition_from_the_caller_supplied_map`;
+`a_tired_home_side_scores_visibly_fewer_expected_goals_than_a_fresh_one`, pooled over 300
+seeds). A season-long pooled reading of condition's aggregate bite is left to a future harness
+extension, not fabricated here.
+
+**Aging blend (§2.4/R8) also landed, in `development`, not `match_engine`.** See
+`DEVELOPMENT_MODEL.md`'s updated §3/§6 for the `Lmax_Phys` blend formula, the `aging_prof_weight`
+knob (`w`, identity `1.0`, production `0.5`), and the `career_arc` check confirming no reading
+moved outside its already-banked band at the production default.
+
 **Condition** is a persistent per-player `0..=100` state, distinct from §4's *in-match*
 fatigue: fatigue is the within-90' drop; condition is what you start the day with.
 
@@ -445,9 +491,14 @@ low 90s, and High-press squads accumulating a deficit. Its strategic payoff arri
 fixture congestion (cups, continental midweeks — future), and the law is deliberately simple
 until then. This is scoped-in *now* anyway because injuries and substitutions both consume it.
 
-**§8 impact:** pooled aggregates ≈ unchanged in a weekly calendar (predicted gpm drift
-< ±0.05); new telemetry rows: mean pre-match condition (expected ≥ ~95 in-season) and the
-post-75' contest-success dip by pressing level (which §13's anchor deepens slightly).
+**§8 impact:** predicted pooled aggregates ≈ unchanged in a weekly calendar (gpm drift < ±0.05)
+— confirmed exactly (not just "within noise") for `bin/calibrate` and all four pooled guards,
+per the status note above, because that harness never accumulates the season-long
+`recent_appearances` window condition reads; the real per-match bite is confirmed instead by
+`a_tired_home_side_scores_visibly_fewer_expected_goals_than_a_fresh_one`'s pooled 300-seed
+comparison. New telemetry rows (mean pre-match condition, the post-75' contest-success dip by
+pressing level) are deferred to a season-tracking harness extension, not fabricated against a
+harness that cannot see them.
 
 ## 14. The injury model
 

@@ -382,6 +382,26 @@ impl GameState {
         });
     }
 
+    /// Pre-match condition for `pid` as of `self.date` (`MATCH_MODEL.md`
+    /// §13, T9) — a pure read of `recent_appearances` plus the player's
+    /// hidden Natural Fitness and age, recomputed on demand. No field to
+    /// desync: the window is the only source of truth.
+    pub fn condition(&self, pid: PlayerId) -> f64 {
+        let player = self.world.player(pid);
+        let recent = self
+            .recent_appearances
+            .get(&pid)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        crate::condition::condition(
+            recent,
+            self.date,
+            player.character.natural_fitness,
+            player.age(self.date),
+            &crate::condition::ConditionKnobs::default(),
+        )
+    }
+
     pub fn season_over(&self) -> bool {
         self.champion.is_some()
     }
@@ -1147,6 +1167,30 @@ mod match_boundary_tests {
         );
         // And the whole run replays to identical state, new windows included.
         assert_eq!(state, GameState::replay(&log));
+    }
+
+    /// `MATCH_MODEL.md` §13, T9: `GameState::condition` reads `1.0` for a
+    /// player with an empty `recent_appearances` entry, and dips (without
+    /// going out of bounds) right after a recorded match.
+    #[test]
+    fn condition_reads_full_with_no_recent_appearances_and_dips_after_one() {
+        let (_log, state) = base_log(9);
+        let fx = state.schedule[0].clone();
+        let pid = state.world.club(fx.home).players[0];
+        assert_eq!(
+            state.condition(pid),
+            1.0,
+            "a fresh save with no recorded matches must read full condition"
+        );
+
+        let (event, ..) = populated_match_played(&state);
+        let mut after = state.clone();
+        after.apply(&event);
+        let c = after.condition(pid);
+        assert!(
+            (0.0..1.0).contains(&c),
+            "condition {c} must dip below 1.0 right after a recorded appearance"
+        );
     }
 
     #[test]

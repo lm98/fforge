@@ -114,15 +114,18 @@ pub struct MatchOutcome {
     pub minutes: Vec<(PlayerId, u8)>,
 }
 
-/// Simulate one match: `(lineups, world, rng, consistency_rng, knobs)` in,
-/// score + trace out. A pure function of its inputs — same seed streams,
-/// same outcome, by construction (`MATCH_MODEL.md` §7). `consistency_rng`
-/// must be a stream independent of `rng` (`MATCH_MODEL.md` §17, T8) —
-/// callers typically derive it as `derive_stream(seed, CONSISTENCY_NS |
-/// fixture.id)`, the sibling of however `rng` itself was derived. `k` is
-/// almost always `&Knobs::default()`; tests that need to pin a knob
-/// independent of the production default (the T5/T6 identity tests pinning
-/// `consistency_sigma_max: 0.0`) pass their own.
+/// Simulate one match: `(lineups, world, rng, consistency_rng, knobs,
+/// conditions)` in, score + trace out. A pure function of its inputs — same
+/// seed streams, same outcome, by construction (`MATCH_MODEL.md` §7).
+/// `consistency_rng` must be a stream independent of `rng` (`MATCH_MODEL.md`
+/// §17, T8) — callers typically derive it as `derive_stream(seed,
+/// CONSISTENCY_NS | fixture.id)`, the sibling of however `rng` itself was
+/// derived. `k` is almost always `&Knobs::default()`; tests that need to pin
+/// a knob independent of the production default (the T5/T6 identity tests
+/// pinning `consistency_sigma_max: 0.0`) pass their own. `conditions`
+/// (`MATCH_MODEL.md` §13, T9) is a pre-computed `PlayerId -> condition` map —
+/// typically `GameState::condition` for every player in both lineups; an
+/// empty map (or a missing entry) is full condition, the identity setting.
 pub fn play_match(
     world: &World,
     home: &Lineup,
@@ -130,8 +133,9 @@ pub fn play_match(
     rng: &mut Rng,
     consistency_rng: &mut Rng,
     k: &Knobs,
+    conditions: &std::collections::BTreeMap<PlayerId, f64>,
 ) -> MatchOutcome {
-    resolve::play_match(world, home, away, rng, consistency_rng, k)
+    resolve::play_match(world, home, away, rng, consistency_rng, k, conditions)
 }
 
 /// Deterministic AI team selection: for each formation, greedily fill slots
@@ -340,11 +344,11 @@ mod tests {
         super::golden::phase_2a_world_and_lineups()
     }
 
-    /// Test-only convenience: `play_match` with production `Knobs` and an
-    /// arbitrary-but-fixed Consistency stream — for tests that don't care
-    /// about Consistency specifically (most of this module). The T5/T6
-    /// identity tests (`golden` module) call `play_match` directly with
-    /// `consistency_sigma_max: 0.0` pinned instead.
+    /// Test-only convenience: `play_match` with production `Knobs`, an
+    /// arbitrary-but-fixed Consistency stream, and identity (empty) Condition
+    /// — for tests that don't care about either specifically (most of this
+    /// module). The T5/T6 identity tests (`golden` module) call `play_match`
+    /// directly with `consistency_sigma_max: 0.0` pinned instead.
     fn play(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
         let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
         play_match(
@@ -354,6 +358,7 @@ mod tests {
             rng,
             &mut consistency_rng,
             &Knobs::default(),
+            &std::collections::BTreeMap::new(),
         )
     }
 
@@ -499,6 +504,50 @@ mod tests {
             "home_bias must be visible: {home_wins} home wins vs {away_wins} away wins"
         );
     }
+
+    #[test]
+    fn a_tired_home_side_scores_visibly_fewer_expected_goals_than_a_fresh_one() {
+        // MATCH_MODEL.md §13: condition scales fatigue_mult's starting
+        // point, so a side that kicks off already tired should underperform
+        // the identical side at full condition, pooled over many seeds.
+        // Applied to home rather than away: the golden fixture's two clubs
+        // sit at the extreme ends of worldgen's quality spread
+        // (`golden::PHASE_2A_SEEDS_0_32`'s own doc comment), so away scores
+        // ~0 in every seed regardless of condition — a floor a `<` comparison
+        // could never detect. Home scores double digits, giving the
+        // multiplier's effect real room to show up in the pooled total.
+        let (world, home, away) = tiny_world_and_lineups();
+        let tired: std::collections::BTreeMap<PlayerId, f64> =
+            home.players.iter().map(|&pid| (pid, 0.6)).collect();
+        let fresh: std::collections::BTreeMap<PlayerId, f64> = std::collections::BTreeMap::new();
+
+        let pooled_home_goals = |conditions: &std::collections::BTreeMap<PlayerId, f64>| {
+            let mut total = 0u32;
+            for seed in 0..300u64 {
+                let mut rng = derive_stream(seed, 1);
+                let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+                let outcome = play_match(
+                    &world,
+                    &home,
+                    &away,
+                    &mut rng,
+                    &mut consistency_rng,
+                    &Knobs::default(),
+                    conditions,
+                );
+                total += outcome.home_goals as u32;
+            }
+            total
+        };
+
+        let tired_goals = pooled_home_goals(&tired);
+        let fresh_goals = pooled_home_goals(&fresh);
+        assert!(
+            tired_goals < fresh_goals,
+            "a tired home side ({tired_goals} goals pooled) should score fewer than the \
+             identical side at full condition ({fresh_goals} goals pooled)"
+        );
+    }
 }
 
 /// The pinned Phase-2a golden baseline (batch-3 handoff T5): the reference
@@ -598,7 +647,15 @@ pub(crate) mod golden {
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-            let outcome = play_match(&world, &home, &away, &mut rng, &mut consistency_rng, &k);
+            let outcome = play_match(
+                &world,
+                &home,
+                &away,
+                &mut rng,
+                &mut consistency_rng,
+                &k,
+                &std::collections::BTreeMap::new(),
+            );
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
                 (hg, ag, len),
@@ -622,7 +679,15 @@ pub(crate) mod golden {
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-            let outcome = play_match(&world, &home, &away, &mut rng, &mut consistency_rng, &k);
+            let outcome = play_match(
+                &world,
+                &home,
+                &away,
+                &mut rng,
+                &mut consistency_rng,
+                &k,
+                &std::collections::BTreeMap::new(),
+            );
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
                 (hg, ag, len),

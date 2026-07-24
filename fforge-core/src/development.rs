@@ -234,6 +234,10 @@ pub struct DevKnobs {
     /// How much Professionalism flattens physical aging (§3): the physical
     /// envelope's `Lmax` is scaled by `1 − coeff·(Prof−50)/50`. The pro ages well.
     pub prof_aging_coeff: f64,
+    /// The aging blend's weight on Professionalism vs. Natural Fitness (§5,
+    /// T9's `phys_lmax`): `1.0` reproduces the pre-split formula exactly
+    /// (Professionalism alone) — the identity setting for `career_arc`.
+    pub aging_prof_weight: f64,
 
     /// Bloomer phase φ ~ N(0, σ) years (§2.3).
     pub phi_sigma: f64,
@@ -348,6 +352,9 @@ impl Default for DevKnobs {
             e_min: 0.15,
             e_max: 1.9,
             prof_aging_coeff: 0.3,
+            // §2.4's "Start at w = 0.5": Professionalism and Natural Fitness
+            // blend evenly until a `career_arc` reading says otherwise.
+            aging_prof_weight: 0.5,
             phi_sigma: 1.8,
             jitter_sigma: 0.35,
             minutes_regular_share: 0.5,
@@ -452,6 +459,21 @@ pub(crate) fn role_ceiling_consts() -> [f64; fforge_domain::NUM_ROLES] {
         consts[role.index()] = num / den;
     }
     consts
+}
+
+/// The physical envelope's professionalism/Natural-Fitness-blended peak-loss
+/// (`DEVELOPMENT_MODEL.md` §5, `MATCH_MODEL.md` §13/R8, T9): `Lmax_Phys`
+/// scaled by `1 − aging_coeff·(w·Prof + (1−w)·NatFit − 50)/50`. `w =
+/// aging_prof_weight` is the identity setting at `1.0` — the pre-split
+/// formula, Professionalism alone — so `career_arc` can re-fit it
+/// independent of `prof_aging_coeff`. Shared by `tick_changes` and
+/// `valuation`'s two projections so there is exactly one law (the same
+/// "no second integrator to drift" discipline `attr_rate` documents).
+#[inline]
+pub(crate) fn phys_lmax(knobs: &DevKnobs, professionalism: u8, natural_fitness: u8) -> f64 {
+    let blended = knobs.aging_prof_weight * professionalism as f64
+        + (1.0 - knobs.aging_prof_weight) * natural_fitness as f64;
+    knobs.env_phys.lmax * (1.0 - knobs.prof_aging_coeff * (blended - 50.0) / 50.0)
 }
 
 /// The §2 growth/aging **rate law** for a single attribute — the shared core
@@ -631,9 +653,13 @@ pub fn tick_changes(
 
         let age = (tick_date.days - player.birth.days) as f64 / DAYS_PER_YEAR;
         let y = age - phi; // envelope/plasticity act in bloomer-shifted age
-        // Professionalism flattens physical aging (§3): the pro ages well.
-        let phys_lmax = knobs.env_phys.lmax
-            * (1.0 - knobs.prof_aging_coeff * (player.character.professionalism as f64 - 50.0) / 50.0);
+        // Professionalism/Natural-Fitness-blended physical aging (§5, T9):
+        // the pro ages well, and so does the naturally fit.
+        let phys_lmax = phys_lmax(
+            knobs,
+            player.character.professionalism,
+            player.character.natural_fitness,
+        );
 
         for attr in Attribute::ALL {
             // Draw unconditionally so stream position is value-independent —
@@ -697,6 +723,50 @@ mod tests {
         assert!((27.0..=31.0).contains(&tech), "technical peak {tech}");
         assert!((30.0..=34.0).contains(&ment), "mental peak {ment}");
         assert!(phys < tech && tech < ment, "peak ordering phys<tech<ment");
+    }
+
+    /// `DEVELOPMENT_MODEL.md` §5, T9: `aging_prof_weight = 1.0` is the
+    /// identity setting — it must reproduce the pre-split, Professionalism-
+    /// only formula exactly, for every Natural Fitness value, so `career_arc`
+    /// can verify the split changed nothing until `w` actually moves off 1.0.
+    #[test]
+    fn aging_prof_weight_one_reproduces_the_pre_split_formula_exactly() {
+        let identity = DevKnobs {
+            aging_prof_weight: 1.0,
+            ..DevKnobs::default()
+        };
+        for prof in [0u8, 25, 50, 75, 100] {
+            let pre_split = identity.env_phys.lmax
+                * (1.0 - identity.prof_aging_coeff * (prof as f64 - 50.0) / 50.0);
+            for nf in [0u8, 30, 60, 100] {
+                assert_eq!(
+                    phys_lmax(&identity, prof, nf),
+                    pre_split,
+                    "w=1.0 must ignore Natural Fitness entirely (prof={prof}, nf={nf})"
+                );
+            }
+        }
+    }
+
+    /// At `w = 0.5` (the production default), a low-Professionalism,
+    /// high-Natural-Fitness player ages better than the pre-split formula
+    /// would have credited him for — the archetype §2.4 names the split to
+    /// represent. `lmax` is the *peak fraction lost* to aging, so "ages
+    /// better" is a **smaller** value.
+    #[test]
+    fn the_blend_lets_natural_fitness_move_the_aging_peak_away_from_professionalism_alone() {
+        let k = DevKnobs::default();
+        let pre_split_lmax =
+            |prof: u8| k.env_phys.lmax * (1.0 - k.prof_aging_coeff * (prof as f64 - 50.0) / 50.0);
+
+        // Low Prof, high NF: the blend must land strictly between "Prof
+        // alone" (worst case: low prof, ignoring NF) and "full NF credit"
+        // (best case: as if NF were 100% of the blend), not collapse to
+        // either — the blend at prof=20/nf=90 sits at blended=55, better
+        // than prof=20 alone but worse than prof=90 alone.
+        let low_prof_high_nf = phys_lmax(&k, 20, 90);
+        assert!(low_prof_high_nf < pre_split_lmax(20));
+        assert!(low_prof_high_nf > pre_split_lmax(90));
     }
 
     /// T4/§2.8's inertness property: before substitutions exist (T12), every

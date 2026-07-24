@@ -33,7 +33,7 @@
 //! the inputs, not a change to this function.
 
 use crate::development::{
-    self, DevKnobs, EnvTables, NUM_CATEGORIES, attr_rate, category_peaks, norms_by_role,
+    self, DevKnobs, EnvTables, NUM_CATEGORIES, attr_rate, category_peaks, norms_by_role, phys_lmax,
     role_ceiling_consts,
 };
 use fforge_domain::{
@@ -278,10 +278,14 @@ fn project_ca_with(
     let phi = p.development.bloomer_phase();
     let e = p.development.efficiency();
     let pa = p.character.potential as f64;
-    let prof = p.character.professionalism as f64;
-    // Professionalism flattens physical aging (§3), exactly as `tick_changes`
-    // resolves it — the pro ages well.
-    let phys_lmax = knobs.env_phys.lmax * (1.0 - knobs.prof_aging_coeff * (prof - 50.0) / 50.0);
+    // Professionalism/Natural-Fitness-blended physical aging (§5, T9),
+    // exactly as `tick_changes` resolves it — the shared law, no second
+    // integrator to drift.
+    let phys_lmax_val = phys_lmax(
+        knobs,
+        p.character.professionalism,
+        p.character.natural_fitness,
+    );
     let age0 = (today.days - p.birth.days) as f64 / DAYS_PER_YEAR;
 
     let mut cur = [0.0f64; NUM_ATTRIBUTES];
@@ -313,7 +317,7 @@ fn project_ca_with(
                 1.0, // coaching — neutral of the holding club (§2.3)
                 1.0, // minutes — regular; prices what a club that plays him gets (§2.3)
                 y,
-                phys_lmax,
+                phys_lmax_val,
                 &tables.envs,
                 &tables.peaks,
             );
@@ -354,8 +358,11 @@ fn project_ca_series(
     let phi = p.development.bloomer_phase();
     let e = p.development.efficiency();
     let pa = p.character.potential as f64;
-    let prof = p.character.professionalism as f64;
-    let phys_lmax = knobs.env_phys.lmax * (1.0 - knobs.prof_aging_coeff * (prof - 50.0) / 50.0);
+    let phys_lmax_val = phys_lmax(
+        knobs,
+        p.character.professionalism,
+        p.character.natural_fitness,
+    );
     let age0 = (today.days - p.birth.days) as f64 / DAYS_PER_YEAR;
 
     let mut cur = [0.0f64; NUM_ATTRIBUTES];
@@ -386,7 +393,7 @@ fn project_ca_series(
                 1.0,
                 1.0,
                 y,
-                phys_lmax,
+                phys_lmax_val,
                 &tables.envs,
                 &tables.peaks,
             );

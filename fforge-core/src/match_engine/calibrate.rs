@@ -483,6 +483,7 @@ pub fn run_head_to_head(
             &mut rng_a_home,
             &mut consistency_a_home,
             &Knobs::default(),
+            &BTreeMap::new(),
         );
         total_points_a += match_expected_points(out_a_home.home_goals, out_a_home.away_goals);
         matches += 1;
@@ -496,6 +497,7 @@ pub fn run_head_to_head(
             &mut rng_b_home,
             &mut consistency_b_home,
             &Knobs::default(),
+            &BTreeMap::new(),
         );
         // a is away in this leg: a's points share = 1 - home (b)'s.
         total_points_a += 1.0 - match_expected_points(out_b_home.home_goals, out_b_home.away_goals);
@@ -564,6 +566,7 @@ mod tests {
                 &mut rng,
                 &mut consistency_rng,
                 &k,
+                &BTreeMap::new(),
             );
             tel_pressed.record(&out, 0, 0, 50.0, 50.0);
 
@@ -576,6 +579,7 @@ mod tests {
                 &mut rng2,
                 &mut consistency_rng2,
                 &k,
+                &BTreeMap::new(),
             );
             tel_baseline.record(&out2, 0, 0, 50.0, 50.0);
         }
@@ -926,6 +930,7 @@ mod tests {
                     &mut rng,
                     &mut consistency_rng,
                     &Knobs::default(),
+                    &BTreeMap::new(),
                 );
                 telemetry.record(
                     &outcome,

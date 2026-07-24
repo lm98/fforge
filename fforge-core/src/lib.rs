@@ -16,6 +16,7 @@
 pub mod career_arc;
 pub mod club_ai;
 pub mod commands;
+pub mod condition;
 pub mod development;
 pub mod event;
 pub mod finance;

@@ -104,8 +104,18 @@ pub fn sigmoid(x: f64) -> f64 {
 /// fade late. `press_mult` is `TACTICS_MODEL.md` §3's Pressing exertion cost
 /// (identity `1.0`): a side's own tactical press intensity, applied to every
 /// player on that side regardless of whether they're the actor or the
-/// defender in a given contest.
-pub fn fatigue_mult(attrs: &Attributes, minute: f64, k: &Knobs, press_mult: f64) -> f64 {
+/// defender in a given contest. `condition` is `MATCH_MODEL.md` §13's
+/// between-match anchor (identity `1.0`): the multiplier's starting point at
+/// minute 0 is `condition` rather than always `1.0`, and within-match fatigue
+/// fades further from there — a player at 85% begins the match already
+/// part-fatigued.
+pub fn fatigue_mult(
+    attrs: &Attributes,
+    minute: f64,
+    k: &Knobs,
+    press_mult: f64,
+    condition: f64,
+) -> f64 {
     let stamina = attrs.get(Attribute::Stamina) as f64 / 100.0;
     let work_rate = attrs.get(Attribute::WorkRate) as f64 / 100.0;
     let drop = k.fatigue_base
@@ -113,7 +123,7 @@ pub fn fatigue_mult(attrs: &Attributes, minute: f64, k: &Knobs, press_mult: f64)
         * (minute / 90.0)
         * (1.0 - stamina)
         * (1.0 + k.fatigue_wr * work_rate);
-    (1.0 - drop).clamp(0.7, 1.0)
+    condition * (1.0 - drop).clamp(0.7, 1.0)
 }
 
 /// The one logistic-of-difference shape shared by every open-play contest
@@ -141,12 +151,12 @@ mod tests {
         let iron_man = Attributes::new([100; NUM_ATTRIBUTES]); // max stamina, max work rate
         let liability = Attributes::new([0; NUM_ATTRIBUTES]); // min stamina, min work rate (no drop either)
         // Full stamina: no drop regardless of minute.
-        assert_eq!(fatigue_mult(&iron_man, 90.0, &k, 1.0), 1.0);
+        assert_eq!(fatigue_mult(&iron_man, 90.0, &k, 1.0, 1.0), 1.0);
         // Zero stamina but also zero work rate at kickoff: no drop yet (minute=0).
-        assert_eq!(fatigue_mult(&liability, 0.0, &k, 1.0), 1.0);
+        assert_eq!(fatigue_mult(&liability, 0.0, &k, 1.0, 1.0), 1.0);
         // Multiplier never leaves the sanctioned band.
         for minute in [0.0, 30.0, 45.0, 90.0] {
-            let m = fatigue_mult(&liability, minute, &k, 1.0);
+            let m = fatigue_mult(&liability, minute, &k, 1.0, 1.0);
             assert!(
                 (0.7..=1.0).contains(&m),
                 "fatigue multiplier {m} out of band at minute {minute}"
@@ -154,10 +164,18 @@ mod tests {
         }
         // A higher press_mult (Pressing High, TACTICS_MODEL.md §3) deepens
         // the drop at the same minute; the identity value must reproduce the
-        // 3-arg-equivalent baseline exactly (bit-for-bit, §4).
-        let boosted = fatigue_mult(&liability, 45.0, &k, 1.30);
-        let baseline = fatigue_mult(&liability, 45.0, &k, 1.0);
+        // 4-arg-equivalent baseline exactly (bit-for-bit, §4).
+        let boosted = fatigue_mult(&liability, 45.0, &k, 1.30, 1.0);
+        let baseline = fatigue_mult(&liability, 45.0, &k, 1.0, 1.0);
         assert!(boosted <= baseline);
+        // Condition (MATCH_MODEL.md §13) scales the starting point: at
+        // minute 0 the multiplier equals `condition` exactly (identity 1.0
+        // reproduces the pre-condition baseline bit-for-bit), and a lower
+        // condition never produces a *higher* multiplier at any minute.
+        assert_eq!(fatigue_mult(&iron_man, 0.0, &k, 1.0, 0.8), 0.8);
+        let tired = fatigue_mult(&liability, 45.0, &k, 1.0, 0.8);
+        let fresh = fatigue_mult(&liability, 45.0, &k, 1.0, 1.0);
+        assert!(tired < fresh);
     }
 
     #[test]

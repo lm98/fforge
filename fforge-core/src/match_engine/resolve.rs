@@ -12,6 +12,7 @@ use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
 use crate::rng::Rng;
 use fforge_domain::{Attribute, Attributes, Lineup, PlayerId, Role, Tactics, World};
+use std::collections::BTreeMap;
 
 struct XiPlayer {
     /// The domain identity of this eleven's player, carried so the emitted
@@ -20,6 +21,12 @@ struct XiPlayer {
     pid: PlayerId,
     role: Role,
     attrs: Attributes,
+    /// Pre-match condition (`MATCH_MODEL.md` §13, identity `1.0`) — looked up
+    /// once here from the caller's `conditions` map, then read by every
+    /// `fatigue_mult` call this player is involved in for the rest of the
+    /// match; not baked into `attrs` like Consistency, since it scales only
+    /// the fatigue curve's starting point, not every attribute uniformly.
+    condition: f64,
 }
 
 /// Builds one side's XI, applying the Consistency per-match multiplier
@@ -32,8 +39,17 @@ struct XiPlayer {
 /// reproduces the pre-2e attributes bit-for-bit even though draws still
 /// happen — they land on `consistency_rng`, a stream wholly separate from
 /// the match's own `rng`, so the main draw sequence is never touched
-/// regardless of `sigma_max`.
-fn build_xi(world: &World, lineup: &Lineup, consistency_rng: &mut Rng, k: &Knobs) -> Vec<XiPlayer> {
+/// regardless of `sigma_max`. Also attaches each player's pre-match
+/// `condition` (`MATCH_MODEL.md` §13, T9) from the caller-supplied,
+/// already-derived `conditions` map — no RNG involved, so it can never
+/// perturb either stream's draw sequence at any setting.
+fn build_xi(
+    world: &World,
+    lineup: &Lineup,
+    consistency_rng: &mut Rng,
+    k: &Knobs,
+    conditions: &BTreeMap<PlayerId, f64>,
+) -> Vec<XiPlayer> {
     let def = lineup.formation_def();
     lineup
         .players
@@ -51,10 +67,16 @@ fn build_xi(world: &World, lineup: &Lineup, consistency_rng: &mut Rng, k: &Knobs
                 let scaled = (attrs.get(attr) as f64 * mult).round().clamp(0.0, 100.0);
                 attrs.set(attr, scaled as u8);
             }
+            // Absent from the map = full condition (`MATCH_MODEL.md` §13's
+            // identity): a caller with no `GameState` to read (tests, a
+            // player with no recent appearances) gets exactly today's
+            // pre-condition behaviour without needing a special-case map.
+            let condition = conditions.get(&pid).copied().unwrap_or(1.0);
             XiPlayer {
                 pid,
                 role: def.slots[slot],
                 attrs,
+                condition,
             }
         })
         .collect()
@@ -334,7 +356,13 @@ fn take_shot(
                     contest::score(&shooter.attrs, contest::HEADER_ATK),
                     tm_att.header_atk,
                     k,
-                ) * fatigue_mult(&shooter.attrs, minute, k, se_att.fatigue_mult),
+                ) * fatigue_mult(
+                    &shooter.attrs,
+                    minute,
+                    k,
+                    se_att.fatigue_mult,
+                    shooter.condition,
+                ),
                 contest::score(&defender.attrs, contest::AERIAL_DEF),
                 contest::score(&gk.attrs, contest::GK_AERIAL),
             ),
@@ -343,7 +371,13 @@ fn take_shot(
                     contest::score(&shooter.attrs, contest::FINISH_ATK),
                     tm_att.finish_atk,
                     k,
-                ) * fatigue_mult(&shooter.attrs, minute, k, se_att.fatigue_mult),
+                ) * fatigue_mult(
+                    &shooter.attrs,
+                    minute,
+                    k,
+                    se_att.fatigue_mult,
+                    shooter.condition,
+                ),
                 contest::score(&defender.attrs, contest::BLOCK_DEF),
                 contest::score(&gk.attrs, contest::GK_SHOT),
             ),
@@ -464,9 +498,21 @@ fn step(
                 contest::score(&actor.attrs, contest::PASS_ATK),
                 tm_att.pass_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
+            ) * fatigue_mult(
+                &actor.attrs,
+                minute,
+                k,
+                se_att.fatigue_mult,
+                actor.condition,
+            );
             let dfe = contest::score(&defender.attrs, contest::PASS_DEF)
-                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+                * fatigue_mult(
+                    &defender.attrs,
+                    minute,
+                    k,
+                    se_def.fatigue_mult,
+                    defender.condition,
+                );
             let bias = k.b_pass + se_att.b_pass_delta_by_zone[zone.index()] + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -550,9 +596,21 @@ fn step(
                 contest::score(&actor.attrs, contest::TAKEON_ATK),
                 tm_att.takeon_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
+            ) * fatigue_mult(
+                &actor.attrs,
+                minute,
+                k,
+                se_att.fatigue_mult,
+                actor.condition,
+            );
             let dfe = contest::score(&defender.attrs, contest::TAKEON_DEF)
-                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+                * fatigue_mult(
+                    &defender.attrs,
+                    minute,
+                    k,
+                    se_def.fatigue_mult,
+                    defender.condition,
+                );
             let bias = k.b_takeon + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -644,9 +702,21 @@ fn step(
                 contest::score(&actor.attrs, contest::CROSS_ATK),
                 tm_att.cross_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
+            ) * fatigue_mult(
+                &actor.attrs,
+                minute,
+                k,
+                se_att.fatigue_mult,
+                actor.condition,
+            );
             let dfe = contest::score(&defender.attrs, contest::CROSS_DEF)
-                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+                * fatigue_mult(
+                    &defender.attrs,
+                    minute,
+                    k,
+                    se_def.fatigue_mult,
+                    defender.condition,
+                );
             let bias = k.b_cross_delivery + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -720,7 +790,11 @@ fn step(
 /// `simulate` precedent) so a caller can pin `consistency_sigma_max: 0.0`
 /// independent of whatever `Knobs::default()` currently is in production —
 /// exactly what the T5/T6 identity tests need to keep asserting the
-/// pre-Consistency baseline.
+/// pre-Consistency baseline. `conditions` (`MATCH_MODEL.md` §13, T9) is a
+/// pre-computed `PlayerId -> condition` map — RNG-free, since recovery is a
+/// deterministic function of the calendar, so it needs no stream of its own;
+/// a player absent from the map (or the whole map empty, the identity
+/// setting) reads full condition.
 pub fn play_match(
     world: &World,
     home_lineup: &Lineup,
@@ -728,9 +802,10 @@ pub fn play_match(
     rng: &mut Rng,
     consistency_rng: &mut Rng,
     k: &Knobs,
+    conditions: &BTreeMap<PlayerId, f64>,
 ) -> MatchOutcome {
-    let home = build_xi(world, home_lineup, consistency_rng, k);
-    let away = build_xi(world, away_lineup, consistency_rng, k);
+    let home = build_xi(world, home_lineup, consistency_rng, k, conditions);
+    let away = build_xi(world, away_lineup, consistency_rng, k, conditions);
     simulate(
         &home,
         &away,
@@ -833,7 +908,7 @@ mod tests {
             ..Knobs::default()
         };
         let mut rng = Rng::seed_from(123);
-        let xi = build_xi(&world, &lineup, &mut rng, &k);
+        let xi = build_xi(&world, &lineup, &mut rng, &k, &BTreeMap::new());
         for player in &xi {
             let raw = &world.player(player.pid).attributes;
             for attr in Attribute::ALL {
@@ -842,6 +917,39 @@ mod tests {
                     raw.get(attr),
                     "player {}: {attr:?} moved at the consistency identity",
                     player.pid
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_xi_attaches_condition_from_the_caller_supplied_map() {
+        // MATCH_MODEL.md §13, T9: `build_xi` reads each player's condition
+        // from the caller's map, defaulting a missing entry to `1.0` (the
+        // identity) rather than requiring every player to be present.
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (world, _s, _d) = crate::worldgen::generate(7, &cfg);
+        let club = world.competition.clubs[0];
+        let lineup = crate::match_engine::ai_pick_lineup(&world, club);
+        let k = Knobs::default();
+        let named = lineup.players[0];
+        let conditions: BTreeMap<PlayerId, f64> = [(named, 0.75)].into_iter().collect();
+
+        let mut rng = Rng::seed_from(123);
+        let xi = build_xi(&world, &lineup, &mut rng, &k, &conditions);
+        for player in &xi {
+            if player.pid == named {
+                assert_eq!(
+                    player.condition, 0.75,
+                    "the mapped player's condition must be read verbatim"
+                );
+            } else {
+                assert_eq!(
+                    player.condition, 1.0,
+                    "a player absent from the map must default to full condition"
                 );
             }
         }
@@ -874,7 +982,7 @@ mod tests {
         for seed in 0..500u64 {
             world.players.get_mut(&pid).unwrap().character.consistency = 25;
             let mut rng = derive_stream(seed, 1);
-            let xi = build_xi(&world, &lineup, &mut rng, &k);
+            let xi = build_xi(&world, &lineup, &mut rng, &k, &BTreeMap::new());
             low_draws.push(
                 xi.iter()
                     .find(|p| p.pid == pid)
@@ -885,7 +993,7 @@ mod tests {
 
             world.players.get_mut(&pid).unwrap().character.consistency = 90;
             let mut rng2 = derive_stream(seed, 1);
-            let xi2 = build_xi(&world, &lineup, &mut rng2, &k);
+            let xi2 = build_xi(&world, &lineup, &mut rng2, &k, &BTreeMap::new());
             high_draws.push(
                 xi2.iter()
                     .find(|p| p.pid == pid)
@@ -1037,6 +1145,7 @@ mod notebook_parity {
                 pid: PlayerId(slot as u32),
                 role,
                 attrs: notebook_gen_player(rng, role, club_q),
+                condition: 1.0,
             })
             .collect()
     }
