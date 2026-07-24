@@ -18,12 +18,22 @@ are drafted as sections in the note that already pins that model.
 
 ## 1. Purpose & status
 
-- **Status: drafted, pre-implementation.** No scratchpad this time, deliberately — the
+- **Status: §2–§4, §6 landed (batch-3 handoff T6) — the engine + neutral-everywhere rollout
+  step.** `Tactics`/`Mentality`/`Tempo`/`Width`/`Pressing` live in `fforge-domain::tactics`;
+  `Lineup.tactics` rides the existing `SubmitLineup`/`LineupSubmitted` seam unchanged, serde-
+  defaulted; `fforge-core::match_engine::tactics::{SideEffects, resolve_tactics}` implements
+  §3's per-side resolution and is wired into `resolve.rs`'s `select_action`/`step`/`take_shot`/
+  `simulate` (three deformation types only, no new contest types, no new zones, no presence-
+  table edits). Both §4 tests land green: `resolve_tactics_neutral_is_the_exact_identity` and
+  `neutral_tactics_reproduce_phase_2a_bit_for_bit` (replaying the T5 golden table). All four
+  pooled calibration guards re-ran unchanged. `ai_pick_lineup` still emits `Tactics::neutral()`
+  everywhere — §7's AI policy (T7) is not yet wired in, so no non-neutral tactics reach a real
+  match outside tests. §5's interaction model and §8's calibration predictions remain to be
+  verified by T7's triangle harness. No scratchpad was used to settle the structure — the
   `TRANSFER_MODEL.md` §1.1 reasoning applies verbatim: the *structure* is settled by this note
   (every tactic effect is a deformation of an already-calibrated probability), and the numbers
   are knob-table entries the existing Rust harness (`match_engine::calibrate`, `bin/calibrate`)
-  will fit directly, exactly as it re-fit `b_beat`. A Python prototype would fit knobs against
-  the notebook's synthetic squads only to have the real harness re-fit them anyway.
+  will fit directly, exactly as it re-fit `b_beat`.
 - **In scope (this pass):** the instruction surface (§2), per-side resolution into effective
   knobs (§3), the neutral-tactics invariant (§4), the structural interaction model (§5), the
   event-log seam (§6), the v1 AI tactics policy and its Phase-5 seam (§7), and the calibration

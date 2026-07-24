@@ -5,15 +5,17 @@
 //! (`match_model_prototype.ipynb`, referenced from `MATCH_MODEL.md` §1) —
 //! nothing here is a re-guess of the shape-finding, only its translation.
 //!
-//! Deferred to Phase 2e (behind this same call site, no structural change):
-//! tactics as transition-matrix modifiers, cards & fouls, injuries, set
-//! pieces, substitutions, and the character/hidden attributes.
+//! Phase 2e has begun: tactics (`TACTICS_MODEL.md`) lands as transition-
+//! matrix modifiers behind this same call site (no structural change).
+//! Still deferred: cards & fouls, injuries, set pieces, substitutions, and
+//! the character/hidden attributes.
 
 mod calibrate;
 mod contest;
 mod knobs;
 mod resolve;
 mod stream;
+mod tactics;
 mod zone;
 
 pub use calibrate::{
@@ -26,7 +28,7 @@ pub use zone::Zone;
 
 use crate::rng::Rng;
 use fforge_domain::{
-    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
+    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +133,10 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
         let candidate = Lineup {
             formation: fi as u8,
             players: chosen,
+            // T7 adds ai_pick_tactics; until then every AI side plays
+            // neutral (T6's scope fence — nothing selects non-neutral
+            // tactics here).
+            tactics: Tactics::neutral(),
         };
         match &best {
             Some((score, _)) if *score >= mean => {}
@@ -384,6 +390,11 @@ pub(crate) mod golden {
 
     #[test]
     fn phase_2a_golden_baseline_reproduces() {
+        // Tracks whatever `ai_pick_lineup` currently produces — neutral
+        // tactics today (T6's scope fence), but T7 will make it call
+        // `ai_pick_tactics`, at which point this reading is expected to move
+        // and gets re-pinned deliberately (§8's rollout discipline), same as
+        // `favourite_discrimination_regression_guard`.
         let (world, home, away) = phase_2a_world_and_lineups();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
@@ -393,6 +404,29 @@ pub(crate) mod golden {
                 (hg, ag, len),
                 "seed {seed}: Phase-2a golden baseline moved — a wiring bug \
                  in whatever landed since T5, never a re-tune"
+            );
+        }
+    }
+
+    #[test]
+    fn neutral_tactics_reproduce_phase_2a_bit_for_bit() {
+        // TACTICS_MODEL.md §4's named golden test: explicitly force
+        // `Tactics::neutral()` on both sides — independent of whatever
+        // `ai_pick_lineup` defaults to (today neutral, but T7 changes that)
+        // — so this stays a permanent bit-identity guardrail rather than
+        // tracking the AI policy's evolving choice.
+        let (world, mut home, mut away) = phase_2a_world_and_lineups();
+        home.tactics = fforge_domain::Tactics::neutral();
+        away.tactics = fforge_domain::Tactics::neutral();
+        for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &home, &away, &mut rng);
+            assert_eq!(
+                (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
+                (hg, ag, len),
+                "seed {seed}: neutral tactics must reproduce the Phase-2a \
+                 baseline bit-for-bit (§4) — movement here is a wiring bug, \
+                 never a re-tune"
             );
         }
     }

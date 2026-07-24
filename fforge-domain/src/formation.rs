@@ -4,6 +4,7 @@
 
 use crate::entities::PlayerId;
 use crate::role::Role;
+use crate::tactics::Tactics;
 use serde::{Deserialize, Serialize};
 
 pub const XI: usize = 11;
@@ -39,11 +40,17 @@ pub const FORMATIONS: [FormationDef; 4] = [
 ];
 
 /// A submitted team sheet: formation index into `FORMATIONS` + one player
-/// per slot, in slot order.
+/// per slot, in slot order, plus the tactical instruction set
+/// (`TACTICS_MODEL.md` §2, §6) — a team sheet, its shape, and its
+/// contingencies are one decision, validated and recorded together.
+/// `#[serde(default)]` so old logs deserialize to `Tactics::neutral()`,
+/// which the §4 invariant makes bit-identical on replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lineup {
     pub formation: u8,
     pub players: [PlayerId; XI],
+    #[serde(default)]
+    pub tactics: Tactics,
 }
 
 impl Lineup {

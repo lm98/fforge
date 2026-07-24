@@ -11,7 +11,8 @@ use fforge_core::{
     league_table, load_log, match_engine, observe, player_match_preview, save_log, value_all,
 };
 use fforge_domain::{
-    ClubId, FORMATIONS, Lineup, Money, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
+    ClubId, FORMATIONS, Lineup, Money, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI,
+    current_ability,
 };
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
@@ -351,6 +352,9 @@ fn set_lineup_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
     let lineup = Lineup {
         formation: (fi - 1) as u8,
         players,
+        // No tactics UI yet — the human's team sheet plays neutral until a
+        // later batch adds the picker.
+        tactics: Tactics::neutral(),
     };
     println!(
         "\nTeam sheet ({}), strength {:.1}:",

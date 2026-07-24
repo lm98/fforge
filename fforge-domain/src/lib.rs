@@ -12,6 +12,7 @@ pub mod date;
 pub mod entities;
 pub mod formation;
 pub mod role;
+pub mod tactics;
 
 pub use ability::{best_role, current_ability};
 pub use attributes::{Attribute, Attributes, DevCategory, Rating, MAX_RATING, NUM_ATTRIBUTES};
@@ -23,3 +24,4 @@ pub use entities::{
 };
 pub use formation::{FormationDef, Lineup, FORMATIONS, XI};
 pub use role::{Role, RoleWeights, NUM_ROLES, ROLE_WEIGHTS};
+pub use tactics::{Mentality, Pressing, Tactics, Tempo, Width};
