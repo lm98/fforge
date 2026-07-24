@@ -268,6 +268,12 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             away_goals: ag,
             home_xi,
             away_xi,
+            // The 2e boundary fields (MATCH_MODEL.md §12), passed through as
+            // the engine resolved them — empty until the §14/§15/§18 models
+            // land, recorded (not re-derived) once they do.
+            injuries: outcome.injuries,
+            cards: outcome.cards,
+            ratings: outcome.ratings,
         });
     }
 

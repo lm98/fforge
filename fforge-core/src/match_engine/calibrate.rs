@@ -450,6 +450,9 @@ mod tests {
             home_goals: 2,
             away_goals: 1,
             stream,
+            injuries: Vec::new(),
+            cards: Vec::new(),
+            ratings: Vec::new(),
         };
 
         let mut telemetry = StreamTelemetry::default();
@@ -508,6 +511,9 @@ mod tests {
                 home_goals,
                 away_goals,
                 stream: Vec::new(),
+                injuries: Vec::new(),
+                cards: Vec::new(),
+                ratings: Vec::new(),
             }
         }
 

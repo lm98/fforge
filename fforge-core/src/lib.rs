@@ -42,6 +42,7 @@ pub use market::{
     MarketKnobs, RejectReason, RejectedBid, Transfer, WindowOutcome, MAX_ROUNDS,
     TRANSFER_STREAM_NS, resolve_window,
 };
+pub use match_engine::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use pool::{PoolKnobs, YOUTH_STREAM_NS, summer_pool_events};
 pub use session::{Session, load_log, save_log};

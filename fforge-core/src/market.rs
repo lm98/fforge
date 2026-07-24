@@ -566,6 +566,7 @@ mod tests {
                 expires: TODAY.add_days(contract_years * DAYS_PER_YEAR),
             }),
             retired: false,
+            injured_until: None,
         }
     }
 

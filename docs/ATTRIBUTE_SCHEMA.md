@@ -25,7 +25,8 @@ below has since been resolved there, it is marked **[resolved]** with the pointe
 - **Two functional classes of rated field:**
   - **Performance attributes** — contribute to CA and drive match actions. 25 of them (§2).
   - **Character / hidden attributes** — drive development rate, match-to-match variance, injury
-    events, and morale/captaincy systems. **Never contribute to CA.** 6 of them (§2), incl. PA.
+    events, and morale/captaincy systems. **Never contribute to CA.** 6 of them (§2), incl. PA —
+    7 since Phase 2e added Natural Fitness (§3's sanctioned split, `MATCH_MODEL.md` §13).
 - **Attribute *visibility* is out of scope here but has a natural home.** What a scout/manager
   *perceives* about a player vs. the true rated value is precisely the `Observation` vs. `info`
   split from the agent interface (fog-of-war = scoped observation; truth = evaluator channel).
@@ -97,6 +98,7 @@ Concentration (see the GK column in §5).
 | Professionalism | Partly | Training gain; aging/injury resistance; **persona seed** (Phase 5) |
 | Consistency | Yes | Match-to-match variance (how reliably a player hits their CA) |
 | Injury-proneness | Yes | Weighting on injury events |
+| Natural Fitness | Yes | Between-match condition recovery — *added at Phase 2e* (§3's flagged split fired: recovery modeling gave it a genuine consumer, `MATCH_MODEL.md` §13) |
 | Leadership | Partly | Morale propagation / captaincy — a **system modifier**, not a match action |
 
 **Why Determination/Professionalism are worth defining now** despite the LLM layer being Phase 5:
@@ -118,6 +120,10 @@ later if calibration or design demands it:
 - **Decisions** absorbs **Anticipation** (reading play) — split if defensive reading needs its own knob.
 - **Aggression** absorbs **Bravery** (committing to duels/blocks) and drives fouls; a separate
   hidden **discipline** factor may be needed if card rates won't calibrate from Aggression alone.
+  **[resolved: Aggression alone in v1 — `MATCH_MODEL.md` §15.]** The foul/card contest starts
+  with no hidden factor, and §15 states the split tripwire in advance (a too-flat per-player
+  card tail, or duel-balance distortion when widening it) so the decision is checkable, not
+  silently defaulted.
 - **Finishing** absorbs **Long Shots** (range penalty) and **Penalty Taking**.
 
 **Deferred entirely** (add as a later, optional layer, not needed to prove the schema):
@@ -131,7 +137,11 @@ later if calibration or design demands it:
   Phase 3's monthly loop never touches between-match recovery, so the attribute's only Phase-3 job
   (physical-aging resistance) is already covered by Professionalism; adding it now would violate the
   lean-and-add rule. Revisit at **Phase 2e**, when fatigue/recovery is modeled and it earns a genuine
-  second consumer.
+  second consumer. **[resolved at 2e: split out — `MATCH_MODEL.md` §13.]** The revisit tripwire
+  fired: between-match recovery is now modeled, no existing attribute can carry it without
+  double-dipping (Stamina already owns in-match fade; Professionalism is a training/aging trait),
+  so Natural Fitness enters as a hidden Character field (§2) whose only v1 consumer is the recovery
+  law — the aging-resistance term deliberately stays with Professionalism (no Phase-3 re-fit).
 - **Flair** — dropped as a mechanical attribute; a candidate *persona* trait (Phase 5).
 - **Role variants** (§5) — refinements on the archetypes, layered later.
 
@@ -358,8 +368,16 @@ Genuinely unresolved within the schema (distinct from later-phase math):
    makes it first-class, promote it to its own role column.
 2. **Does the Concentration (performance) vs. Consistency (hidden variance) split hold?** They're
    deliberately separate jobs — in-match error rate vs. match-to-match reliability — but if Phase 2
-   can't make both knobs earn their keep, one may collapse into the other.
+   can't make both knobs earn their keep, one may collapse into the other. **[resolved: the split
+   holds — `MATCH_MODEL.md` §17.]** The 2e design gives each its own observable no other knob can
+   reach — Consistency drives match-to-match rating volatility and the upset rate (one per-match
+   draw scaling the day's effective attributes); Concentration drives fatigue-coupled late defensive
+   lapses (late-goal share). Both consumed, collapse closed.
 3. **Card rates from Aggression alone, or a separate hidden discipline factor?** (§3) — resolvable
-   only once the foul/card contest is calibrated (Phase 2), but flagged here.
+   only once the foul/card contest is calibrated (Phase 2), but flagged here. **[resolved:
+   Aggression alone in v1, with a pre-stated split tripwire — `MATCH_MODEL.md` §15.]** Lean-and-add
+   taken; the hidden discipline factor is added only if calibration shows the per-player card tail
+   can't be widened without distorting duel balance (Aggression being a performance input too — the
+   conflation §15 names precisely).
 4. **Best-role-peak-CA vs. attribute-budget** as the PA growth-gate (§4) — a Phase-3 call, noted so
    it isn't silently defaulted. **[resolved: best-role-peak-CA — `DEVELOPMENT_MODEL.md` §2.2.]**

@@ -20,6 +20,7 @@
 //!    recorded career — the fold only integer-adds the deltas.
 
 use crate::club_ai::TransferDecision;
+use crate::match_engine::{CardOutcome, InjuryOutcome};
 use fforge_domain::{
     Attribute, ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId,
     World,
@@ -58,6 +59,17 @@ pub enum Event {
     /// otherwise reconstructable, so recording it is the replay-safe source.
     /// (The rich minute-by-minute match event stream stays a Trace, not a fold
     /// input, `MATCH_MODEL.md` §7.)
+    ///
+    /// The Phase-2e boundary extension (`MATCH_MODEL.md` §12) adds the
+    /// resolved per-player consequences that outlive the match: `injuries`
+    /// (the days out, never a severity to re-roll), `cards` (the card itself,
+    /// never a foul to re-resolve), and `ratings` (tenths; recorded because
+    /// the stream they derive from is not persisted for bulk AI matches).
+    /// Suspensions are deliberately *absent*: a ban is derived in the fold
+    /// from accumulated cards — recording both would create two sources of
+    /// truth that can disagree, the sync bug the CA-is-derived rule exists to
+    /// make impossible. All three default to empty so pre-2e logs (and logs
+    /// written before the corresponding models land) replay unchanged.
     MatchPlayed {
         fixture: FixtureId,
         matchday: u8,
@@ -65,6 +77,12 @@ pub enum Event {
         away_goals: u8,
         home_xi: Vec<PlayerId>,
         away_xi: Vec<PlayerId>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        injuries: Vec<InjuryOutcome>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cards: Vec<CardOutcome>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ratings: Vec<(PlayerId, u8)>,
     },
     /// The calendar advanced past a matchday.
     MatchdayAdvanced { matchday: u8, new_date: GameDate },

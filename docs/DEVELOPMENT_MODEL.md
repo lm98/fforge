@@ -221,6 +221,12 @@ It does not. Resolution: **keep it merged; do not add the attribute yet.**
   Natural Fitness would have a genuine *second* consumer distinct from Professionalism. Splitting is
   cheap-to-reverse-upward (schema §3); merging now costs nothing and keeps the hidden-attribute set
   minimal. Flagged here so the split isn't silently defaulted either way.
+- **[resolved at Phase 2e: split out — `MATCH_MODEL.md` §13.]** The revisit fired as designed:
+  condition/recovery modeling arrived and no existing attribute could carry the recovery job without
+  double-dipping, so `Character` gains a hidden `natural_fitness`. **This note's §3 term is
+  untouched:** the physical-aging-resistance scaling stays with Professionalism — migrating it would
+  force a re-fit of this note's calibrated knob table for zero behavioral need. Flagged there as a
+  possible later cleanup, not done.
 
 ## 5. Determinism & the event-log seam — the architectural crux
 
