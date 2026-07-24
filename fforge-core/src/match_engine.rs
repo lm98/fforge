@@ -28,8 +28,8 @@ pub use zone::Zone;
 
 use crate::rng::Rng;
 use fforge_domain::{
-    Attribute, ClubId, FORMATIONS, Lineup, Mentality, PlayerId, Pressing, ROLE_WEIGHTS, Role,
-    Tactics, Tempo, Width, World, XI, current_ability,
+    Attribute, ClubId, FORMATIONS, GameDate, Lineup, Mentality, PlayerId, Pressing, ROLE_WEIGHTS,
+    Role, Tactics, Tempo, Width, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,12 @@ use serde::{Deserialize, Serialize};
 /// per-fixture component (e.g. `CONSISTENCY_NS | fixture.id`) the same way
 /// the main stream does.
 pub const CONSISTENCY_NS: u64 = 0x434F_4E53_0000_0000; // "CONS"
+
+/// Tag namespace for the per-match Injury RNG stream (`MATCH_MODEL.md` §14,
+/// T10) — the "INJU" namespace §2.1 reserved, distinct from every other
+/// stream so `injury_rate: 0.0` leaves both the main and Consistency streams'
+/// draw sequences untouched.
+pub const INJURY_NS: u64 = 0x494E_4A55_0000_0000; // "INJU"
 
 /// A resolved injury (`MATCH_MODEL.md` §12, §14): the *days out*, decided at
 /// match time — never a severity category for the fold to re-roll, so the
@@ -98,10 +104,11 @@ pub struct MatchOutcome {
     pub stream: Vec<MatchEvent>,
     /// Resolved per-player consequences that outlive the match
     /// (`MATCH_MODEL.md` §12): unlike `stream`, these *do* ride into
-    /// `Event::MatchPlayed`. The boundary is grown once, ahead of the models
-    /// that fill it — the engine emits all three empty until the §14 injury
-    /// model, §15 foul/card contest, and §18 rating derivation land, so
-    /// nothing here may touch the RNG draw sequence.
+    /// `Event::MatchPlayed`. The boundary was grown once, ahead of the models
+    /// that fill it; `injuries` is now populated by the §14 model (T10, own
+    /// `INJURY_NS` stream, identity `injury_rate: 0.0`). `cards`/`ratings`
+    /// still emit empty until the §15 foul/card contest and §18 rating
+    /// derivation land, so nothing there touches the RNG draw sequence yet.
     pub injuries: Vec<InjuryOutcome>,
     pub cards: Vec<CardOutcome>,
     /// Per-player rating in tenths (`68` = 6.8), `MATCH_MODEL.md` §18.
@@ -126,16 +133,34 @@ pub struct MatchOutcome {
 /// (`MATCH_MODEL.md` §13, T9) is a pre-computed `PlayerId -> condition` map —
 /// typically `GameState::condition` for every player in both lineups; an
 /// empty map (or a missing entry) is full condition, the identity setting.
+/// `injury_rng` (`MATCH_MODEL.md` §14, T10) is a third stream, independent of
+/// both `rng` and `consistency_rng`, typically derived as `derive_stream(seed,
+/// INJURY_NS | fixture.id)` — at `k.injury_rate == 0.0` (§2.1's identity) it
+/// is still drawn from, just never produces an injury. `today` is only used
+/// to compute each player's age for the ambient injury channel.
+#[allow(clippy::too_many_arguments)]
 pub fn play_match(
     world: &World,
     home: &Lineup,
     away: &Lineup,
     rng: &mut Rng,
     consistency_rng: &mut Rng,
+    injury_rng: &mut Rng,
     k: &Knobs,
     conditions: &std::collections::BTreeMap<PlayerId, f64>,
+    today: GameDate,
 ) -> MatchOutcome {
-    resolve::play_match(world, home, away, rng, consistency_rng, k, conditions)
+    resolve::play_match(
+        world,
+        home,
+        away,
+        rng,
+        consistency_rng,
+        injury_rng,
+        k,
+        conditions,
+        today,
+    )
 }
 
 /// Deterministic AI team selection: for each formation, greedily fill slots
@@ -143,7 +168,38 @@ pub fn play_match(
 /// id); keep the formation with the best mean. This is the Phase-1 stub of
 /// the layer-3 club decision AI — same seam, richer policy later.
 pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
-    let squad: Vec<PlayerId> = world.club(club).players.clone();
+    pick_lineup_from(world, world.club(club).players.clone())
+}
+
+/// `ai_pick_lineup`, but filtered to players available as of `today`
+/// (`MATCH_MODEL.md` §12, §14, T10): "squad depth finally bites" (§2.5) —
+/// an injured player is invisible to selection rather than merely losing
+/// out on CA. Falls back to the unfiltered squad if fewer than `XI` players
+/// are available (a defensive floor; the transfer market's own `[18, 30]`
+/// squad-size stabilizer and injuries' plausible-band target should make
+/// this unreachable in practice, but a real bug elsewhere should never turn
+/// into a panic here).
+pub fn ai_pick_lineup_available(world: &World, club: ClubId, today: GameDate) -> Lineup {
+    let squad = &world.club(club).players;
+    let available: Vec<PlayerId> = squad
+        .iter()
+        .copied()
+        .filter(|&pid| match world.player(pid).injured_until {
+            Some(until) => until <= today,
+            None => true,
+        })
+        .collect();
+    if available.len() >= XI {
+        pick_lineup_from(world, available)
+    } else {
+        pick_lineup_from(world, squad.clone())
+    }
+}
+
+/// The shared greedy-fill selection both `ai_pick_lineup` and
+/// `ai_pick_lineup_available` run, over whichever pool of candidates the
+/// caller has already decided is eligible.
+fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
     let mut best: Option<(f64, Lineup)> = None;
 
     for (fi, formation) in FORMATIONS.iter().enumerate() {
@@ -185,12 +241,18 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
 pub const AI_TACTICS_ENABLED: bool = false;
 
 /// An AI-controlled side's lineup *and* tactics for a real fixture
-/// (`TACTICS_MODEL.md` §7): `ai_pick_lineup`'s XI, with `ai_pick_tactics`'s
-/// choice against the named opponent applied only while
-/// `AI_TACTICS_ENABLED` is `true`. The call-site convenience every real
-/// AI-vs-AI (and AI-vs-human) match uses.
-pub fn ai_pick_lineup_vs(world: &World, club: ClubId, opponent: ClubId, is_home: bool) -> Lineup {
-    let mut lineup = ai_pick_lineup(world, club);
+/// (`TACTICS_MODEL.md` §7): `ai_pick_lineup_available`'s XI (`today` gates
+/// injury availability, T10), with `ai_pick_tactics`'s choice against the
+/// named opponent applied only while `AI_TACTICS_ENABLED` is `true`. The
+/// call-site convenience every real AI-vs-AI (and AI-vs-human) match uses.
+pub fn ai_pick_lineup_vs(
+    world: &World,
+    club: ClubId,
+    opponent: ClubId,
+    is_home: bool,
+    today: GameDate,
+) -> Lineup {
+    let mut lineup = ai_pick_lineup_available(world, club, today);
     if AI_TACTICS_ENABLED {
         lineup.tactics = ai_pick_tactics(world, club, opponent, is_home, &AiTacticKnobs::default());
     }
@@ -345,20 +407,24 @@ mod tests {
     }
 
     /// Test-only convenience: `play_match` with production `Knobs`, an
-    /// arbitrary-but-fixed Consistency stream, and identity (empty) Condition
-    /// — for tests that don't care about either specifically (most of this
-    /// module). The T5/T6 identity tests (`golden` module) call `play_match`
-    /// directly with `consistency_sigma_max: 0.0` pinned instead.
+    /// arbitrary-but-fixed Consistency stream, identity (empty) Condition,
+    /// and its own fixed Injury stream — for tests that don't care about any
+    /// of them specifically (most of this module). The T5/T6 identity tests
+    /// (`golden` module) call `play_match` directly with
+    /// `consistency_sigma_max: 0.0`/`injury_rate: 0.0` pinned instead.
     fn play(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
         let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
+        let mut injury_rng = derive_stream(0, INJURY_NS);
         play_match(
             world,
             home,
             away,
             rng,
             &mut consistency_rng,
+            &mut injury_rng,
             &Knobs::default(),
             &std::collections::BTreeMap::new(),
+            GameDate { days: 0 },
         )
     }
 
@@ -401,20 +467,19 @@ mod tests {
     }
 
     #[test]
-    fn boundary_consequences_stay_empty_until_the_2e_models_land() {
+    fn remaining_boundary_consequences_stay_empty_until_the_2e_models_land() {
         // MATCH_MODEL.md §12/§11 sequencing step 1: the boundary is grown
-        // ahead of the models that fill it, so the engine must emit all
-        // three vectors empty — anything else here means an unsanctioned
-        // model (and its RNG draws) sneaked in ahead of its design gate.
+        // ahead of the models that fill it. `injuries` is now populated
+        // (T10, its own test coverage below); `cards`/`ratings` must still
+        // emit empty — anything else here means an unsanctioned model (and
+        // its RNG draws) sneaked in ahead of its design gate.
         let (world, home, away) = tiny_world_and_lineups();
         for seed in 0..32u64 {
             let mut rng = derive_stream(seed, 1);
             let outcome = play(&world, &home, &away, &mut rng);
             assert!(
-                outcome.injuries.is_empty()
-                    && outcome.cards.is_empty()
-                    && outcome.ratings.is_empty(),
-                "seed {seed}: the 2a engine must populate no 2e consequences"
+                outcome.cards.is_empty() && outcome.ratings.is_empty(),
+                "seed {seed}: the engine must populate no cards/ratings ahead of §15/§18"
             );
         }
     }
@@ -521,19 +586,29 @@ mod tests {
             home.players.iter().map(|&pid| (pid, 0.6)).collect();
         let fresh: std::collections::BTreeMap<PlayerId, f64> = std::collections::BTreeMap::new();
 
+        // Identity Injuries (§2.1): this test isolates condition's own
+        // effect on fatigue, and a player dropping out of contention
+        // mid-match is an unrelated confound to the question it's asking.
+        let k = Knobs {
+            injury_rate: 0.0,
+            ..Knobs::default()
+        };
         let pooled_home_goals = |conditions: &std::collections::BTreeMap<PlayerId, f64>| {
             let mut total = 0u32;
             for seed in 0..300u64 {
                 let mut rng = derive_stream(seed, 1);
                 let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+                let mut injury_rng = derive_stream(seed, INJURY_NS);
                 let outcome = play_match(
                     &world,
                     &home,
                     &away,
                     &mut rng,
                     &mut consistency_rng,
-                    &Knobs::default(),
+                    &mut injury_rng,
+                    &k,
                     conditions,
+                    GameDate { days: 0 },
                 );
                 total += outcome.home_goals as u32;
             }
@@ -623,14 +698,16 @@ pub(crate) mod golden {
         (19, 0, 863),
     ];
 
-    /// The T5/T6 identity tests below pin `consistency_sigma_max: 0.0`
-    /// (§2.1) explicitly rather than using `Knobs::default()` — T8 gave
-    /// Consistency a real nonzero production default, so these golden
-    /// baselines must keep asserting the *pre*-Consistency engine
-    /// specifically, independent of whatever `Knobs::default()` is today.
-    fn identity_consistency_knobs() -> Knobs {
+    /// The T5/T6 identity tests below pin `consistency_sigma_max: 0.0` and
+    /// `injury_rate: 0.0` (§2.1) explicitly rather than using
+    /// `Knobs::default()` — T8/T10 gave Consistency and Injuries real
+    /// nonzero production defaults, so these golden baselines must keep
+    /// asserting the *pre*-2e engine specifically, independent of whatever
+    /// `Knobs::default()` is today.
+    fn identity_2e_knobs() -> Knobs {
         Knobs {
             consistency_sigma_max: 0.0,
+            injury_rate: 0.0,
             ..Knobs::default()
         }
     }
@@ -643,18 +720,21 @@ pub(crate) mod golden {
         // and gets re-pinned deliberately (§8's rollout discipline), same as
         // `favourite_discrimination_regression_guard`.
         let (world, home, away) = phase_2a_world_and_lineups();
-        let k = identity_consistency_knobs();
+        let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+            let mut injury_rng = derive_stream(seed, INJURY_NS);
             let outcome = play_match(
                 &world,
                 &home,
                 &away,
                 &mut rng,
                 &mut consistency_rng,
+                &mut injury_rng,
                 &k,
                 &std::collections::BTreeMap::new(),
+                GameDate { days: 0 },
             );
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
@@ -675,18 +755,21 @@ pub(crate) mod golden {
         let (world, mut home, mut away) = phase_2a_world_and_lineups();
         home.tactics = fforge_domain::Tactics::neutral();
         away.tactics = fforge_domain::Tactics::neutral();
-        let k = identity_consistency_knobs();
+        let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+            let mut injury_rng = derive_stream(seed, INJURY_NS);
             let outcome = play_match(
                 &world,
                 &home,
                 &away,
                 &mut rng,
                 &mut consistency_rng,
+                &mut injury_rng,
                 &k,
                 &std::collections::BTreeMap::new(),
+                GameDate { days: 0 },
             );
             assert_eq!(
                 (outcome.home_goals, outcome.away_goals, outcome.stream.len()),

@@ -108,6 +108,65 @@ pub struct Knobs {
     /// not a different player" (§2.9).
     pub consistency_mult_min: f64,
     pub consistency_mult_max: f64,
+
+    // --- injuries: two hazard channels (MATCH_MODEL.md §14, T10) ---
+    /// Global scale on every injury-hazard probability below. Identity `0.0`
+    /// (§2.1): no injury ever fires, reproducing the pre-2e engine
+    /// bit-for-bit regardless of every other injury knob's value.
+    pub injury_rate: f64,
+    /// Contact channel: base per-event probability (a failed take-on, or a
+    /// headed shot's aerial duel), before `injury_rate`/proneness/intensity
+    /// scale it.
+    pub injury_base_contact: f64,
+    /// How much hidden Injury-proneness scales the contact-channel
+    /// probability: at proneness 100, `1 + injury_contact_prone_scale`×; at
+    /// 0, `1 − injury_contact_prone_scale`×.
+    pub injury_contact_prone_scale: f64,
+    /// Professionalism's discount on the contact-channel probability (the
+    /// schema's "aging/injury resistance") — same `±(x−50)/50` shape as
+    /// `prof_aging_coeff`, but smaller: a modest effect, not aging's main one.
+    pub injury_contact_prof_discount: f64,
+    /// How much a low `condition` (`MATCH_MODEL.md` §13) deepens contact-
+    /// channel risk: at `condition = 0`, the multiplier is `1 +
+    /// injury_contact_condition_scale`; at `condition = 1`, exactly `1`.
+    pub injury_contact_condition_scale: f64,
+    /// How much the *other* player's Aggression raises contact intensity
+    /// (the tackler's recklessness raises the tackled player's risk): at
+    /// Aggression 100, `1 + injury_aggression_scale`×; at 0, `1 −
+    /// injury_aggression_scale`×.
+    pub injury_aggression_scale: f64,
+
+    /// Ambient channel: base per-match probability (already integrating a
+    /// per-minute hazard over 90', so it is rolled once per player per
+    /// match rather than once per minute — see `resolve::build_xi`'s doc
+    /// comment) before `injury_rate`/condition/age scale it.
+    pub injury_ambient_base: f64,
+    /// How much a low `condition` raises ambient risk: at `condition = 0`,
+    /// the multiplier is `1 + injury_ambient_condition_scale`; at
+    /// `condition = 1`, exactly `1` — "gives §13 teeth" (§14).
+    pub injury_ambient_condition_scale: f64,
+    /// Per year of age past `injury_age_anchor`, the ambient multiplier
+    /// grows by this fraction (older legs break down more from wear alone).
+    pub injury_ambient_age_scale: f64,
+    pub injury_age_anchor: f64,
+
+    /// Effective-attribute multiplier applied to an injured player for the
+    /// remainder of the match, from their injury's onset minute onward
+    /// (§2.5: "continues at reduced effectiveness").
+    pub injury_impairment_mult: f64,
+
+    // --- severity: a skewed categorical draw, MATCH_MODEL.md §14 ---
+    /// Cumulative probabilities for Knock / Minor / Moderate (Severe is the
+    /// remainder) — skewed hard toward the small end.
+    pub injury_knock_prob: f64,
+    pub injury_minor_cum_prob: f64,
+    pub injury_moderate_cum_prob: f64,
+    /// Day ranges per category, `[min, max)`, interpolated by a second,
+    /// independent uniform draw.
+    pub injury_knock_days: [f64; 2],
+    pub injury_minor_days: [f64; 2],
+    pub injury_moderate_days: [f64; 2],
+    pub injury_severe_days: [f64; 2],
 }
 
 impl Default for Knobs {
@@ -157,6 +216,36 @@ impl Default for Knobs {
             consistency_sigma_max: 0.25,
             consistency_mult_min: 0.7,
             consistency_mult_max: 1.3,
+            // T10: plausibility-picked against the real engine's own event
+            // rates (probed via `bin/calibrate`'s per-match shot/take-on
+            // counts), not yet B3.9-fitted. Split roughly 60/40 contact/
+            // ambient so both channels are visibly active, then magnitude-
+            // scaled once against a real pooled season
+            // (`a_pooled_seasons_injury_count_lands_in_the_documented_band`,
+            // 6 seeds): the first pick (base_contact 0.006, ambient_base
+            // 0.0025) read 3.88 match-missing (days_out >= 7) injuries/club/
+            // season, well above §14's 1.5-2.5 target; scaling both down by
+            // ~0.515 landed at 2.14 — inside the target band.
+            injury_rate: 1.0,
+            injury_base_contact: 0.0031,
+            injury_contact_prone_scale: 0.6,
+            injury_contact_prof_discount: 0.2,
+            injury_contact_condition_scale: 0.5,
+            injury_aggression_scale: 0.5,
+            injury_ambient_base: 0.0013,
+            injury_ambient_condition_scale: 0.6,
+            injury_ambient_age_scale: 0.02,
+            injury_age_anchor: 28.0,
+            injury_impairment_mult: 0.6,
+            // Skewed hard toward the small end (§14): Knock 55%, Minor 30%,
+            // Moderate 12%, Severe 3% (the cumulative remainder).
+            injury_knock_prob: 0.55,
+            injury_minor_cum_prob: 0.85,
+            injury_moderate_cum_prob: 0.97,
+            injury_knock_days: [0.0, 3.0],
+            injury_minor_days: [7.0, 21.0],
+            injury_moderate_days: [28.0, 56.0],
+            injury_severe_days: [90.0, 180.0],
         }
     }
 }

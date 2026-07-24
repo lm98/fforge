@@ -502,6 +502,27 @@ harness that cannot see them.
 
 ## 14. The injury model
 
+**Status: landed (batch-3 T10).** Implementation lives in `match_engine::resolve`: the contact
+channel rolls inline at each failed take-on and each headed shot's aerial duel
+(`maybe_contact_injury`); the ambient channel is pre-rolled once per player at kickoff in
+`build_xi` (one Bernoulli trial approximating a per-minute hazard integrated over 90', with a
+uniformly-drawn onset minute) and fired by `fire_due_ambient_injuries` as the possession loop's
+clock reaches it — a deliberate simplification recorded as such at the call site, since the
+target metrics below care about expected *count*, not the intra-match timing of a non-eventful
+injury. Both channels draw from their own `INJURY_NS` stream (`play_match` gained an
+`injury_rng: &mut Rng` parameter, identity `injury_rate: 0.0`); severity is drawn only when the
+check itself fires — the same conditional-on-outcome shape `take_shot`'s on-target/beat-keeper
+rolls already use, not a violation of the unconditional-fixed-order rule (reserved for whole-
+population draws like Consistency's, not per-event narrative branches). `GameState::available`
+(`MATCH_MODEL.md` §12) is the derived view `ai_pick_lineup_available`, `validate_lineup`
+(a new `CommandError::PlayerUnavailable`), and `effective_player_lineup`'s staleness check all
+read — squad depth finally bites, exactly as §2.5 named it.
+
+**Mid-match handling today vs. eventually.** T10's scope fence is explicit: an injured player
+*continues at reduced effectiveness for the remainder* (`impairment_mult`, identity `1.0`,
+production `0.6`) — no substitution mechanism yet. The forced substitution described below is
+T12's; until it lands, an injured player simply plays on impaired rather than being replaced.
+
 Contest #9 of `ATTRIBUTE_SCHEMA.md` §6, finally consuming **Injury-proneness** (its no-orphan
 promise). Two hazard channels, both drawn from the fixture stream at match time:
 
@@ -527,10 +548,28 @@ short — presence sampling already tolerates a shrunken XI (§16).
 **Targets:** ~1.5–2.5 match-missing injuries per club per season; a visible in-match injury
 every ~4–6 matches; severe cases rare but real (a handful per league season).
 
-**§8 impact:** gpm ≈ unchanged (< ±0.05 — injuries redistribute minutes, they don't change
-contest math); new §8 rows: injuries/club/season and mean matches missed. Second-order:
-squad-depth quality starts mattering in season aggregates, which the market harness
-(`TRANSFER_MODEL.md` §11) should see as slightly increased demand for depth — flagged there.
+**T10 finding — the first magnitude pick read high, one re-scale landed in band.**
+`state::a_pooled_seasons_injury_count_lands_in_the_documented_band` drives real full seasons
+through `commands::advance_matchday`, pooled over 6 seeds, and counts only "match-missing"
+injuries (`days_out >= 7` — a `Knock`, 0–3 days, always heals inside the weekly calendar and
+never actually costs an appearance, so it does not count toward this target). The starting
+pick (`injury_base_contact: 0.006`, `injury_ambient_base: 0.0025`, both plausibility-picked
+from `bin/calibrate`'s own per-match shot/take-on counts) read **3.88** match-missing
+injuries/club/season — above the 1.5–2.5 band. Scaling both bases down by ~0.515 (to `0.0031`
+/ `0.0013`) landed at **2.14**, inside it. A single-knob-family magnitude re-scale, the same
+class of correction `career_arc`'s `K_DEC` re-fit was — not yet a full B3.9 fit against every
+sub-target (the visible-injury-every-4–6-matches and severe-rarity reads are unverified; a
+future task's job).
+
+**§8 impact:** predicted gpm ≈ unchanged (< ±0.05 — injuries redistribute minutes, they don't
+change contest math) — not directly re-verified here (`bin/calibrate` has no season-length
+calendar to accumulate injuries across, so its per-fixture pooled reading only exercises
+single-match injury draws, the same scope `favourite_discrimination_regression_guard` already
+covers and still passes with the mechanism live). New telemetry rows (injuries/club/season,
+mean matches missed) exist today only via the pooled test above, not yet in `bin/calibrate`'s
+own report. Second-order: squad-depth quality starts mattering in season aggregates, which the
+market harness (`TRANSFER_MODEL.md` §11) should see as slightly increased demand for depth —
+flagged there, not yet measured.
 
 ## 15. Fouls, cards, and derived suspensions — resolving the discipline question
 

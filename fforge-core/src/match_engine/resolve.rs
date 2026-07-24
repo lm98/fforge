@@ -4,14 +4,15 @@
 //! shot immediately. A direct port of the calibrated Python prototype's
 //! `_step` / `_take_shot` / `select_action`.
 
-use super::MatchOutcome;
 use super::contest::{self, blend, contest_p, fatigue_mult};
 use super::knobs::Knobs;
 use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
+use super::{InjuryOutcome, MatchOutcome};
 use crate::rng::Rng;
-use fforge_domain::{Attribute, Attributes, Lineup, PlayerId, Role, Tactics, World};
+use fforge_domain::{Attribute, Attributes, GameDate, Lineup, PlayerId, Role, Tactics, World};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 struct XiPlayer {
@@ -27,6 +28,43 @@ struct XiPlayer {
     /// match; not baked into `attrs` like Consistency, since it scales only
     /// the fatigue curve's starting point, not every attribute uniformly.
     condition: f64,
+    /// Precomputed contact-channel injury multiplier (`MATCH_MODEL.md` §14,
+    /// T10): folds in hidden Injury-proneness, its Professionalism discount,
+    /// and the condition scaling — every input is static for the whole
+    /// match, so each contact-event roll only has to apply the *other*
+    /// player's Aggression intensity and `injury_base_contact`.
+    contact_injury_mult: f64,
+    /// A pre-rolled ambient injury (`MATCH_MODEL.md` §14), if any: `(onset
+    /// minute, days_out)`. Rolled once per player at kickoff — an
+    /// approximation of a per-minute hazard integrated over 90' as one
+    /// Bernoulli trial, since the expected count is what §14's targets care
+    /// about, not the intra-match timing of a non-eventful injury. `simulate`
+    /// fires it (setting `injured_from_minute`) the first time its loop's
+    /// `minute` reaches `onset`, and only if the contact channel hasn't
+    /// already injured this player first.
+    pending_ambient: Cell<Option<(f64, u16)>>,
+    /// Minute injured from, if any — `Cell` so a contest resolution can mark
+    /// a participant injured through the shared `&[XiPlayer]` slice without
+    /// threading `&mut` through the whole possession loop.
+    injured_from_minute: Cell<Option<f64>>,
+}
+
+/// The contact-channel injury multiplier (`MATCH_MODEL.md` §14, T10):
+/// Injury-proneness scales it up, Professionalism discounts it (the
+/// schema's "aging/injury resistance"), and a low `condition` deepens it
+/// ("gives §13 teeth"). Every input here is fixed for the whole match, so
+/// `build_xi` computes this once per player rather than at every contest.
+fn contact_injury_mult(
+    injury_proneness: u8,
+    professionalism: u8,
+    condition: f64,
+    k: &Knobs,
+) -> f64 {
+    let prone = 1.0 + k.injury_contact_prone_scale * (injury_proneness as f64 - 50.0) / 50.0;
+    let prof_discount =
+        1.0 - k.injury_contact_prof_discount * (professionalism as f64 - 50.0) / 50.0;
+    let condition_mult = 1.0 + k.injury_contact_condition_scale * (1.0 - condition);
+    (prone * prof_discount * condition_mult).max(0.0)
 }
 
 /// Builds one side's XI, applying the Consistency per-match multiplier
@@ -42,11 +80,19 @@ struct XiPlayer {
 /// regardless of `sigma_max`. Also attaches each player's pre-match
 /// `condition` (`MATCH_MODEL.md` §13, T9) from the caller-supplied,
 /// already-derived `conditions` map — no RNG involved, so it can never
-/// perturb either stream's draw sequence at any setting.
+/// perturb either stream's draw sequence at any setting. Rolls the ambient
+/// injury channel (`MATCH_MODEL.md` §14, T10) from `injury_rng` — its own
+/// stream, drawn **unconditionally, one player at a time in slot order**,
+/// the same discipline Consistency's `z` follows: an onset-minute draw
+/// always happens, then `roll_injury`'s check (and, only if it fires, its
+/// severity draws).
+#[allow(clippy::too_many_arguments)]
 fn build_xi(
     world: &World,
     lineup: &Lineup,
     consistency_rng: &mut Rng,
+    injury_rng: &mut Rng,
+    today: GameDate,
     k: &Knobs,
     conditions: &BTreeMap<PlayerId, f64>,
 ) -> Vec<XiPlayer> {
@@ -72,14 +118,125 @@ fn build_xi(
             // player with no recent appearances) gets exactly today's
             // pre-condition behaviour without needing a special-case map.
             let condition = conditions.get(&pid).copied().unwrap_or(1.0);
+            let contact_injury_mult = contact_injury_mult(
+                player.character.injury_proneness,
+                player.character.professionalism,
+                condition,
+                k,
+            );
+
+            let age = player.age(today) as f64;
+            let ambient_minute = injury_rng.f64() * 90.0; // always drawn — fixed order
+            let p_ambient = (k.injury_rate
+                * k.injury_ambient_base
+                * (1.0 + k.injury_ambient_condition_scale * (1.0 - condition))
+                * (1.0 + k.injury_ambient_age_scale * (age - k.injury_age_anchor).max(0.0)))
+            .clamp(0.0, 1.0);
+            let pending_ambient =
+                roll_injury(injury_rng, p_ambient, k).map(|days_out| (ambient_minute, days_out));
+
             XiPlayer {
                 pid,
                 role: def.slots[slot],
                 attrs,
                 condition,
+                contact_injury_mult,
+                pending_ambient: Cell::new(pending_ambient),
+                injured_from_minute: Cell::new(None),
             }
         })
         .collect()
+}
+
+/// Draws an injury check unconditionally, then — only if it fires — its
+/// severity (a category draw, then a within-band interpolation draw), the
+/// same conditional-on-outcome shape `take_shot`'s on-target/beat-keeper
+/// rolls already use. Returns the resolved `days_out` on a hit.
+fn roll_injury(rng: &mut Rng, p_injury: f64, k: &Knobs) -> Option<u16> {
+    let check = rng.f64();
+    if check >= p_injury {
+        return None;
+    }
+    let cat_roll = rng.f64();
+    let within_roll = rng.f64();
+    let [lo, hi] = if cat_roll < k.injury_knock_prob {
+        k.injury_knock_days
+    } else if cat_roll < k.injury_minor_cum_prob {
+        k.injury_minor_days
+    } else if cat_roll < k.injury_moderate_cum_prob {
+        k.injury_moderate_days
+    } else {
+        k.injury_severe_days
+    };
+    Some((lo + within_roll * (hi - lo)).round() as u16)
+}
+
+/// Rolls a contact-channel injury check for `victim` (`MATCH_MODEL.md` §14,
+/// T10) — a failed take-on (the tackle) or a headed shot's aerial duel.
+/// `culprit_aggression` is the *other* player's Aggression (the tackler's
+/// recklessness raises the tackled player's risk, not their own). No-ops
+/// (no draw at all) if `victim` is already injured this match — the same
+/// "narrative branch doesn't apply" shape as `take_shot` skipping its
+/// beat-keeper roll on an off-target effort, not a violation of the
+/// unconditional-fixed-order rule (which governs whole-population draws
+/// like `build_xi`'s, not per-event narrative branches).
+fn maybe_contact_injury(
+    injury_rng: &mut Rng,
+    victim: &XiPlayer,
+    culprit_aggression: u8,
+    minute: f64,
+    k: &Knobs,
+    injuries: &mut Vec<InjuryOutcome>,
+) {
+    if victim.injured_from_minute.get().is_some() {
+        return;
+    }
+    let intensity =
+        (1.0 + k.injury_aggression_scale * (culprit_aggression as f64 - 50.0) / 50.0).max(0.0);
+    let p = (k.injury_rate * k.injury_base_contact * victim.contact_injury_mult * intensity)
+        .clamp(0.0, 1.0);
+    if let Some(days_out) = roll_injury(injury_rng, p, k) {
+        victim.injured_from_minute.set(Some(minute));
+        injuries.push(InjuryOutcome {
+            player: victim.pid,
+            days_out,
+        });
+    }
+}
+
+/// The effective-attribute multiplier from an in-match injury
+/// (`MATCH_MODEL.md` §14, T10, identity `1.0`): once a player's
+/// `injured_from_minute` has been reached, they "continue at reduced
+/// effectiveness for the remainder" (§2.5) rather than leaving the pitch —
+/// the forced substitution is T12's.
+fn impairment_mult(player: &XiPlayer, minute: f64, k: &Knobs) -> f64 {
+    match player.injured_from_minute.get() {
+        Some(onset) if minute >= onset => k.injury_impairment_mult,
+        _ => 1.0,
+    }
+}
+
+/// Fires any of `xi`'s pre-rolled ambient injuries whose onset minute has
+/// now been reached (`MATCH_MODEL.md` §14, T10) — called once per possession
+/// step after `minute` advances. A player already injured by the contact
+/// channel keeps that earlier onset; the ambient roll is simply discarded
+/// rather than overwriting it (first injury wins, `MATCH_MODEL.md` §12's
+/// "never shorten" spirit applied to onset time instead of duration).
+fn fire_due_ambient_injuries(xi: &[XiPlayer], minute: f64, injuries: &mut Vec<InjuryOutcome>) {
+    for player in xi {
+        if let Some((onset, days_out)) = player.pending_ambient.get()
+            && minute >= onset
+        {
+            player.pending_ambient.set(None);
+            if player.injured_from_minute.get().is_none() {
+                player.injured_from_minute.set(Some(onset));
+                injuries.push(InjuryOutcome {
+                    player: player.pid,
+                    days_out,
+                });
+            }
+        }
+    }
 }
 
 /// Per-contest team-quality means (the support term, `MATCH_MODEL.md` §4),
@@ -326,10 +483,12 @@ fn take_shot(
     se_att: &SideEffects,
     minute: f64,
     rng: &mut Rng,
+    injury_rng: &mut Rng,
     k: &Knobs,
     home_attacking: bool,
     goals: &mut [u32; 2],
     stream: &mut Vec<MatchEvent>,
+    injuries: &mut Vec<InjuryOutcome>,
 ) -> (Side, Zone) {
     let shooter = &att[sample_by_presence(att, Zone::Box, zone::attacking_presence, rng)];
     let defender =
@@ -350,6 +509,20 @@ fn take_shot(
             ShotKind::Header => Some(defender.pid),
             ShotKind::Finish | ShotKind::LongShot => None,
         };
+        if kind == ShotKind::Header {
+            // The aerial duel's contact-channel injury check (MATCH_MODEL.md
+            // §14, T10) — the shooter risks it, the marking defender's
+            // Aggression is the intensity. Only reachable once per
+            // `take_shot` call: a rebound always mutates `kind` to `Finish`.
+            maybe_contact_injury(
+                injury_rng,
+                shooter,
+                defender.attrs.get(Attribute::Aggression),
+                minute,
+                k,
+                injuries,
+            );
+        }
         let (atk, d_block, d_gk) = match kind {
             ShotKind::Header => (
                 blend(
@@ -362,7 +535,7 @@ fn take_shot(
                     k,
                     se_att.fatigue_mult,
                     shooter.condition,
-                ),
+                ) * impairment_mult(shooter, minute, k),
                 contest::score(&defender.attrs, contest::AERIAL_DEF),
                 contest::score(&gk.attrs, contest::GK_AERIAL),
             ),
@@ -377,7 +550,7 @@ fn take_shot(
                     k,
                     se_att.fatigue_mult,
                     shooter.condition,
-                ),
+                ) * impairment_mult(shooter, minute, k),
                 contest::score(&defender.attrs, contest::BLOCK_DEF),
                 contest::score(&gk.attrs, contest::GK_SHOT),
             ),
@@ -468,9 +641,11 @@ fn step(
     se: &[SideEffects; 2],
     minute: f64,
     rng: &mut Rng,
+    injury_rng: &mut Rng,
     k: &Knobs,
     goals: &mut [u32; 2],
     stream: &mut Vec<MatchEvent>,
+    injuries: &mut Vec<InjuryOutcome>,
 ) -> (Side, Zone) {
     let (att, def_side) = match poss {
         Side::Home => (home, away),
@@ -504,7 +679,7 @@ fn step(
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
-            );
+            ) * impairment_mult(actor, minute, k);
             let dfe = contest::score(&defender.attrs, contest::PASS_DEF)
                 * fatigue_mult(
                     &defender.attrs,
@@ -512,7 +687,8 @@ fn step(
                     k,
                     se_def.fatigue_mult,
                     defender.condition,
-                );
+                )
+                * impairment_mult(defender, minute, k);
             let bias = k.b_pass + se_att.b_pass_delta_by_zone[zone.index()] + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -570,10 +746,12 @@ fn step(
                             se_att,
                             minute,
                             rng,
+                            injury_rng,
                             k,
                             home_attacking,
                             goals,
                             stream,
+                            injuries,
                         )
                     } else if rng.f64() < 0.5 {
                         (poss, Zone::Mid)
@@ -602,7 +780,7 @@ fn step(
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
-            );
+            ) * impairment_mult(actor, minute, k);
             let dfe = contest::score(&defender.attrs, contest::TAKEON_DEF)
                 * fatigue_mult(
                     &defender.attrs,
@@ -610,7 +788,8 @@ fn step(
                     k,
                     se_def.fatigue_mult,
                     defender.condition,
-                );
+                )
+                * impairment_mult(defender, minute, k);
             let bias = k.b_takeon + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -624,6 +803,17 @@ fn step(
                 opponent: Some(defender.pid),
             });
             if !success {
+                // The tackle's contact-channel injury check (MATCH_MODEL.md
+                // §14, T10): the dribbler risks it, the tackler's Aggression
+                // is the intensity.
+                maybe_contact_injury(
+                    injury_rng,
+                    actor,
+                    defender.attrs.get(Attribute::Aggression),
+                    minute,
+                    k,
+                    injuries,
+                );
                 return turnover(poss, zone);
             }
             match zone {
@@ -659,10 +849,12 @@ fn step(
                             se_att,
                             minute,
                             rng,
+                            injury_rng,
                             k,
                             home_attacking,
                             goals,
                             stream,
+                            injuries,
                         )
                     } else {
                         (poss, Zone::AttC)
@@ -681,10 +873,12 @@ fn step(
                             se_att,
                             minute,
                             rng,
+                            injury_rng,
                             k,
                             home_attacking,
                             goals,
                             stream,
+                            injuries,
                         )
                     } else if rng.f64() < k.p_attw_cut_inside {
                         (poss, Zone::AttC)
@@ -708,7 +902,7 @@ fn step(
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
-            );
+            ) * impairment_mult(actor, minute, k);
             let dfe = contest::score(&defender.attrs, contest::CROSS_DEF)
                 * fatigue_mult(
                     &defender.attrs,
@@ -716,7 +910,8 @@ fn step(
                     k,
                     se_def.fatigue_mult,
                     defender.condition,
-                );
+                )
+                * impairment_mult(defender, minute, k);
             let bias = k.b_cross_delivery + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
@@ -741,10 +936,12 @@ fn step(
                     se_att,
                     minute,
                     rng,
+                    injury_rng,
                     k,
                     home_attacking,
                     goals,
                     stream,
+                    injuries,
                 )
             } else {
                 stream.push(MatchEvent {
@@ -772,10 +969,12 @@ fn step(
             se_att,
             minute,
             rng,
+            injury_rng,
             k,
             home_attacking,
             goals,
             stream,
+            injuries,
         ),
     }
 }
@@ -794,24 +993,46 @@ fn step(
 /// pre-computed `PlayerId -> condition` map — RNG-free, since recovery is a
 /// deterministic function of the calendar, so it needs no stream of its own;
 /// a player absent from the map (or the whole map empty, the identity
-/// setting) reads full condition.
+/// setting) reads full condition. `injury_rng` (`MATCH_MODEL.md` §14, T10)
+/// is a third stream, independent of both `rng` and `consistency_rng`; `today`
+/// is only used to compute each player's age for the ambient channel.
+#[allow(clippy::too_many_arguments)]
 pub fn play_match(
     world: &World,
     home_lineup: &Lineup,
     away_lineup: &Lineup,
     rng: &mut Rng,
     consistency_rng: &mut Rng,
+    injury_rng: &mut Rng,
     k: &Knobs,
     conditions: &BTreeMap<PlayerId, f64>,
+    today: GameDate,
 ) -> MatchOutcome {
-    let home = build_xi(world, home_lineup, consistency_rng, k, conditions);
-    let away = build_xi(world, away_lineup, consistency_rng, k, conditions);
+    let home = build_xi(
+        world,
+        home_lineup,
+        consistency_rng,
+        injury_rng,
+        today,
+        k,
+        conditions,
+    );
+    let away = build_xi(
+        world,
+        away_lineup,
+        consistency_rng,
+        injury_rng,
+        today,
+        k,
+        conditions,
+    );
     simulate(
         &home,
         &away,
         home_lineup.tactics,
         away_lineup.tactics,
         rng,
+        injury_rng,
         k,
     )
 }
@@ -834,6 +1055,7 @@ fn simulate(
     home_tactics: Tactics,
     away_tactics: Tactics,
     rng: &mut Rng,
+    injury_rng: &mut Rng,
     k: &Knobs,
 ) -> MatchOutcome {
     let tm = [team_means(home, k), team_means(away, k)];
@@ -841,6 +1063,7 @@ fn simulate(
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
+    let mut injuries = Vec::new();
 
     for half in 0..2u8 {
         let start = 45.0 * half as f64;
@@ -858,13 +1081,20 @@ fn simulate(
                 &se,
                 minute,
                 rng,
+                injury_rng,
                 k,
                 &mut goals,
                 &mut stream,
+                &mut injuries,
             );
             poss = next_poss;
             zone = next_zone;
             minute += k.delta;
+            // MATCH_MODEL.md §14, T10: fire any ambient injury whose
+            // pre-rolled onset the clock has now reached — no RNG here, the
+            // draw already happened at kickoff in `build_xi`.
+            fire_due_ambient_injuries(home, minute, &mut injuries);
+            fire_due_ambient_injuries(away, minute, &mut injuries);
         }
     }
 
@@ -872,14 +1102,15 @@ fn simulate(
         home_goals: goals[0].min(u8::MAX as u32) as u8,
         away_goals: goals[1].min(u8::MAX as u32) as u8,
         stream,
-        // The 2e boundary fields (MATCH_MODEL.md §12), empty by design until
-        // the §14/§15/§18 models land: constructing empty vectors draws
-        // nothing, so the 2a RNG sequence — and every calibration reading —
-        // is untouched.
-        injuries: Vec::new(),
+        // MATCH_MODEL.md §14, T10: resolved contact + ambient injuries.
+        injuries,
+        // The remaining 2e boundary fields (MATCH_MODEL.md §12), still empty
+        // until §15/§18 land: constructing empty vectors draws nothing, so
+        // neither the 2a RNG sequence nor any calibration reading depending
+        // on cards/ratings is touched.
         cards: Vec::new(),
         ratings: Vec::new(),
-        // T4 (§12, §16, R7): every starter plays the full 90 until T10/T11/T12
+        // T4 (§12, §16, R7): every starter plays the full 90 until T11/T12
         // make partial minutes possible. No RNG, so this is as draw-free as
         // the empty vectors above.
         minutes: home.iter().chain(away).map(|p| (p.pid, 90u8)).collect(),
@@ -908,7 +1139,17 @@ mod tests {
             ..Knobs::default()
         };
         let mut rng = Rng::seed_from(123);
-        let xi = build_xi(&world, &lineup, &mut rng, &k, &BTreeMap::new());
+        let mut injury_rng = Rng::seed_from(456);
+        let today = GameDate { days: 0 };
+        let xi = build_xi(
+            &world,
+            &lineup,
+            &mut rng,
+            &mut injury_rng,
+            today,
+            &k,
+            &BTreeMap::new(),
+        );
         for player in &xi {
             let raw = &world.player(player.pid).attributes;
             for attr in Attribute::ALL {
@@ -939,7 +1180,17 @@ mod tests {
         let conditions: BTreeMap<PlayerId, f64> = [(named, 0.75)].into_iter().collect();
 
         let mut rng = Rng::seed_from(123);
-        let xi = build_xi(&world, &lineup, &mut rng, &k, &conditions);
+        let mut injury_rng = Rng::seed_from(456);
+        let today = GameDate { days: 0 };
+        let xi = build_xi(
+            &world,
+            &lineup,
+            &mut rng,
+            &mut injury_rng,
+            today,
+            &k,
+            &conditions,
+        );
         for player in &xi {
             if player.pid == named {
                 assert_eq!(
@@ -977,12 +1228,22 @@ mod tests {
             .set(Attribute::Passing, 60);
         let k = Knobs::default();
 
+        let today = GameDate { days: 0 };
         let mut low_draws = Vec::new();
         let mut high_draws = Vec::new();
         for seed in 0..500u64 {
             world.players.get_mut(&pid).unwrap().character.consistency = 25;
             let mut rng = derive_stream(seed, 1);
-            let xi = build_xi(&world, &lineup, &mut rng, &k, &BTreeMap::new());
+            let mut injury_rng = derive_stream(seed, 2);
+            let xi = build_xi(
+                &world,
+                &lineup,
+                &mut rng,
+                &mut injury_rng,
+                today,
+                &k,
+                &BTreeMap::new(),
+            );
             low_draws.push(
                 xi.iter()
                     .find(|p| p.pid == pid)
@@ -993,7 +1254,16 @@ mod tests {
 
             world.players.get_mut(&pid).unwrap().character.consistency = 90;
             let mut rng2 = derive_stream(seed, 1);
-            let xi2 = build_xi(&world, &lineup, &mut rng2, &k, &BTreeMap::new());
+            let mut injury_rng2 = derive_stream(seed, 2);
+            let xi2 = build_xi(
+                &world,
+                &lineup,
+                &mut rng2,
+                &mut injury_rng2,
+                today,
+                &k,
+                &BTreeMap::new(),
+            );
             high_draws.push(
                 xi2.iter()
                     .find(|p| p.pid == pid)
@@ -1146,6 +1416,9 @@ mod notebook_parity {
                 role,
                 attrs: notebook_gen_player(rng, role, club_q),
                 condition: 1.0,
+                contact_injury_mult: 1.0,
+                pending_ambient: Cell::new(None),
+                injured_from_minute: Cell::new(None),
             })
             .collect()
     }
@@ -1169,6 +1442,9 @@ mod notebook_parity {
         // whatever production is calibrated to today.
         let notebook_knobs = Knobs {
             b_beat: -1.7,
+            // The notebook never modeled injuries; identity here keeps this
+            // test checking only the parity question (MATCH_MODEL.md §14, T10).
+            injury_rate: 0.0,
             ..Knobs::default()
         };
 
@@ -1195,12 +1471,17 @@ mod notebook_parity {
                 let home = &teams[fixture.home.0 as usize];
                 let away = &teams[fixture.away.0 as usize];
                 let mut match_rng = derive_stream(league, PARITY_NS | (fixture.id.0 as u64 + 1));
+                let mut injury_rng = derive_stream(
+                    league,
+                    PARITY_NS | crate::match_engine::INJURY_NS | (fixture.id.0 as u64 + 1),
+                );
                 let outcome = simulate(
                     home,
                     away,
                     Tactics::neutral(),
                     Tactics::neutral(),
                     &mut match_rng,
+                    &mut injury_rng,
                     &notebook_knobs,
                 );
                 total_goals += outcome.home_goals as u32 + outcome.away_goals as u32;

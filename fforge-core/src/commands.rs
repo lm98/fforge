@@ -10,7 +10,9 @@ use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
-use crate::match_engine::{CONSISTENCY_NS, Knobs, ai_pick_lineup, ai_pick_lineup_vs, play_match};
+use crate::match_engine::{
+    CONSISTENCY_NS, INJURY_NS, Knobs, ai_pick_lineup_available, ai_pick_lineup_vs, play_match,
+};
 use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
@@ -52,6 +54,9 @@ pub enum CommandError {
     UnknownFormation(u8),
     DuplicatePlayers,
     NotInSquad(PlayerId),
+    /// A lineup names a player who is currently unavailable — injured
+    /// (`MATCH_MODEL.md` §12, §14, T10; suspended once §15 lands).
+    PlayerUnavailable(PlayerId),
     /// A transfer decision names a player who does not exist in the world.
     UnknownPlayer(PlayerId),
     /// A `Bid` names a player already on the submitting club's own books.
@@ -68,6 +73,7 @@ impl fmt::Display for CommandError {
             CommandError::UnknownFormation(i) => write!(f, "unknown formation index {i}"),
             CommandError::DuplicatePlayers => write!(f, "a player appears twice in the lineup"),
             CommandError::NotInSquad(p) => write!(f, "player {p} is not in your squad"),
+            CommandError::PlayerUnavailable(p) => write!(f, "player {p} is not available"),
             CommandError::UnknownPlayer(p) => write!(f, "player {p} does not exist"),
             CommandError::AlreadyOwned(p) => write!(f, "player {p} is already on your books"),
             CommandError::NegativePrice(p) => {
@@ -177,21 +183,35 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
             return Err(CommandError::NotInSquad(pid));
         }
     }
+    // MATCH_MODEL.md §12: a lineup may not name a currently-unavailable
+    // player (injured — suspended once §15 lands).
+    for &pid in &lineup.players {
+        if !state.available(pid) {
+            return Err(CommandError::PlayerUnavailable(pid));
+        }
+    }
     debug_assert_eq!(lineup.players.len(), XI);
     Ok(())
 }
 
 /// The human club's effective lineup for this matchday: the submitted one,
-/// else the last one used, else a deterministic auto-pick. Never fails —
+/// else the last one used, else a deterministic auto-pick — each source
+/// skipped in favour of the next if it names a player who has since become
+/// unavailable (`MATCH_MODEL.md` §12, T10: "`effective_player_lineup` falls
+/// back to auto-pick when a remembered lineup goes stale"). Never fails —
 /// forgetting to set a team costs quality, not a crash.
 fn effective_player_lineup(state: &GameState) -> Lineup {
-    if let Some(lineup) = &state.pending_lineup {
+    if let Some(lineup) = &state.pending_lineup
+        && lineup.players.iter().all(|&pid| state.available(pid))
+    {
         return lineup.clone();
     }
-    if let Some(lineup) = &state.last_lineup {
+    if let Some(lineup) = &state.last_lineup
+        && lineup.players.iter().all(|&pid| state.available(pid))
+    {
         return lineup.clone();
     }
-    ai_pick_lineup(&state.world, state.player_club)
+    ai_pick_lineup_available(&state.world, state.player_club, state.date)
 }
 
 /// The player's own fixture for the upcoming matchday, simulated exactly as
@@ -214,15 +234,16 @@ pub fn player_match_preview(
     let home_lineup = if fixture.home == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true)
+        ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true, state.date)
     };
     let away_lineup = if fixture.away == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
+        ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false, state.date)
     };
     let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
     let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
+    let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
     let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
     Some(play_match(
         &state.world,
@@ -230,8 +251,10 @@ pub fn player_match_preview(
         &away_lineup,
         &mut rng,
         &mut consistency_rng,
+        &mut injury_rng,
         &Knobs::default(),
         &conditions,
+        state.date,
     ))
 }
 
@@ -265,15 +288,16 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
         let home_lineup = if fixture.home == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true)
+            ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true, state.date)
         };
         let away_lineup = if fixture.away == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
+            ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false, state.date)
         };
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
         let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
+        let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
         let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
         // The minute-by-minute stream is a Trace, not a fold input
         // (MATCH_MODEL.md §7) — only the score is recorded; it rides
@@ -285,8 +309,10 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             &away_lineup,
             &mut rng,
             &mut consistency_rng,
+            &mut injury_rng,
             &Knobs::default(),
             &conditions,
+            state.date,
         );
         let (hg, ag) = (outcome.home_goals, outcome.away_goals);
         new_results.insert(fixture.id, (hg, ag));

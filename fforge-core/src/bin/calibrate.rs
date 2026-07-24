@@ -15,8 +15,8 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    CONSISTENCY_NS, ELO_SCALE_S, Knobs, StreamTelemetry, ai_pick_lineup_vs, lineup_strength,
-    play_match, run_head_to_head,
+    CONSISTENCY_NS, ELO_SCALE_S, INJURY_NS, Knobs, StreamTelemetry, ai_pick_lineup_vs,
+    lineup_strength, play_match, run_head_to_head,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
@@ -36,25 +36,28 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
     let mut per_seed_gpm = Vec::with_capacity(seeds.len());
 
     for &seed in seeds {
-        let (world, schedule, _start) = worldgen::generate(seed, cfg);
+        let (world, schedule, start) = worldgen::generate(seed, cfg);
         let mut seed_goals = 0u32;
         let mut seed_matches = 0u32;
 
         for fixture in &schedule {
-            let home_lineup = ai_pick_lineup_vs(&world, fixture.home, fixture.away, true);
-            let away_lineup = ai_pick_lineup_vs(&world, fixture.away, fixture.home, false);
+            let home_lineup = ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start);
+            let away_lineup = ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start);
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
+            let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
             let outcome = play_match(
                 &world,
                 &home_lineup,
                 &away_lineup,
                 &mut rng,
                 &mut consistency_rng,
+                &mut injury_rng,
                 &Knobs::default(),
                 &std::collections::BTreeMap::new(),
+                start,
             );
 
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;

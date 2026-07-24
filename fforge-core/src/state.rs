@@ -402,6 +402,19 @@ impl GameState {
         )
     }
 
+    /// Whether `pid` can play as of `self.date` (`MATCH_MODEL.md` §12, §14):
+    /// false only while a recorded injury's `injured_until` still lies
+    /// ahead. Derived from `Player.injured_until` — the recorded truth is
+    /// the days-out already resolved at match time; this is a view over it,
+    /// never a second source of truth. Suspensions (§15) join this once T11
+    /// lands.
+    pub fn available(&self, pid: PlayerId) -> bool {
+        match self.world.player(pid).injured_until {
+            Some(until) => until <= self.date,
+            None => true,
+        }
+    }
+
     pub fn season_over(&self) -> bool {
         self.champion.is_some()
     }
@@ -1190,6 +1203,127 @@ mod match_boundary_tests {
         assert!(
             (0.0..1.0).contains(&c),
             "condition {c} must dip below 1.0 right after a recorded appearance"
+        );
+    }
+
+    /// `MATCH_MODEL.md` §12/§14, T10: an injured player is unavailable
+    /// (`GameState::available`), so neither `ai_pick_lineup_available` nor
+    /// `Command::SubmitLineup` may select/accept them while `injured_until`
+    /// still lies ahead — and both treat them exactly as before once it
+    /// passes.
+    #[test]
+    fn an_injured_player_never_appears_in_a_subsequent_xi_while_unavailable() {
+        use crate::commands::CommandError;
+        use crate::match_engine::{InjuryOutcome, ai_pick_lineup, ai_pick_lineup_available};
+
+        let (_log, state) = base_log(11);
+        let home_club = state.schedule[0].home;
+        // Injure the player the unfiltered greedy picker actually wants, by
+        // construction — so the "must actually disagree" property below
+        // can never depend on which player a hand-built fixture happens to
+        // name first.
+        let unfiltered = ai_pick_lineup(&state.world, home_club);
+        let injured = unfiltered.players[0];
+
+        let event = Event::MatchPlayed {
+            fixture: state.schedule[0].id,
+            matchday: state.schedule[0].matchday,
+            home_goals: 1,
+            away_goals: 0,
+            home_xi: unfiltered.players.to_vec(),
+            away_xi: Vec::new(),
+            injuries: vec![InjuryOutcome {
+                player: injured,
+                days_out: 21,
+            }],
+            cards: Vec::new(),
+            ratings: Vec::new(),
+            minutes: unfiltered.players.iter().map(|&pid| (pid, 90u8)).collect(),
+        };
+        let mut after = state.clone();
+        after.player_club = home_club;
+        after.apply(&event);
+
+        assert!(
+            !after.available(injured),
+            "the injured player must read unavailable"
+        );
+
+        let filtered = ai_pick_lineup_available(&after.world, home_club, after.date);
+        assert!(
+            !filtered.players.contains(&injured),
+            "ai_pick_lineup_available must never select an unavailable player"
+        );
+
+        // Submitting a lineup that names them explicitly must be rejected.
+        let mut illegal = filtered.clone();
+        illegal.players[0] = injured;
+        let err = crate::commands::step(&after, Command::SubmitLineup(illegal)).unwrap_err();
+        assert_eq!(err, CommandError::PlayerUnavailable(injured));
+
+        // Once the injury has fully elapsed, filtering is a no-op again —
+        // the filtered and unfiltered pickers agree, exactly as pre-injury.
+        let mut recovered = after.clone();
+        recovered.date = recovered.date.add_days(22); // 21-day injury + 1
+        assert!(recovered.available(injured));
+        let filtered_after = ai_pick_lineup_available(&recovered.world, home_club, recovered.date);
+        assert_eq!(
+            filtered_after, unfiltered,
+            "a fully recovered squad's filtered and unfiltered picks must agree"
+        );
+    }
+
+    /// `MATCH_MODEL.md` §14's target: ~1.5-2.5 match-missing injuries per
+    /// club per season. Drives a real full season through
+    /// `commands::advance_matchday`, pooled over several seeds — the same
+    /// multi-seed-pooling discipline `career_arc`/`market::calibrate` use,
+    /// since a single season is too small a sample to trust on its own.
+    /// `injury_base_contact`/`injury_ambient_base` are plausibility-picked
+    /// starting points (`match_engine::knobs.rs`'s own doc comment), not yet
+    /// B3.9-fitted — this guard is generously banded around that, the same
+    /// as every other 2e knob's first landing.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    fn a_pooled_seasons_injury_count_lands_in_the_documented_band() {
+        let mut total_injuries = 0u32;
+        let mut total_club_seasons = 0u32;
+        for seed in 0..6u64 {
+            let (world, schedule, start_date) = generate(seed, &WorldGenConfig::default());
+            let num_clubs = world.competition.clubs.len() as u32;
+            let event = Event::GameStarted {
+                seed,
+                start_date,
+                player_club: world.competition.clubs[0],
+                world,
+                schedule,
+            };
+            let mut state = GameState::replay(std::slice::from_ref(&event));
+            let mut season_injuries = 0u32;
+            while !state.season_over() {
+                let events = step(&state, Command::AdvanceMatchday).expect("advance");
+                for e in &events {
+                    if let Event::MatchPlayed { injuries, .. } = e {
+                        // "Match-missing" (§14): the calendar is weekly, so
+                        // a Knock (0-3 days, §14's own band) heals before
+                        // the next fixture and never actually costs an
+                        // appearance — only >= a week out does.
+                        season_injuries +=
+                            injuries.iter().filter(|i| i.days_out >= 7).count() as u32;
+                    }
+                    state.apply(e);
+                }
+            }
+            total_injuries += season_injuries;
+            total_club_seasons += num_clubs;
+        }
+
+        let per_club_season = total_injuries as f64 / total_club_seasons as f64;
+        assert!(
+            (1.0..=3.5).contains(&per_club_season),
+            "pooled injuries/club/season {per_club_season:.2} (total {total_injuries} over \
+             {total_club_seasons} club-seasons) falls well outside §14's ~1.5-2.5 target — \
+             a knob magnitude bug, not noise, at this pool size (banded wider than the \
+             target itself since 6 seeds is a coarser pool than the harnesses proper use)"
         );
     }
 
