@@ -784,8 +784,11 @@ fn watch_friendly_flow(session: &Session) {
     let home_name = world.club(home_club).name.clone();
     let away_name = world.club(away_club).name.clone();
 
-    let home_lineup = match_engine::ai_pick_lineup_available(world, home_club, session.state.date);
-    let away_lineup = match_engine::ai_pick_lineup_available(world, away_club, session.state.date);
+    let suspended = session.state.suspended_players();
+    let home_lineup =
+        match_engine::ai_pick_lineup_available(world, home_club, session.state.date, &suspended);
+    let away_lineup =
+        match_engine::ai_pick_lineup_available(world, away_club, session.state.date, &suspended);
 
     // A friendly is never recorded through Session::execute — no Command, no
     // Event, no fold mutation — so an ad-hoc wall-clock seed is fine here
@@ -797,6 +800,7 @@ fn watch_friendly_flow(session: &Session) {
     let mut rng = fforge_core::rng::Rng::seed_from(seed);
     let mut consistency_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(1));
     let mut injury_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(2));
+    let mut foul_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(3));
     // A real GameState is available even for an unrecorded friendly, so this
     // reads the same accumulated condition a real fixture would.
     let conditions: BTreeMap<PlayerId, f64> = home_lineup
@@ -812,6 +816,7 @@ fn watch_friendly_flow(session: &Session) {
         &mut rng,
         &mut consistency_rng,
         &mut injury_rng,
+        &mut foul_rng,
         &match_engine::Knobs::default(),
         &conditions,
         session.state.date,

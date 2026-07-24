@@ -339,14 +339,15 @@ per-draw-count.
 
 ## 12. The extended `MatchOutcome` / `MatchPlayed` boundary (R6)
 
-*Status: landed (sequencing step 1) for `injuries`, `cards`, `ratings` — the engine emits all
-three empty; `cond_drain` joins the struct when §13 lands, behind the same serde-default seam.
-`minutes` landed early instead, ahead of §16 (batch handoff T4/§2.8): every starter records a
-flat 90, every non-starter is absent from the vec — degenerate and inert (all four pooled
-calibration guards read unchanged) until T10/T11/T12 make partial minutes possible, but the
-playing-time input to development (below) needs the field and its minutes-share redefinition
-in place well before substitutions do, so landing it separately costs nothing and de-risks the
-larger §16 change. Calibration readings verified unchanged.*
+*Status: landed (sequencing step 1) for all three fields; `injuries` (§14, T10) and `cards`
+(§15, T11) are now populated by their real models, `ratings` still emits empty pending §18.
+`cond_drain` joins the struct when §13 lands, behind the same serde-default seam. `minutes`
+landed early, ahead of §16 (batch handoff T4/§2.8): every starter recorded a flat 90, every
+non-starter absent from the vec, until T11 made a sent-off player's minutes stop at his
+dismissal — degenerate and inert (all four pooled calibration guards read unchanged) until
+T10/T11/T12 make partial minutes possible; the playing-time input to development (below)
+needed the field and its minutes-share redefinition in place well before substitutions do, so
+landing it separately cost nothing and de-risked the larger §16 change.*
 
 2e produces per-player consequences that outlive the match. The §7 rule (record outcomes; the
 fold consumes without re-running engines) dictates the boundary: **every consequence that
@@ -573,11 +574,36 @@ flagged there, not yet measured.
 
 ## 15. Fouls, cards, and derived suspensions — resolving the discipline question
 
+**Status: landed (batch-3 T11).** Implementation lives in `match_engine::resolve`: the foul
+check rolls after every `TakeOn` resolution (either outcome) and after a failed `Pass` outside
+the actor's own `Def` zone (`maybe_foul`), on its own `FOUL_NS` stream (`play_match` gained a
+`foul_rng: &mut Rng` parameter, identity `foul_rate: 0.0`) — an unconditional check draw, then
+a conditional severity draw only if it fires, the same shape `roll_injury` (§14) already uses.
+A fired foul is a **non-mirroring turnover**: the beat returns `(poss, zone)` unchanged instead
+of the take-on/pass's own outcome, so the fouled side keeps the ball right where it happened. A
+red (straight or second yellow) sets `XiPlayer.sent_off_from_minute`; `sample_by_presence` and
+`team_means` (renamed to take a `minute` and filter `on_pitch`) drop that player from every
+subsequent tick's sampling, giving the "renormalize over ten" behaviour with no change to the
+presence tables themselves — `team_means` now recomputes per tick once a side has actually
+gone down a player (a cheap fast path reuses the once-per-match reading otherwise, so the
+identity setting's per-tick cost is unchanged). `current_gk` resolves the red-carded-keeper
+edge case: formation slot 0 if still on the pitch, else the lowest-indexed on-pitch outfielder,
+attributes and all. `GameState::is_suspended`/`suspended_players` (§12) derive bans straight
+from `season_cards`, joining `available()` alongside the injury check; `ai_pick_lineup_vs`/
+`ai_pick_lineup_available` gained a `suspended: &BTreeSet<PlayerId>` parameter so AI-controlled
+sides respect suspensions too, not just the human's own `validate_lineup`/
+`effective_player_lineup`. A sent-off player's recorded `MatchPlayed` minutes now stop at his
+dismissal minute rather than running to a flat 90 — T11's own slice of §2.8's "T10/T11/T12 make
+partial minutes possible," ahead of T12's substitutions.
+
 **The foul contest** attaches to the contests that model a challenge: after a take-on
 resolves (either way), and after a *failed* pass in the defender's pressed zones, a foul draw
 fires: `p_foul = σ(base_foul + a·(Aggression − 50)/50 − c·(Composure/Decisions blend − 50)/50
 + press_term + fatigue_term)` — the schema §6 #8 signature (↑ Aggression, ↓ Composure,
-Decisions), plus the two modulators 2e adds (a High press fouls more; tired legs foul more).
+Decisions), plus the two modulators 2e adds (a High press fouls more, via the defending side's
+own `SideEffects::fatigue_mult`; tired legs foul more, via `1 - fatigue_mult`). "The defender's
+pressed zones" resolved as every zone but the actor's own `Def` third: a lost ball there reads
+as a clean interception during build-up, not a physical challenge worth a foul check.
 
 **Restart (v1):** the fouled side retains possession in the zone — a free kick abstracted to
 "possession kept", per §11's set-piece deferral. No shot from the foul yet.
@@ -586,36 +612,53 @@ Decisions), plus the two modulators 2e adds (a High press fouls more; tired legs
 straight `Red` (rare, ≈ 0.01), with the yellow odds pushed up by the same Aggression margin
 and by repeat fouling (a per-player in-match foul count — the referee's patience is state the
 engine already has for free). A second yellow is a red by bookkeeping, not a new draw.
+**Implementation refinement found during calibration:** a second yellow is *not* drawn from the
+same formula as the first, plus its repeat/aggression bumps — an early pass did exactly that,
+and one aggressive repeat fouler's compounding foul count reliably snowballed into an
+implausible per-match red rate (≈0.39/team/match, four times the target). `foul_second_yellow_base`
+is its own flat, deliberately low probability once a player already carries a yellow: a
+cautioned player draws more careful, and the second dismissal-worthy act is rarer per foul than
+the first, not more common — the repeat/aggression bumps stay first-yellow-only.
 
-**The discipline resolution (`ATTRIBUTE_SCHEMA.md` §9 item 3) — decision: Aggression alone in
-v1; no hidden discipline factor yet — with a named split tripwire.** The lean-and-add case:
-the schema merged Bravery into Aggression and flagged the possible split "if card rates won't
-calibrate from Aggression alone", and that is only knowable from the calibrated contest, which
-now exists to be built. The tripwire that would fire the split, stated in advance so B-series
-calibration checks a prediction (§8 discipline): per-player season card counts must show a
-believable heavy tail (a few 8+/season players, a mode near 1–3) *without* distorting duel
-calibration. The conflation risk is precise: Aggression is also a *performance* input to the
-duel contests, so if the only way to widen the card tail is cranking card-sensitivity to
-Aggression, aggressive players get taxed in a way their duel bonus doesn't repay, and picking
-them becomes strictly bad — that observation (card-tail flatness at acceptable duel balance,
-or duel distortion at acceptable card tail) is the evidence that a second, hidden,
-CA-irrelevant discipline factor is needed. Until it fires: one attribute, no new field.
+**The discipline resolution (`ATTRIBUTE_SCHEMA.md` §9 item 3) — verdict: Aggression alone
+sufficed, no hidden discipline factor needed.** The lean-and-add case: the schema merged
+Bravery into Aggression and flagged the possible split "if card rates won't calibrate from
+Aggression alone." T11's calibration (below) hit both the yellow band (~2-3/team/match) and
+the red band (well under 0.1/team/match) by tuning only the foul-contest's own knobs
+(`foul_base`, `foul_yellow_base`, `foul_red_base`, `foul_second_yellow_base`) — the duel
+contests' own weights (`TAKEON_DEF`, `PASS_DEF`, `AERIAL_DEF`, all still schema §6-verbatim)
+were never touched. No conflation ever showed up between "Aggression as a duel-performance
+input" and "Aggression as a card-risk input," so the split tripwire never fires: one attribute,
+no new field, `ATTRIBUTE_SCHEMA.md` §9 item 3 resolves closed.
 
 **Derived suspensions:** a red (straight or second yellow) → miss the next league match;
 5 accumulated yellows → 1-match ban, counter resets, season boundary clears it. All of it
 **derived in the fold from recorded cards** — §12's derived-suspension rule; cards are the
-truth, the ban is a view, `available()` enforces it.
+truth, the ban is a view, `available()` enforces it. `GameState::is_suspended` compares each
+qualifying booking's matchday against `current_matchday - 1` exactly, so a ban both applies and
+self-clears without ever storing a "served" flag — once the calendar moves past the one match a
+booking covers, the same read starts returning `false` again.
 
 **Playing short:** a sent-off player leaves the XI; presence sampling renormalizes over ten
 (the §6 tables need no change — totals just shrink), team means recompute, and the one edge
 case is pinned by test: a red-carded *keeper* forces either a sub (§16) or an outfielder in
-goal (slot re-roled `Gk`, his attributes making the punishment automatic). Target: a
-ten-man side concedes roughly +0.4–0.6 expected goals over the remainder.
+goal (slot re-roled `Gk`, his attributes making the punishment automatic). The `+0.4-0.6`
+expected-goals-conceded-over-the-remainder target below is unverified in v1 — it needs T12's
+substitutions to be a fair reading (right now a ten-man side never gets a tactical reshuffle in
+response, which would bias the reading pessimistic).
 
 **§8 impact:** gpm ≈ unchanged at the league level (fouls retain possession; reds are rare and
-symmetric); new §8 rows: fouls/game ~20–25, yellows/game ~3.5–4.5, reds/game ~0.15–0.25,
-suspension matches served/club/season. H/D/A and the favourite-discrimination guard must hold;
-red-card matches will fatten the scoreline tails slightly (watched, not banded, in v1).
+symmetric) — not independently re-verified here (`favourite_discrimination_regression_guard`
+passes with the mechanism live at production defaults, the same scope-of-check T10's own §8
+impact note relied on). New §8 rows, pooled over 16 seeds via `bin/calibrate`: fouls/game
+**20.2** (target ~20-25), yellows/team/match **2.20** (target ~2-3), reds/team/match **0.038**
+(target well under 0.1) — landed on the first knob pick that hit all three simultaneously,
+`foul_base: -2.5` (from an initial `-3.3`, which read only 9.5 fouls/game and 1.06 (later 1.07)
+yellows/team/match, both well short) alongside the second-yellow decoupling above. H/D/A and
+the favourite-discrimination guard hold at these knobs (`favourite_discrimination_regression_guard`,
+production `Knobs::default()`); red-card matches will fatten the scoreline tails slightly
+(watched, not banded, in v1). Suspension matches served/club/season: not yet read off a real
+pooled season — a `bin/calibrate` reporting gap, not a modelling one.
 
 ## 16. Substitutions (R7)
 

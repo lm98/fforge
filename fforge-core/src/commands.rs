@@ -11,7 +11,8 @@ use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
 use crate::match_engine::{
-    CONSISTENCY_NS, INJURY_NS, Knobs, ai_pick_lineup_available, ai_pick_lineup_vs, play_match,
+    CONSISTENCY_NS, FOUL_NS, INJURY_NS, Knobs, ai_pick_lineup_available, ai_pick_lineup_vs,
+    play_match,
 };
 use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
@@ -55,7 +56,7 @@ pub enum CommandError {
     DuplicatePlayers,
     NotInSquad(PlayerId),
     /// A lineup names a player who is currently unavailable — injured
-    /// (`MATCH_MODEL.md` §12, §14, T10; suspended once §15 lands).
+    /// (`MATCH_MODEL.md` §12, §14, T10) or suspended (§15, T11).
     PlayerUnavailable(PlayerId),
     /// A transfer decision names a player who does not exist in the world.
     UnknownPlayer(PlayerId),
@@ -184,7 +185,7 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
         }
     }
     // MATCH_MODEL.md §12: a lineup may not name a currently-unavailable
-    // player (injured — suspended once §15 lands).
+    // player (injured, §14; suspended, §15).
     for &pid in &lineup.players {
         if !state.available(pid) {
             return Err(CommandError::PlayerUnavailable(pid));
@@ -211,7 +212,12 @@ fn effective_player_lineup(state: &GameState) -> Lineup {
     {
         return lineup.clone();
     }
-    ai_pick_lineup_available(&state.world, state.player_club, state.date)
+    ai_pick_lineup_available(
+        &state.world,
+        state.player_club,
+        state.date,
+        &state.suspended_players(),
+    )
 }
 
 /// The player's own fixture for the upcoming matchday, simulated exactly as
@@ -231,19 +237,35 @@ pub fn player_match_preview(
     let fixture = state
         .fixtures_of_matchday(md)
         .find(|f| f.home == state.player_club || f.away == state.player_club)?;
+    let suspended = state.suspended_players();
     let home_lineup = if fixture.home == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true, state.date)
+        ai_pick_lineup_vs(
+            &state.world,
+            fixture.home,
+            fixture.away,
+            true,
+            state.date,
+            &suspended,
+        )
     };
     let away_lineup = if fixture.away == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false, state.date)
+        ai_pick_lineup_vs(
+            &state.world,
+            fixture.away,
+            fixture.home,
+            false,
+            state.date,
+            &suspended,
+        )
     };
     let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
     let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
     let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
+    let mut foul_rng = derive_stream(state.seed, FOUL_NS | fixture.id.0 as u64);
     let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
     Some(play_match(
         &state.world,
@@ -252,6 +274,7 @@ pub fn player_match_preview(
         &mut rng,
         &mut consistency_rng,
         &mut injury_rng,
+        &mut foul_rng,
         &Knobs::default(),
         &conditions,
         state.date,
@@ -283,21 +306,37 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
     // this advance fires (DEVELOPMENT_MODEL.md §3). Minutes-valued since T4.
     let mut window_apps = state.appearances_since_tick.clone();
     let mut window_club_matches = state.club_matches_since_tick.clone();
+    let suspended = state.suspended_players();
 
     for fixture in state.fixtures_of_matchday(md) {
         let home_lineup = if fixture.home == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true, state.date)
+            ai_pick_lineup_vs(
+                &state.world,
+                fixture.home,
+                fixture.away,
+                true,
+                state.date,
+                &suspended,
+            )
         };
         let away_lineup = if fixture.away == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false, state.date)
+            ai_pick_lineup_vs(
+                &state.world,
+                fixture.away,
+                fixture.home,
+                false,
+                state.date,
+                &suspended,
+            )
         };
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
         let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
         let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
+        let mut foul_rng = derive_stream(state.seed, FOUL_NS | fixture.id.0 as u64);
         let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
         // The minute-by-minute stream is a Trace, not a fold input
         // (MATCH_MODEL.md §7) — only the score is recorded; it rides
@@ -310,6 +349,7 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
             &mut rng,
             &mut consistency_rng,
             &mut injury_rng,
+            &mut foul_rng,
             &Knobs::default(),
             &conditions,
             state.date,

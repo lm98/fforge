@@ -15,7 +15,7 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    CONSISTENCY_NS, ELO_SCALE_S, INJURY_NS, Knobs, StreamTelemetry, ai_pick_lineup_vs,
+    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, StreamTelemetry, ai_pick_lineup_vs,
     lineup_strength, play_match, run_head_to_head,
 };
 use fforge_core::rng::derive_stream;
@@ -40,14 +40,18 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
         let mut seed_goals = 0u32;
         let mut seed_matches = 0u32;
 
+        let suspended = std::collections::BTreeSet::new();
         for fixture in &schedule {
-            let home_lineup = ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start);
-            let away_lineup = ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start);
+            let home_lineup =
+                ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start, &suspended);
+            let away_lineup =
+                ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
             let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
             let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
+            let mut foul_rng = derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
             let outcome = play_match(
                 &world,
                 &home_lineup,
@@ -55,6 +59,7 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                 &mut rng,
                 &mut consistency_rng,
                 &mut injury_rng,
+                &mut foul_rng,
                 &Knobs::default(),
                 &std::collections::BTreeMap::new(),
                 start,
@@ -136,6 +141,15 @@ fn print_report(report: &CalibReport) {
     println!(
         "home possession   : {:.1}%",
         p.home_possession_share() * 100.0
+    );
+    println!("fouls/match       : {:.1}", p.fouls_per_match());
+    println!(
+        "yellows/team/match: {:.2}  (target ~2-3)",
+        p.yellows_per_team_per_match()
+    );
+    println!(
+        "reds/team/match   : {:.3}  (target well under 0.1)",
+        p.reds_per_team_per_match()
     );
     println!();
     println!("=== Expected points vs strength gap (bookmaker-baseline axis) ===");

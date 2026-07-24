@@ -167,6 +167,56 @@ pub struct Knobs {
     pub injury_minor_days: [f64; 2],
     pub injury_moderate_days: [f64; 2],
     pub injury_severe_days: [f64; 2],
+
+    // --- fouls & cards (MATCH_MODEL.md §15, T11) ---
+    /// Global scale on the foul-check probability. Identity `0.0` (§2.1): no
+    /// foul ever fires, reproducing the pre-2e engine bit-for-bit regardless
+    /// of every other foul knob's value.
+    pub foul_rate: f64,
+    /// `p_foul = foul_rate * sigmoid(foul_base + ...)` — the sigmoid's bias
+    /// term (schema §6 #8's signature: ↑ Aggression, ↓ Composure/Decisions).
+    pub foul_base: f64,
+    /// How much the defender's Aggression raises `p_foul`'s logit: at
+    /// Aggression 100, `+foul_aggression_scale`; at 0, `-foul_aggression_scale`.
+    pub foul_aggression_scale: f64,
+    /// How much the defender's Composure/Decisions blend lowers `p_foul`'s
+    /// logit — same `±(x-50)/50` shape, subtracted.
+    pub foul_composure_scale: f64,
+    /// The High-press modulator (§2.6): scales with the defending side's own
+    /// `SideEffects::fatigue_mult` press-exertion multiplier (identity
+    /// `1.0` → no term).
+    pub foul_press_scale: f64,
+    /// The tired-legs modulator (§2.6): scales with `1 - fatigue_mult`, so a
+    /// more fatigued defender fouls more.
+    pub foul_fatigue_scale: f64,
+    /// Given a foul fires *and the defender has no card yet this match*,
+    /// the base probability it draws a first yellow (of the severity
+    /// roll's `[0,1)` range; the remainder below `foul_red_base +
+    /// foul_yellow_base` draws no card at all).
+    pub foul_yellow_base: f64,
+    /// Given a foul fires, the flat probability it draws a straight red
+    /// (checked before the yellow/second-yellow band, so it is never
+    /// shadowed by them) — independent of whether the defender already has
+    /// a yellow.
+    pub foul_red_base: f64,
+    /// Given a foul fires *and the defender already has a yellow this
+    /// match*, the flat probability it draws a second yellow (dismissal).
+    /// Deliberately its own knob rather than reusing `foul_yellow_base`
+    /// plus the repeat/aggression bumps below: a player already cautioned
+    /// referees more strictly and tends to foul more carefully, so a second
+    /// bookable act is rarer per-foul than the first, not more common —
+    /// reusing the fresh-yellow formula let repeat fouling by one
+    /// aggressive player snowball into an implausible per-match red rate.
+    pub foul_second_yellow_base: f64,
+    /// Per prior foul this match (the referee's own patience, already free
+    /// state), how much a *first* booking's yellow probability rises —
+    /// does not apply once the defender already has a yellow (see
+    /// `foul_second_yellow_base`).
+    pub foul_repeat_scale: f64,
+    /// How much the defender's Aggression additionally raises the yellow
+    /// probability specifically (on top of `foul_aggression_scale`'s effect
+    /// on whether a foul happens at all) — same `±(x-50)/50` shape.
+    pub foul_yellow_aggression_scale: f64,
 }
 
 impl Default for Knobs {
@@ -246,6 +296,25 @@ impl Default for Knobs {
             injury_minor_days: [7.0, 21.0],
             injury_moderate_days: [28.0, 56.0],
             injury_severe_days: [90.0, 180.0],
+
+            // T11: plausibility-picked, then magnitude-scaled against a real
+            // pooled season the same way T10's injury knobs were
+            // (`a_season_lands_close_to_the_documented_card_band`) — see
+            // MATCH_MODEL.md §15's "T11 finding" for the exact before/after
+            // numbers.
+            foul_rate: 1.0,
+            foul_base: -2.5,
+            foul_aggression_scale: 0.6,
+            foul_composure_scale: 0.4,
+            foul_press_scale: 0.3,
+            foul_fatigue_scale: 0.3,
+            // §15: "p_yellow ≈ 0.15-0.20 of fouls", "straight red ... rare,
+            // ≈ 0.01".
+            foul_yellow_base: 0.20,
+            foul_red_base: 0.002,
+            foul_second_yellow_base: 0.012,
+            foul_repeat_scale: 0.03,
+            foul_yellow_aggression_scale: 0.15,
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::match_engine::Card;
 use fforge_domain::{
     ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId, World,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Horizon of the rolling appearance window (`recent_appearances`): six weekly
 /// matchdays — generously more than any plausible §13 recovery/load law reads,
@@ -402,17 +402,62 @@ impl GameState {
         )
     }
 
-    /// Whether `pid` can play as of `self.date` (`MATCH_MODEL.md` §12, §14):
-    /// false only while a recorded injury's `injured_until` still lies
-    /// ahead. Derived from `Player.injured_until` — the recorded truth is
-    /// the days-out already resolved at match time; this is a view over it,
-    /// never a second source of truth. Suspensions (§15) join this once T11
-    /// lands.
+    /// Whether `pid` can play as of `self.date` (`MATCH_MODEL.md` §12, §14,
+    /// §15): false while a recorded injury's `injured_until` still lies
+    /// ahead, or while `is_suspended` derives a ban for the upcoming
+    /// matchday. Derived from `Player.injured_until`/`season_cards` — the
+    /// recorded truth is the days-out/cards already resolved at match time;
+    /// this is a view over them, never a second source of truth.
     pub fn available(&self, pid: PlayerId) -> bool {
-        match self.world.player(pid).injured_until {
+        let injury_ok = match self.world.player(pid).injured_until {
             Some(until) => until <= self.date,
             None => true,
+        };
+        injury_ok && !self.is_suspended(pid)
+    }
+
+    /// Whether `pid` is banned for `self.current_matchday` (`MATCH_MODEL.md`
+    /// §15's derived-suspension rule): a red or second yellow at the
+    /// immediately preceding matchday, or a 5th/10th/... accumulated yellow
+    /// there — never stored, always re-derived from `season_cards`, so this
+    /// and the recorded cards can never disagree. Self-resetting by
+    /// construction: the check compares against `current_matchday - 1`
+    /// exactly, so once the calendar has moved past the one match a
+    /// qualifying booking bans, it reads false again without any "ban
+    /// served" bookkeeping.
+    pub fn is_suspended(&self, pid: PlayerId) -> bool {
+        let Some(cards) = self.season_cards.get(&pid) else {
+            return false;
+        };
+        let prev_matchday = match self.current_matchday.checked_sub(1) {
+            Some(0) | None => return false,
+            Some(m) => m,
+        };
+        let mut sorted = cards.clone();
+        sorted.sort_by_key(|&(m, _)| m);
+        let red_ban = sorted
+            .iter()
+            .any(|&(m, c)| m == prev_matchday && matches!(c, Card::Red | Card::SecondYellow));
+        if red_ban {
+            return true;
         }
+        sorted
+            .iter()
+            .filter(|&&(_, c)| c == Card::Yellow)
+            .enumerate()
+            .any(|(i, &(m, _))| (i + 1).is_multiple_of(5) && m == prev_matchday)
+    }
+
+    /// Every player currently banned for `self.current_matchday`
+    /// (`is_suspended`, pooled) — the set `ai_pick_lineup_available`/
+    /// `ai_pick_lineup_vs` (`match_engine`, no `GameState` access of their
+    /// own) need to keep AI squad selection honouring suspensions too.
+    pub fn suspended_players(&self) -> BTreeSet<PlayerId> {
+        self.season_cards
+            .keys()
+            .copied()
+            .filter(|&pid| self.is_suspended(pid))
+            .collect()
     }
 
     pub fn season_over(&self) -> bool {
@@ -871,11 +916,12 @@ mod transfer_event_tests {
 #[cfg(test)]
 mod match_boundary_tests {
     //! `MATCH_MODEL.md` §12's extended `MatchOutcome`/`MatchPlayed` boundary
-    //! (R6), grown once for all three consumers — injuries, cards, ratings —
-    //! with the engine populating nothing yet. Plumbing only (the task's
-    //! scope fence): no injury model, no foul contest, no rating formula, so
-    //! every populated event here is hand-built, exactly as
-    //! `transfer_event_tests` builds its events.
+    //! (R6), grown once for all three consumers — injuries, cards, ratings.
+    //! Injuries (§14, T10) and fouls/cards (§15, T11) are now real models
+    //! with their own coverage in `match_engine`; `ratings` (§18) still has
+    //! no formula, so hand-built events (exactly as `transfer_event_tests`
+    //! builds its events) remain how this module exercises the fold itself,
+    //! independent of any particular engine model.
 
     use super::*;
     use crate::commands::{Command, step};
@@ -1129,6 +1175,124 @@ mod match_boundary_tests {
         );
     }
 
+    /// `MATCH_MODEL.md` §15's derived-suspension rule: a red (or second
+    /// yellow) bans only the *immediately following* matchday, and clears
+    /// itself once that matchday has been played — no stored ban, no
+    /// "consumed" bookkeeping, purely a read against `current_matchday`.
+    #[test]
+    fn a_red_card_bans_only_the_immediately_following_matchday() {
+        let (mut log, state) = base_log(9);
+        let (event, _injured, _booked, sent_off) = populated_match_played(&state);
+        let played_matchday = state.schedule[0].matchday;
+        log.push(event.clone());
+        let mut after = state.clone();
+        after.apply(&event);
+
+        assert!(
+            !after.is_suspended(sent_off),
+            "the matchday the red was shown on is not itself banned"
+        );
+
+        let advance = Event::MatchdayAdvanced {
+            matchday: played_matchday,
+            new_date: after.date.add_days(7),
+        };
+        log.push(advance.clone());
+        after.apply(&advance);
+        assert!(
+            after.is_suspended(sent_off),
+            "the red card must ban the very next matchday"
+        );
+        assert!(!after.available(sent_off));
+
+        // `Command::SubmitLineup` must reject a lineup naming the suspended
+        // player, exactly as it does an injured one (T10's precedent). A
+        // separate clone with `player_club` pointed at the banned player's
+        // club — `after` itself stays untouched for the replay-equality
+        // check below, since `player_club` is never mutated by an event.
+        let mut check_state = after.clone();
+        check_state.player_club = state.schedule[0].away;
+        let mut illegal = crate::match_engine::ai_pick_lineup_available(
+            &check_state.world,
+            check_state.player_club,
+            check_state.date,
+            &check_state.suspended_players(),
+        );
+        illegal.players[0] = sent_off;
+        let err =
+            crate::commands::step(&check_state, Command::SubmitLineup(illegal)).unwrap_err();
+        assert_eq!(
+            err,
+            crate::commands::CommandError::PlayerUnavailable(sent_off)
+        );
+
+        let advance2 = Event::MatchdayAdvanced {
+            matchday: played_matchday + 1,
+            new_date: after.date.add_days(7),
+        };
+        log.push(advance2.clone());
+        after.apply(&advance2);
+        assert!(
+            !after.is_suspended(sent_off),
+            "the ban must not carry past the one match it covers — no stored flag to clear"
+        );
+        assert!(after.available(sent_off));
+
+        assert_eq!(
+            after,
+            GameState::replay(&log),
+            "suspension derivation must be replay-stable"
+        );
+    }
+
+    /// `MATCH_MODEL.md` §15: a 5th (10th, ...) accumulated yellow this
+    /// season also derives a one-match ban, exactly like a red — checked
+    /// independently of the red-card path above.
+    #[test]
+    fn a_fifth_accumulated_yellow_derives_a_one_match_ban() {
+        let (mut log, mut state) = base_log(10);
+        let pid = state.world.club(state.schedule[0].home).players[0];
+
+        for md in 1..=5u8 {
+            let event = Event::MatchPlayed {
+                fixture: state.schedule[0].id,
+                matchday: md,
+                home_goals: 0,
+                away_goals: 0,
+                home_xi: Vec::new(),
+                away_xi: Vec::new(),
+                injuries: Vec::new(),
+                cards: vec![CardOutcome {
+                    player: pid,
+                    card: Card::Yellow,
+                    minute: 10,
+                }],
+                ratings: Vec::new(),
+                minutes: Vec::new(),
+            };
+            state.apply(&event);
+            log.push(event);
+            let advance = Event::MatchdayAdvanced {
+                matchday: md,
+                new_date: state.date.add_days(7),
+            };
+            state.apply(&advance);
+            log.push(advance);
+            if md < 5 {
+                // Not suspended yet — fewer than 5 yellows recorded, and
+                // `current_matchday` now points one past whichever matchday
+                // was just played.
+                assert!(!state.is_suspended(pid));
+            }
+        }
+
+        assert!(
+            state.is_suspended(pid),
+            "the matchday immediately after the 5th yellow must be banned"
+        );
+        assert_eq!(state, GameState::replay(&log));
+    }
+
     #[test]
     fn the_rolling_appearance_window_stays_bounded_across_a_full_season() {
         let (mut log, mut state) = base_log(6);
@@ -1249,7 +1413,12 @@ mod match_boundary_tests {
             "the injured player must read unavailable"
         );
 
-        let filtered = ai_pick_lineup_available(&after.world, home_club, after.date);
+        let filtered = ai_pick_lineup_available(
+            &after.world,
+            home_club,
+            after.date,
+            &after.suspended_players(),
+        );
         assert!(
             !filtered.players.contains(&injured),
             "ai_pick_lineup_available must never select an unavailable player"
@@ -1266,7 +1435,12 @@ mod match_boundary_tests {
         let mut recovered = after.clone();
         recovered.date = recovered.date.add_days(22); // 21-day injury + 1
         assert!(recovered.available(injured));
-        let filtered_after = ai_pick_lineup_available(&recovered.world, home_club, recovered.date);
+        let filtered_after = ai_pick_lineup_available(
+            &recovered.world,
+            home_club,
+            recovered.date,
+            &recovered.suspended_players(),
+        );
         assert_eq!(
             filtered_after, unfiltered,
             "a fully recovered squad's filtered and unfiltered picks must agree"
@@ -1327,13 +1501,72 @@ mod match_boundary_tests {
         );
     }
 
+    /// `MATCH_MODEL.md` §15's target band: "roughly 2-3 yellows per team per
+    /// match, reds well under 0.1" — pooled over real full seasons, the same
+    /// methodology `a_pooled_seasons_injury_count_lands_in_the_documented_band`
+    /// used for T10's injury rate.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    #[test]
+    fn a_pooled_seasons_card_rate_lands_in_the_documented_band() {
+        let mut total_matches = 0u32;
+        let mut total_yellows = 0u32;
+        let mut total_reds = 0u32;
+        for seed in 0..6u64 {
+            let (world, schedule, start_date) = generate(seed, &WorldGenConfig::default());
+            let event = Event::GameStarted {
+                seed,
+                start_date,
+                player_club: world.competition.clubs[0],
+                world,
+                schedule,
+            };
+            let mut state = GameState::replay(std::slice::from_ref(&event));
+            while !state.season_over() {
+                let events = step(&state, Command::AdvanceMatchday).expect("advance");
+                for e in &events {
+                    if let Event::MatchPlayed { cards, .. } = e {
+                        total_matches += 1;
+                        for c in cards {
+                            match c.card {
+                                Card::Yellow => total_yellows += 1,
+                                Card::SecondYellow => {
+                                    total_yellows += 1;
+                                    total_reds += 1;
+                                }
+                                Card::Red => total_reds += 1,
+                            }
+                        }
+                    }
+                    state.apply(e);
+                }
+            }
+        }
+
+        // Each match involves two teams — the §15 target is stated per team.
+        let yellows_per_team_per_match = total_yellows as f64 / total_matches as f64 / 2.0;
+        let reds_per_team_per_match = total_reds as f64 / total_matches as f64 / 2.0;
+        assert!(
+            (1.5..=3.5).contains(&yellows_per_team_per_match),
+            "pooled yellows/team/match {yellows_per_team_per_match:.2} ({total_yellows} yellows \
+             over {total_matches} matches) falls outside §15's ~2-3 target — banded slightly \
+             wider than the target itself since 6 seeds is a coarser pool than the harnesses \
+             proper use"
+        );
+        assert!(
+            reds_per_team_per_match < 0.1,
+            "pooled reds/team/match {reds_per_team_per_match:.3} ({total_reds} reds over \
+             {total_matches} matches) exceeds §15's \"well under 0.1\" target"
+        );
+    }
+
     #[test]
     fn the_monthly_minutes_window_stays_bounded_across_a_full_season() {
         // T4/§2.8: `appearances_since_tick` now accumulates minutes, not
         // appearance counts. It must never exceed the club's available
-        // minutes in the window (90 × matches so far this window) — with
-        // every starter at a flat 90 until T10/T11/T12, that is also an
-        // exact equality check, not just an upper bound.
+        // minutes in the window (90 × matches so far this window) — T11's
+        // red cards make a starter's minutes partial (`MATCH_MODEL.md` §15),
+        // so the flat-90 equality this test asserted through T10 is gone;
+        // the upper bound is the invariant that survives until T12.
         let (mut log, mut state) = base_log(7);
 
         while !state.season_over() {
@@ -1353,11 +1586,6 @@ mod match_boundary_tests {
                 assert!(
                     mins <= matches * 90,
                     "player {pid}: {mins} minutes exceeds {matches} matches' worth (90 each)"
-                );
-                assert!(
-                    mins % 90 == 0,
-                    "player {pid}: {mins} minutes isn't a multiple of 90 \
-                     — every starter plays a flat 90 until T10/T11/T12"
                 );
             }
         }

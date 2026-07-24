@@ -120,10 +120,11 @@ later if calibration or design demands it:
 - **Decisions** absorbs **Anticipation** (reading play) — split if defensive reading needs its own knob.
 - **Aggression** absorbs **Bravery** (committing to duels/blocks) and drives fouls; a separate
   hidden **discipline** factor may be needed if card rates won't calibrate from Aggression alone.
-  **[resolved: Aggression alone in v1 — `MATCH_MODEL.md` §15.]** The foul/card contest starts
-  with no hidden factor, and §15 states the split tripwire in advance (a too-flat per-player
-  card tail, or duel-balance distortion when widening it) so the decision is checkable, not
-  silently defaulted.
+  **[resolved: Aggression alone, confirmed empirically — `MATCH_MODEL.md` §15, T11.]** The
+  foul/card contest's own knobs (not the duel contests' weights) calibrated cleanly to both the
+  yellow band (~2-3/team/match) and the red band (well under 0.1/team/match) — the split
+  tripwire §15 named in advance (a too-flat per-player card tail, or duel-balance distortion
+  when widening it) never fired.
 - **Finishing** absorbs **Long Shots** (range penalty) and **Penalty Taking**.
 
 **Deferred entirely** (add as a later, optional layer, not needed to prove the schema):

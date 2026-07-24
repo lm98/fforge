@@ -9,7 +9,7 @@ use super::knobs::Knobs;
 use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
-use super::{InjuryOutcome, MatchOutcome};
+use super::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 use crate::rng::Rng;
 use fforge_domain::{Attribute, Attributes, GameDate, Lineup, PlayerId, Role, Tactics, World};
 use std::cell::Cell;
@@ -47,6 +47,45 @@ struct XiPlayer {
     /// a participant injured through the shared `&[XiPlayer]` slice without
     /// threading `&mut` through the whole possession loop.
     injured_from_minute: Cell<Option<f64>>,
+    /// In-match foul count so far (`MATCH_MODEL.md` §15, T11) — repeat
+    /// fouling pushes up the yellow-card probability (the referee's own
+    /// patience, state the engine already has for free).
+    foul_count: Cell<u8>,
+    /// Whether this player already has a yellow card this match — the next
+    /// bookable foul is a second yellow (a red by bookkeeping) rather than a
+    /// fresh severity draw.
+    has_yellow: Cell<bool>,
+    /// Minute sent off from, if any (`MATCH_MODEL.md` §15: a red removes the
+    /// player for the remainder) — `Cell` for the same shared-slice-mutation
+    /// reason as `injured_from_minute`.
+    sent_off_from_minute: Cell<Option<f64>>,
+}
+
+/// Whether `player` is still on the pitch at `minute` (`MATCH_MODEL.md` §15,
+/// T11) — false only once their `sent_off_from_minute` has been reached. An
+/// injured-but-not-sent-off player still counts as on the pitch (§14:
+/// "continues at reduced effectiveness"); only a red card actually shrinks
+/// the XI.
+fn on_pitch(player: &XiPlayer, minute: f64) -> bool {
+    match player.sent_off_from_minute.get() {
+        Some(off) => minute < off,
+        None => true,
+    }
+}
+
+/// The player currently keeping goal (`MATCH_MODEL.md` §15's red-carded-
+/// keeper edge case): formation slot 0 if he's still on the pitch, else the
+/// lowest-indexed on-pitch outfielder — re-roled by circumstance, not by
+/// field, so *his* attributes (not a real keeper's) make the punishment
+/// automatic. No substitutions exist yet (T12), so this is the only
+/// response v1 has to a sent-off keeper.
+fn current_gk(xi: &[XiPlayer], minute: f64) -> &XiPlayer {
+    if on_pitch(&xi[0], minute) {
+        return &xi[0];
+    }
+    xi.iter()
+        .find(|p| on_pitch(p, minute))
+        .expect("a match is abandoned, never simulated, once a side runs out of outfield players")
 }
 
 /// The contact-channel injury multiplier (`MATCH_MODEL.md` §14, T10):
@@ -143,6 +182,9 @@ fn build_xi(
                 contact_injury_mult,
                 pending_ambient: Cell::new(pending_ambient),
                 injured_from_minute: Cell::new(None),
+                foul_count: Cell::new(0),
+                has_yellow: Cell::new(false),
+                sent_off_from_minute: Cell::new(None),
             }
         })
         .collect()
@@ -239,9 +281,104 @@ fn fire_due_ambient_injuries(xi: &[XiPlayer], minute: f64, injuries: &mut Vec<In
     }
 }
 
+/// The outcome of a foul check (`MATCH_MODEL.md` §15, T11): either no foul
+/// fired, or one did — carrying whatever card (if any) the severity draw
+/// resolved. A foul that draws no card is still a foul (§2.6: "buys the
+/// defending side a reset at the cost of card risk" — most fouls draw no
+/// card at all).
+enum FoulResult {
+    NoFoul,
+    Foul(Option<Card>),
+}
+
+/// The foul-and-card contest (`MATCH_MODEL.md` §15, T11), rolled on
+/// `defender` after a take-on resolves (either way) or a failed pass in a
+/// pressed zone. `p_foul` is the schema §6 #8 signature (↑ Aggression, ↓
+/// Composure/Decisions) plus the two 2e modulators (a High press fouls
+/// more, via `press_mult`; tired legs foul more, via `defender_fatigue`),
+/// scaled by `foul_rate` (identity `0.0`: no foul ever fires, §2.1). Draws
+/// the check unconditionally, then — only if it fires — the severity (a
+/// single categorical roll for red/yellow/none), the same
+/// conditional-on-outcome shape `roll_injury` already uses. No-ops (no draw
+/// at all) if `defender` is already sent off — an XI-shrunk side draws no
+/// further fouls off a player who isn't on the pitch.
+#[allow(clippy::too_many_arguments)]
+fn maybe_foul(
+    foul_rng: &mut Rng,
+    defender: &XiPlayer,
+    defender_fatigue: f64,
+    press_mult: f64,
+    minute: f64,
+    k: &Knobs,
+    cards: &mut Vec<CardOutcome>,
+) -> FoulResult {
+    if defender.sent_off_from_minute.get().is_some() {
+        return FoulResult::NoFoul;
+    }
+    let aggression = defender.attrs.get(Attribute::Aggression) as f64;
+    let composure_decisions = 0.5
+        * (defender.attrs.get(Attribute::Composure) as f64
+            + defender.attrs.get(Attribute::Decisions) as f64);
+    let logit = k.foul_base + k.foul_aggression_scale * (aggression - 50.0) / 50.0
+        - k.foul_composure_scale * (composure_decisions - 50.0) / 50.0
+        + k.foul_press_scale * (press_mult - 1.0)
+        + k.foul_fatigue_scale * (1.0 - defender_fatigue);
+    let p_foul = (k.foul_rate * contest::sigmoid(logit)).clamp(0.0, 1.0);
+    if foul_rng.f64() >= p_foul {
+        return FoulResult::NoFoul;
+    }
+
+    let foul_count = defender.foul_count.get() + 1;
+    defender.foul_count.set(foul_count);
+    let already_yellow = defender.has_yellow.get();
+    let p_red = k.foul_red_base.max(0.0);
+    // A player already cautioned draws from a separate, much lower
+    // probability (`foul_second_yellow_base`) rather than the fresh-yellow
+    // formula's repeat/aggression bumps — see the knob's own doc comment
+    // for why reusing that formula let one repeat fouler's second-yellow
+    // rate snowball.
+    let p_second_band = if already_yellow {
+        k.foul_second_yellow_base.max(0.0)
+    } else {
+        (k.foul_yellow_base
+            + k.foul_repeat_scale * (foul_count - 1) as f64
+            + k.foul_yellow_aggression_scale * (aggression - 50.0) / 50.0)
+            .max(0.0)
+    };
+    let roll = foul_rng.f64();
+    let card = if roll < p_red {
+        Some(if already_yellow {
+            Card::SecondYellow
+        } else {
+            Card::Red
+        })
+    } else if roll < p_red + p_second_band {
+        Some(if already_yellow {
+            Card::SecondYellow
+        } else {
+            Card::Yellow
+        })
+    } else {
+        None
+    };
+    if let Some(c) = card {
+        cards.push(CardOutcome {
+            player: defender.pid,
+            card: c,
+            minute: minute as u8,
+        });
+        match c {
+            Card::Yellow => defender.has_yellow.set(true),
+            Card::SecondYellow | Card::Red => defender.sent_off_from_minute.set(Some(minute)),
+        }
+    }
+    FoulResult::Foul(card)
+}
+
 /// Per-contest team-quality means (the support term, `MATCH_MODEL.md` §4),
 /// precomputed once per match per side — only for the contests that are
 /// actually blended (the actor's attacking side of pass/take-on/cross/shot).
+#[derive(Debug, Clone, Copy)]
 struct TeamMeans {
     pass_atk: f64,
     takeon_atk: f64,
@@ -255,11 +392,17 @@ struct TeamMeans {
     p_wide: f64,
 }
 
-fn team_means(xi: &[XiPlayer], k: &Knobs) -> TeamMeans {
-    let n = xi.len() as f64;
+/// Recomputed against only the players still `on_pitch` at `minute`
+/// (`MATCH_MODEL.md` §15, T11: "presence sampling renormalizes over ten...
+/// team means recompute") — with nobody sent off, this is every XI slot, so
+/// the identity `foul_rate: 0.0` setting (nobody ever leaves) reproduces the
+/// pre-2e reading bit-for-bit.
+fn team_means(xi: &[XiPlayer], minute: f64, k: &Knobs) -> TeamMeans {
+    let on: Vec<&XiPlayer> = xi.iter().filter(|p| on_pitch(p, minute)).collect();
+    let n = on.len() as f64;
     let mean =
-        |w: &[(Attribute, f64)]| xi.iter().map(|p| contest::score(&p.attrs, w)).sum::<f64>() / n;
-    let roles: Vec<Role> = xi.iter().map(|p| p.role).collect();
+        |w: &[(Attribute, f64)]| on.iter().map(|p| contest::score(&p.attrs, w)).sum::<f64>() / n;
+    let roles: Vec<Role> = on.iter().map(|p| p.role).collect();
     TeamMeans {
         pass_atk: mean(contest::PASS_ATK),
         takeon_atk: mean(contest::TAKEON_ATK),
@@ -357,14 +500,27 @@ fn turnover(poss: Side, zone: Zone) -> (Side, Zone) {
 }
 
 /// Sample a slot index from `xi` weighted by zone presence (`MATCH_MODEL.md`
-/// §6). `presence` selects the attacking or defending table.
+/// §6). `presence` selects the attacking or defending table. A player no
+/// longer `on_pitch` at `minute` (`MATCH_MODEL.md` §15, T11: a red card)
+/// gets weight zero — presence sampling renormalizes over whoever remains
+/// without any change to the presence tables themselves.
 fn sample_by_presence(
     xi: &[XiPlayer],
     zone: Zone,
     presence: fn(Role, Zone) -> u32,
+    minute: f64,
     rng: &mut Rng,
 ) -> usize {
-    let weights: Vec<u32> = xi.iter().map(|p| presence(p.role, zone)).collect();
+    let weights: Vec<u32> = xi
+        .iter()
+        .map(|p| {
+            if on_pitch(p, minute) {
+                presence(p.role, zone)
+            } else {
+                0
+            }
+        })
+        .collect();
     let total: u32 = weights.iter().sum();
     debug_assert!(
         total > 0,
@@ -490,10 +646,13 @@ fn take_shot(
     stream: &mut Vec<MatchEvent>,
     injuries: &mut Vec<InjuryOutcome>,
 ) -> (Side, Zone) {
-    let shooter = &att[sample_by_presence(att, Zone::Box, zone::attacking_presence, rng)];
+    let shooter = &att[sample_by_presence(att, Zone::Box, zone::attacking_presence, minute, rng)];
     let defender =
-        &def_side[sample_by_presence(def_side, Zone::Box, zone::defending_presence, rng)];
-    let gk = &def_side[0]; // formation slot 0 is always Gk (formation.rs: "GK first")
+        &def_side[sample_by_presence(def_side, Zone::Box, zone::defending_presence, minute, rng)];
+    // Formation slot 0 is always Gk (formation.rs: "GK first") — unless a red
+    // card has sent him off, in which case `current_gk` (MATCH_MODEL.md §15,
+    // T11) re-roles an outfielder into goal.
+    let gk = current_gk(def_side, minute);
 
     let mut kind = kind;
     let mut base_q = base_q;
@@ -642,23 +801,34 @@ fn step(
     minute: f64,
     rng: &mut Rng,
     injury_rng: &mut Rng,
+    foul_rng: &mut Rng,
     k: &Knobs,
     goals: &mut [u32; 2],
     stream: &mut Vec<MatchEvent>,
     injuries: &mut Vec<InjuryOutcome>,
+    cards: &mut Vec<CardOutcome>,
 ) -> (Side, Zone) {
     let (att, def_side) = match poss {
         Side::Home => (home, away),
         Side::Away => (away, home),
     };
-    let tm_att = &tm[side_index(poss)];
+    // Fast path: with nobody sent off yet, reuse the once-per-match means
+    // (bit-identical to the pre-T11 reading). Only recompute — filtered to
+    // whoever's still on the pitch — once a red card has actually shrunk
+    // this side (MATCH_MODEL.md §15's "team means recompute").
+    let tm_att: TeamMeans = if att.iter().any(|p| p.sent_off_from_minute.get().is_some()) {
+        team_means(att, minute, k)
+    } else {
+        tm[side_index(poss)]
+    };
     let se_att = &se[side_index(poss)];
     let se_def = &se[side_index(other_side(poss))];
     let home_attacking = poss == Side::Home;
     let minute_u8 = minute as u8;
 
-    let actor = &att[sample_by_presence(att, zone, zone::attacking_presence, rng)];
-    let defender = &def_side[sample_by_presence(def_side, zone, zone::defending_presence, rng)];
+    let actor = &att[sample_by_presence(att, zone, zone::attacking_presence, minute, rng)];
+    let defender =
+        &def_side[sample_by_presence(def_side, zone, zone::defending_presence, minute, rng)];
     let action = select_action(zone, actor, rng, k, se_att);
 
     // Pressing/Mentality's bias term (`TACTICS_MODEL.md` §3): the attacker's
@@ -680,14 +850,15 @@ fn step(
                 se_att.fatigue_mult,
                 actor.condition,
             ) * impairment_mult(actor, minute, k);
+            let def_fatigue = fatigue_mult(
+                &defender.attrs,
+                minute,
+                k,
+                se_def.fatigue_mult,
+                defender.condition,
+            );
             let dfe = contest::score(&defender.attrs, contest::PASS_DEF)
-                * fatigue_mult(
-                    &defender.attrs,
-                    minute,
-                    k,
-                    se_def.fatigue_mult,
-                    defender.condition,
-                )
+                * def_fatigue
                 * impairment_mult(defender, minute, k);
             let bias = k.b_pass + se_att.b_pass_delta_by_zone[zone.index()] + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
@@ -702,6 +873,32 @@ fn step(
                 opponent: None,
             });
             if !success {
+                // The foul contest (MATCH_MODEL.md §15, T11): a failed pass
+                // outside the actor's own defensive third (build-up deep in
+                // Def draws no foul — the challenge there reads as a clean
+                // interception, not a physical press) can be a foul instead
+                // of a clean turnover.
+                if zone != Zone::Def
+                    && let FoulResult::Foul(card) = maybe_foul(
+                        foul_rng,
+                        defender,
+                        def_fatigue,
+                        se_def.fatigue_mult,
+                        minute,
+                        k,
+                        cards,
+                    )
+                {
+                    stream.push(MatchEvent {
+                        minute: minute_u8,
+                        side: poss,
+                        zone,
+                        kind: MatchEventKind::Foul { card },
+                        actor: actor.pid,
+                        opponent: Some(defender.pid),
+                    });
+                    return (poss, zone);
+                }
                 return turnover(poss, zone);
             }
             match zone {
@@ -742,7 +939,7 @@ fn step(
                             k.q_through,
                             att,
                             def_side,
-                            tm_att,
+                            &tm_att,
                             se_att,
                             minute,
                             rng,
@@ -781,14 +978,15 @@ fn step(
                 se_att.fatigue_mult,
                 actor.condition,
             ) * impairment_mult(actor, minute, k);
+            let def_fatigue = fatigue_mult(
+                &defender.attrs,
+                minute,
+                k,
+                se_def.fatigue_mult,
+                defender.condition,
+            );
             let dfe = contest::score(&defender.attrs, contest::TAKEON_DEF)
-                * fatigue_mult(
-                    &defender.attrs,
-                    minute,
-                    k,
-                    se_def.fatigue_mult,
-                    defender.condition,
-                )
+                * def_fatigue
                 * impairment_mult(defender, minute, k);
             let bias = k.b_takeon + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
@@ -814,6 +1012,32 @@ fn step(
                     k,
                     injuries,
                 );
+            }
+            // The foul contest (MATCH_MODEL.md §15, T11): rolled whichever
+            // way the take-on resolved (§2.6: "a take-on resolves (either
+            // way)") — a cynical foul after being beaten, or a mistimed
+            // tackle that wins the ball dirtily, both stop play instead of
+            // the actual outcome above.
+            if let FoulResult::Foul(card) = maybe_foul(
+                foul_rng,
+                defender,
+                def_fatigue,
+                se_def.fatigue_mult,
+                minute,
+                k,
+                cards,
+            ) {
+                stream.push(MatchEvent {
+                    minute: minute_u8,
+                    side: poss,
+                    zone,
+                    kind: MatchEventKind::Foul { card },
+                    actor: actor.pid,
+                    opponent: Some(defender.pid),
+                });
+                return (poss, zone);
+            }
+            if !success {
                 return turnover(poss, zone);
             }
             match zone {
@@ -845,7 +1069,7 @@ fn step(
                             k.q_dribble,
                             att,
                             def_side,
-                            tm_att,
+                            &tm_att,
                             se_att,
                             minute,
                             rng,
@@ -869,7 +1093,7 @@ fn step(
                             k.q_cutback,
                             att,
                             def_side,
-                            tm_att,
+                            &tm_att,
                             se_att,
                             minute,
                             rng,
@@ -932,7 +1156,7 @@ fn step(
                     k.q_header,
                     att,
                     def_side,
-                    tm_att,
+                    &tm_att,
                     se_att,
                     minute,
                     rng,
@@ -965,7 +1189,7 @@ fn step(
             k.q_long,
             att,
             def_side,
-            tm_att,
+            &tm_att,
             se_att,
             minute,
             rng,
@@ -994,8 +1218,10 @@ fn step(
 /// deterministic function of the calendar, so it needs no stream of its own;
 /// a player absent from the map (or the whole map empty, the identity
 /// setting) reads full condition. `injury_rng` (`MATCH_MODEL.md` §14, T10)
-/// is a third stream, independent of both `rng` and `consistency_rng`; `today`
-/// is only used to compute each player's age for the ambient channel.
+/// is a third stream, independent of both `rng` and `consistency_rng`;
+/// `foul_rng` (`MATCH_MODEL.md` §15, T11) is a fourth, independent of all
+/// three; `today` is only used to compute each player's age for the ambient
+/// channel.
 #[allow(clippy::too_many_arguments)]
 pub fn play_match(
     world: &World,
@@ -1004,6 +1230,7 @@ pub fn play_match(
     rng: &mut Rng,
     consistency_rng: &mut Rng,
     injury_rng: &mut Rng,
+    foul_rng: &mut Rng,
     k: &Knobs,
     conditions: &BTreeMap<PlayerId, f64>,
     today: GameDate,
@@ -1033,6 +1260,7 @@ pub fn play_match(
         away_lineup.tactics,
         rng,
         injury_rng,
+        foul_rng,
         k,
     )
 }
@@ -1049,6 +1277,7 @@ pub fn play_match(
 /// "resolve once per match" shape `team_means` already established — and
 /// consumes no RNG, which is what makes the §4 neutral-tactics invariant
 /// hold by construction.
+#[allow(clippy::too_many_arguments)]
 fn simulate(
     home: &[XiPlayer],
     away: &[XiPlayer],
@@ -1056,14 +1285,16 @@ fn simulate(
     away_tactics: Tactics,
     rng: &mut Rng,
     injury_rng: &mut Rng,
+    foul_rng: &mut Rng,
     k: &Knobs,
 ) -> MatchOutcome {
-    let tm = [team_means(home, k), team_means(away, k)];
+    let tm = [team_means(home, 0.0, k), team_means(away, 0.0, k)];
     let se = resolve_tactics(home_tactics, away_tactics);
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
     let mut injuries = Vec::new();
+    let mut cards = Vec::new();
 
     for half in 0..2u8 {
         let start = 45.0 * half as f64;
@@ -1082,10 +1313,12 @@ fn simulate(
                 minute,
                 rng,
                 injury_rng,
+                foul_rng,
                 k,
                 &mut goals,
                 &mut stream,
                 &mut injuries,
+                &mut cards,
             );
             poss = next_poss;
             zone = next_zone;
@@ -1098,22 +1331,37 @@ fn simulate(
         }
     }
 
+    // MATCH_MODEL.md §15, T11: a sent-off player's minutes stop at his
+    // dismissal rather than running to 90 — the one case T4's "every starter
+    // plays the full 90" placeholder can now retire on its own, ahead of
+    // T12's substitutions. No RNG: `sent_off_from_minute` was already
+    // resolved above.
+    let minutes = home
+        .iter()
+        .chain(away)
+        .map(|p| {
+            let mins = match p.sent_off_from_minute.get() {
+                Some(off) => off.round().clamp(0.0, 90.0) as u8,
+                None => 90,
+            };
+            (p.pid, mins)
+        })
+        .collect();
+
     MatchOutcome {
         home_goals: goals[0].min(u8::MAX as u32) as u8,
         away_goals: goals[1].min(u8::MAX as u32) as u8,
         stream,
         // MATCH_MODEL.md §14, T10: resolved contact + ambient injuries.
         injuries,
-        // The remaining 2e boundary fields (MATCH_MODEL.md §12), still empty
-        // until §15/§18 land: constructing empty vectors draws nothing, so
+        // MATCH_MODEL.md §15, T11: resolved fouls' cards.
+        cards,
+        // The remaining 2e boundary field (MATCH_MODEL.md §12), still empty
+        // until §18 lands: constructing an empty vector draws nothing, so
         // neither the 2a RNG sequence nor any calibration reading depending
-        // on cards/ratings is touched.
-        cards: Vec::new(),
+        // on ratings is touched.
         ratings: Vec::new(),
-        // T4 (§12, §16, R7): every starter plays the full 90 until T11/T12
-        // make partial minutes possible. No RNG, so this is as draw-free as
-        // the empty vectors above.
-        minutes: home.iter().chain(away).map(|p| (p.pid, 90u8)).collect(),
+        minutes,
     }
 }
 
@@ -1349,6 +1597,153 @@ mod tests {
             );
         }
     }
+
+    /// Builds a real home/away pair of XIs via `build_xi` for the T11
+    /// ten-man tests below — identity Consistency/Injuries/Fouls (§2.1) so
+    /// only the manually-forced dismissal below drives any XI shrinkage.
+    fn built_xi_pair() -> (World, Vec<XiPlayer>, Vec<XiPlayer>) {
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (world, _s, _d) = crate::worldgen::generate(7, &cfg);
+        let clubs = world.competition.clubs.clone();
+        let home_lineup = crate::match_engine::ai_pick_lineup(&world, clubs[0]);
+        let away_lineup = crate::match_engine::ai_pick_lineup(&world, clubs[1]);
+        let k = Knobs {
+            consistency_sigma_max: 0.0,
+            injury_rate: 0.0,
+            ..Knobs::default()
+        };
+        let today = GameDate { days: 0 };
+        let mut consistency_rng = Rng::seed_from(1);
+        let mut injury_rng = Rng::seed_from(2);
+        let home = build_xi(
+            &world,
+            &home_lineup,
+            &mut consistency_rng,
+            &mut injury_rng,
+            today,
+            &k,
+            &BTreeMap::new(),
+        );
+        let away = build_xi(
+            &world,
+            &away_lineup,
+            &mut consistency_rng,
+            &mut injury_rng,
+            today,
+            &k,
+            &BTreeMap::new(),
+        );
+        (world, home, away)
+    }
+
+    /// `MATCH_MODEL.md` §15, T11: "no code path assumes a full eleven" —
+    /// forcing an outfielder off from kickoff (as if red-carded before the
+    /// match even started) must let a full 90 minutes simulate without
+    /// panicking, and no event may ever name the sent-off player again.
+    #[test]
+    fn a_ten_man_side_completes_a_full_match_without_panicking() {
+        let (_world, home, away) = built_xi_pair();
+        let sent_off = home[5].pid; // an outfielder, not the Gk (slot 0)
+        home[5].sent_off_from_minute.set(Some(0.0));
+
+        let k = Knobs {
+            consistency_sigma_max: 0.0,
+            injury_rate: 0.0,
+            foul_rate: 0.0,
+            ..Knobs::default()
+        };
+        let mut rng = Rng::seed_from(3);
+        let mut injury_rng = Rng::seed_from(4);
+        let mut foul_rng = Rng::seed_from(5);
+        let outcome = simulate(
+            &home,
+            &away,
+            Tactics::neutral(),
+            Tactics::neutral(),
+            &mut rng,
+            &mut injury_rng,
+            &mut foul_rng,
+            &k,
+        );
+
+        assert!(
+            !outcome.stream.is_empty(),
+            "a ten-man side must still produce a full match's worth of events"
+        );
+        for event in &outcome.stream {
+            assert_ne!(
+                event.actor, sent_off,
+                "the sent-off player must never be sampled as an actor again"
+            );
+            assert_ne!(
+                event.opponent,
+                Some(sent_off),
+                "the sent-off player must never be sampled as an opponent again"
+            );
+        }
+        let sent_off_minutes = outcome
+            .minutes
+            .iter()
+            .find(|&&(pid, _)| pid == sent_off)
+            .map(|&(_, m)| m);
+        assert_eq!(
+            sent_off_minutes,
+            Some(0),
+            "a player sent off at minute 0 must record 0 minutes played"
+        );
+    }
+
+    /// `MATCH_MODEL.md` §15's named edge case: a red-carded keeper, with no
+    /// substitutions yet (T12), forces an outfielder into goal via
+    /// `current_gk` — his attributes (not a real keeper's) make the
+    /// punishment automatic. Pinned here as a no-panic + no-self-reference
+    /// test, since the calibrated *size* of the punishment is a T12+
+    /// concern once subs exist to actually replace him.
+    #[test]
+    fn a_red_carded_keeper_forces_an_outfielder_into_goal() {
+        let (_world, home, away) = built_xi_pair();
+        let sent_off_gk = home[0].pid; // formation slot 0 is always Gk
+        home[0].sent_off_from_minute.set(Some(0.0));
+
+        let k = Knobs {
+            consistency_sigma_max: 0.0,
+            injury_rate: 0.0,
+            foul_rate: 0.0,
+            ..Knobs::default()
+        };
+        let mut rng = Rng::seed_from(6);
+        let mut injury_rng = Rng::seed_from(7);
+        let mut foul_rng = Rng::seed_from(8);
+        let outcome = simulate(
+            &home,
+            &away,
+            Tactics::neutral(),
+            Tactics::neutral(),
+            &mut rng,
+            &mut injury_rng,
+            &mut foul_rng,
+            &k,
+        );
+
+        assert!(
+            !outcome.stream.is_empty(),
+            "a match missing its keeper from kickoff must still simulate to completion"
+        );
+        for event in &outcome.stream {
+            assert_ne!(
+                event.actor, sent_off_gk,
+                "the sent-off keeper must never be sampled again"
+            );
+            assert_ne!(
+                event.opponent,
+                Some(sent_off_gk),
+                "the sent-off keeper must never keep goal (or anything else) again"
+            );
+        }
+    }
 }
 
 /// Port-parity harness (`MATCH_MODEL.md` §10 diagnosis): does `simulate` —
@@ -1419,6 +1814,9 @@ mod notebook_parity {
                 contact_injury_mult: 1.0,
                 pending_ambient: Cell::new(None),
                 injured_from_minute: Cell::new(None),
+                foul_count: Cell::new(0),
+                has_yellow: Cell::new(false),
+                sent_off_from_minute: Cell::new(None),
             })
             .collect()
     }
@@ -1442,9 +1840,11 @@ mod notebook_parity {
         // whatever production is calibrated to today.
         let notebook_knobs = Knobs {
             b_beat: -1.7,
-            // The notebook never modeled injuries; identity here keeps this
-            // test checking only the parity question (MATCH_MODEL.md §14, T10).
+            // The notebook never modeled injuries or fouls; identity here
+            // keeps this test checking only the parity question
+            // (MATCH_MODEL.md §14 T10, §15 T11).
             injury_rate: 0.0,
+            foul_rate: 0.0,
             ..Knobs::default()
         };
 
@@ -1475,6 +1875,10 @@ mod notebook_parity {
                     league,
                     PARITY_NS | crate::match_engine::INJURY_NS | (fixture.id.0 as u64 + 1),
                 );
+                let mut foul_rng = derive_stream(
+                    league,
+                    PARITY_NS | crate::match_engine::FOUL_NS | (fixture.id.0 as u64 + 1),
+                );
                 let outcome = simulate(
                     home,
                     away,
@@ -1482,6 +1886,7 @@ mod notebook_parity {
                     Tactics::neutral(),
                     &mut match_rng,
                     &mut injury_rng,
+                    &mut foul_rng,
                     &notebook_knobs,
                 );
                 total_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
