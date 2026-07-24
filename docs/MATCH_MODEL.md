@@ -662,33 +662,94 @@ pooled season — a `bin/calibrate` reporting gap, not a modelling one.
 
 ## 16. Substitutions (R7)
 
+**Status: landed (batch-3 T12).** Implementation lives in `match_engine::resolve`: `simulate`
+now owns `home`/`away` (and their bench counterparts) as mutable `Vec<XiPlayer>` rather than
+borrowing them, since a substitution replaces a slot's `XiPlayer` outright — `step`/
+`take_shot`/`sample_by_presence`/`team_means` still only ever see a borrowed `&[XiPlayer]` for
+one segment between decision points, so none of their signatures changed. Decision points
+(half-time, the fixed `SUB_CHECKPOINTS` `[60, 70, 80]`, or forced immediately when a tick's
+injury/card count grows for a given side) call `evaluate_decision_point`, which walks
+`Lineup.sub_plan`'s rules in order and fires an action once every one of its `SubCondition`
+clauses holds. `build_xi`'s per-player body was factored into `build_xi_player`, reused by a
+new `build_bench` — every dressed player, starter or bench, gets his Consistency multiplier and
+ambient-injury pre-roll at kickoff (§16's own "RNG discipline" requirement), so a substitute
+enters with already-resolved match-time attributes and evaluation itself draws nothing.
+`XiPlayer` gained `entered_at_minute` (`0.0` for a starter, the identity) so a substitute's
+`fatigue_mult` clock starts at his own entry rather than the match clock. A departed player's
+final minutes are captured into a side accumulator before his slot is overwritten (his own
+`XiPlayer` no longer exists in `home`/`away` to read them back from); `GameState::available` and
+the injury/suspension pipeline are otherwise untouched.
+
+**T12 finding — the substitution cap is 3, not 5.** This section was drafted at T2 against the
+real law's simplification; the batch-3 handoff's own T12 task spec pins **"three substitutions
+maximum"** explicitly, in both its deliverable and its test list. Implemented as
+`fforge_domain::MAX_SUBSTITUTIONS = 3` (bench size stays **7**, unaffected). Treated as the
+authoritative, more specific instruction superseding this section's original "5" — filed here
+as the correction, per the project's own "divergences get fixed as findings" convention, rather
+than silently building to the newer number without a record of the change.
+
+**Scope actually landed vs. this section's original draft:**
+- **The rule vocabulary is the general condition→action language `TACTICS_MODEL.md` §7/this
+  doc's own §2.7 described** (`SubCondition::{MinuteAtLeast, Score, PlayerConditionBelow,
+  PlayerInjured, ManDown}`, `SubAction::{Substitute, SetMentality, SetTempo, SetWidth,
+  SetPressing}`, `SubRule { conditions: Vec<SubCondition>, action }`, AND-combined) — not the
+  three named built-in rule *kinds* (forced/fatigue/chase-hold) this draft sketched. Those three
+  are expressible in the general language (e.g. a forced-cover rule is one `PlayerInjured(pid)`
+  condition per starter, naming a fixed bench replacement — never resolved by an in-match
+  "best fit" search, keeping evaluation genuinely draw-free) but **no policy that emits them
+  automatically exists yet.**
+- **No AI default plan or bench-selection policy landed.** `ai_pick_lineup`/`ai_pick_lineup_vs`
+  field every AI-controlled side with an empty bench and an empty `sub_plan` — the substitution
+  identity, so AI-vs-AI league play is entirely unaffected by this task (confirmed: every pooled
+  calibration guard reads unchanged). This mirrors `ai_pick_tactics`'s own seam
+  (`TACTICS_MODEL.md` §7) and is left for a follow-on task, not silently dropped — T12's own
+  deliverable and test list never actually required it (only that a *submitted* plan, human or
+  hand-built, is honoured). The human side has no bench/plan UI yet either (`fforge-game`
+  submits an empty bench/plan, same as its tactics picker), for the same reason
+  `TACTICS_MODEL.md`'s own tactics UI is deferred.
+- **No new persisted `MatchOutcome`/`MatchPlayed` field.** Unlike injuries/cards, a
+  substitution has no derived `GameState` consequence beyond minutes — there is no
+  "substitutions history" field anything downstream reads. `MatchEventKind::Substitution`
+  narrates it in the Trace-only stream (discarded after presentation, exactly like every other
+  beat); the one consequence that *does* outlive the match, minutes, already had a field
+  (`MatchPlayed.minutes`, landed early at T4) built for exactly this.
+
 **Law, simplified:** a bench of **7** (squad floor 18 = XI + 7, so every legal squad can fill
-it), **5 substitutions**, usable at fixed decision points — half-time, 60', 70', 80' — plus
-immediately on injury. Window-count bookkeeping (the real law's "3 windows") is not modeled in
+it), **three substitutions** (T12 finding above — not the real law's 5 this section originally
+drafted), usable at fixed decision points — half-time, 60', 70', 80' — plus immediately on
+injury or a red card. Window-count bookkeeping (the real law's "3 windows") is not modeled in
 v1: the four fixed points *are* the windows.
 
 - **The `Lineup` widens** (with `tactics`, `TACTICS_MODEL.md` §6): `bench: Vec<PlayerId>`
-  (≤ 7, validated like starters). Old logs deserialize to an empty bench — and an empty bench
-  means no decision point can act, which keeps pre-2e replays coherent.
+  (≤ 7, validated like starters — `commands::validate_lineup`) and `sub_plan: Vec<SubRule>`.
+  Old logs deserialize to an empty bench and plan — and both empty means no decision point can
+  ever act, which keeps pre-2e replays coherent.
 - **Decisions are pre-committed reactive plans**, never mid-match I/O — `play_match` is pure
-  (`TACTICS_MODEL.md` §7 pins the pattern). The human's plan rides the `Lineup`; the AI uses a
-  default plan. The v1 rule vocabulary is deliberately tiny: *forced* (injury → best same-role
-  bench player), *fatigue* (at a decision point, replace the most condition-drained outfielder
-  below a threshold, like-for-like by role), and one *chase/hold* rule (trailing at 70'+ →
-  attacking swap; leading → defensive swap), which is also where a plan may switch `Tactics`
-  levels — the in-match tactic-change seam, resolved here.
+  (`TACTICS_MODEL.md` §7 pins the pattern). The human's plan rides the `Lineup`; the AI plays
+  with an empty one in v1 (the "scope actually landed" note above) — a future default-plan
+  policy is `ai_pick_tactics`'s own sibling seam, not yet built.
 - **RNG discipline:** plan evaluation is deterministic and draw-free (conditions read the
-  score, the clock, and condition state; ties break by slot order). A substitution changes
-  *who* is sampled afterwards — outcomes diverge, the draw *mechanism* doesn't. No bench + no
-  plan ⇒ zero new draws, ⇒ the §11 regime-1 property degrades gracefully.
+  score, the clock, and already-resolved injury/card/condition state; a rule whose named player
+  is no longer eligible — already subbed or sent off, or no longer on the bench — is a silent
+  no-op, not a search for a substitute). A substitution changes *who* is sampled afterwards —
+  outcomes diverge, the draw *mechanism* doesn't. No bench + no plan ⇒ zero new draws ⇒ the §11
+  regime-1 property degrades gracefully, confirmed by `ai_pick_lineup`'s empty-bench/plan
+  default reproducing the T5 golden baseline bit-for-bit with no special-casing needed.
 - **Consequences:** `minutes` in `MatchPlayed` (§12) becomes real per-player minutes — the
   playing-time upgrade `DEVELOPMENT_MODEL.md` §3 reserved; condition drain (§13) scales with
   minutes actually played; a sub's fatigue clock starts at his entry minute (fresh legs are
   mechanically real via `fatigue_mult`'s minute argument being offset).
 
-**§8 impact:** subs/match ~4–5 (new row); late-match (75'+) goal share dips slightly (fresh
-defenders) but stays positive-skewed (chasing teams attack); gpm ≈ unchanged (± 0.05). The
-§13 condition telemetry is where substitution behavior is actually visible.
+**§8 impact:** **not measured against production league play** — every AI-controlled match
+still runs the substitution identity (empty bench/plan), so `bin/calibrate`'s pooled aggregates
+are unaffected by construction (confirmed: every pooled calibration guard reads unchanged with
+the mechanism live). The original subs/match ~4-5, late-match goal-share, and gpm predictions
+apply once a default AI plan exists to actually generate substitutions in league play — deferred
+alongside that policy. What *is* verified: a submitted plan resolves deterministically, honours
+the 3-substitution cap, reacts to forced triggers (injury, red card) ahead of the next fixed
+checkpoint, and produces the non-degenerate partial minutes `DEVELOPMENT_MODEL.md` §3 needed
+(`match_engine`'s own test suite, plus a `commands::step`-level integration test proving the
+minutes reach `GameState.appearances_since_tick`).
 
 ## 17. Character activation — Consistency & Concentration, and the schema §9 item 2 verdict
 

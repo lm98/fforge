@@ -1219,8 +1219,7 @@ mod match_boundary_tests {
             &check_state.suspended_players(),
         );
         illegal.players[0] = sent_off;
-        let err =
-            crate::commands::step(&check_state, Command::SubmitLineup(illegal)).unwrap_err();
+        let err = crate::commands::step(&check_state, Command::SubmitLineup(illegal)).unwrap_err();
         assert_eq!(
             err,
             crate::commands::CommandError::PlayerUnavailable(sent_off)
@@ -1564,9 +1563,10 @@ mod match_boundary_tests {
         // T4/§2.8: `appearances_since_tick` now accumulates minutes, not
         // appearance counts. It must never exceed the club's available
         // minutes in the window (90 × matches so far this window) — T11's
-        // red cards make a starter's minutes partial (`MATCH_MODEL.md` §15),
-        // so the flat-90 equality this test asserted through T10 is gone;
-        // the upper bound is the invariant that survives until T12.
+        // red cards and T12's substitutions both make a starter's minutes
+        // partial (`MATCH_MODEL.md` §15, §16), so the flat-90 equality this
+        // test asserted through T10 is gone; the upper bound is the
+        // invariant that survives both.
         let (mut log, mut state) = base_log(7);
 
         while !state.season_over() {
@@ -1591,5 +1591,71 @@ mod match_boundary_tests {
         }
 
         assert_eq!(state, GameState::replay(&log));
+    }
+
+    /// `MATCH_MODEL.md` §16, T12, end to end through the real command
+    /// pipeline (not a hand-built event, unlike this module's other tests):
+    /// a human `SubmitLineup` carrying a bench and a substitution plan,
+    /// resolved by a real `AdvanceMatchday`, must produce partial minutes
+    /// for both the departing starter and the entering substitute in
+    /// `appearances_since_tick` — the exact input `development::tick_changes`'s
+    /// `minutes_multiplier` bands read (unit-tested directly in
+    /// `development`'s own module; this test only proves the wiring
+    /// actually reaches it for a real substitution).
+    #[test]
+    fn a_submitted_substitution_plan_produces_partial_minutes_in_the_playing_time_window() {
+        use crate::match_engine::ai_pick_lineup_available;
+        use fforge_domain::{SubAction, SubCondition, SubRule};
+
+        let (_log, state) = base_log(13);
+        let squad = state.world.club(state.player_club).players.clone();
+        let mut lineup = ai_pick_lineup_available(
+            &state.world,
+            state.player_club,
+            state.date,
+            &std::collections::BTreeSet::new(),
+        );
+        let player_out = lineup.players[9];
+        let player_in = *squad
+            .iter()
+            .find(|pid| !lineup.players.contains(pid))
+            .expect("a 24-player worldgen squad has room for a bench player");
+        lineup.bench = vec![player_in];
+        lineup.sub_plan = vec![SubRule {
+            conditions: vec![SubCondition::MinuteAtLeast(60)],
+            action: SubAction::Substitute {
+                player_out,
+                player_in,
+            },
+        }];
+
+        let submit = step(&state, Command::SubmitLineup(lineup)).expect("valid lineup");
+        let mut after = state.clone();
+        for e in &submit {
+            after.apply(e);
+        }
+        let advance = step(&after, Command::AdvanceMatchday).expect("advance");
+        for e in &advance {
+            after.apply(e);
+        }
+
+        let out_mins = after
+            .appearances_since_tick
+            .get(&player_out)
+            .copied()
+            .unwrap_or(0);
+        let in_mins = after
+            .appearances_since_tick
+            .get(&player_in)
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            out_mins > 0 && out_mins < 90,
+            "the departed starter's window minutes must be partial, got {out_mins}"
+        );
+        assert!(
+            in_mins > 0 && in_mins < 90,
+            "the entering substitute's window minutes must be partial, got {in_mins}"
+        );
     }
 }

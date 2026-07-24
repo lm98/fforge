@@ -12,6 +12,7 @@ pub mod date;
 pub mod entities;
 pub mod formation;
 pub mod role;
+pub mod substitution;
 pub mod tactics;
 
 pub use ability::{best_role, current_ability};
@@ -22,6 +23,7 @@ pub use entities::{
     Club, ClubId, Competition, CompetitionId, Contract, DevProfile, Finances, Fixture, FixtureId,
     Money, Player, PlayerId, Staff, StaffId, StaffRole, World,
 };
-pub use formation::{FormationDef, Lineup, FORMATIONS, XI};
+pub use formation::{BENCH_SIZE, FORMATIONS, FormationDef, Lineup, MAX_SUBSTITUTIONS, XI};
 pub use role::{Role, RoleWeights, NUM_ROLES, ROLE_WEIGHTS};
+pub use substitution::{ScoreState, SubAction, SubCondition, SubRule};
 pub use tactics::{Mentality, Pressing, Tactics, Tempo, Width};

@@ -251,6 +251,8 @@ mod tests {
                     formation: 0,
                     players: arr,
                     tactics: fforge_domain::Tactics::neutral(),
+                    bench: Vec::new(),
+                    sub_plan: Vec::new(),
                 };
                 session
                     .execute(Command::SubmitLineup(lineup), &mut [])

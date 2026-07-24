@@ -22,7 +22,9 @@ use crate::state::{
     league_table, GameState,
 };
 use crate::valuation::ValueKnobs;
-use fforge_domain::{ClubId, GameDate, Lineup, PlayerId, World, FORMATIONS, XI};
+use fforge_domain::{
+    BENCH_SIZE, ClubId, FORMATIONS, GameDate, Lineup, PlayerId, SubAction, SubCondition, World, XI,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -64,6 +66,13 @@ pub enum CommandError {
     AlreadyOwned(PlayerId),
     /// A `Bid`'s reservation price is negative.
     NegativePrice(PlayerId),
+    /// A lineup's bench exceeds `fforge_domain::BENCH_SIZE`
+    /// (`MATCH_MODEL.md` §16, T12).
+    BenchTooLarge,
+    /// A lineup's `sub_plan` names a player who is neither a starter nor on
+    /// the bench (§16, T12) — a rule can only ever resolve players the team
+    /// sheet actually dressed.
+    UnknownSubPlanPlayer(PlayerId),
 }
 
 impl fmt::Display for CommandError {
@@ -80,6 +89,11 @@ impl fmt::Display for CommandError {
             CommandError::NegativePrice(p) => {
                 write!(f, "player {p}'s reservation price cannot be negative")
             }
+            CommandError::BenchTooLarge => write!(f, "the bench cannot exceed {BENCH_SIZE}"),
+            CommandError::UnknownSubPlanPlayer(p) => write!(
+                f,
+                "the substitution plan names player {p}, who is neither a starter nor on the bench"
+            ),
         }
     }
 }
@@ -189,6 +203,50 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
     for &pid in &lineup.players {
         if !state.available(pid) {
             return Err(CommandError::PlayerUnavailable(pid));
+        }
+    }
+    // MATCH_MODEL.md §16, T12: the bench is validated like the starters —
+    // bounded, in-squad, no duplicates with itself or the starting XI.
+    if lineup.bench.len() > BENCH_SIZE {
+        return Err(CommandError::BenchTooLarge);
+    }
+    for &pid in &lineup.bench {
+        if !seen.insert(pid) {
+            return Err(CommandError::DuplicatePlayers);
+        }
+        if !squad.contains(&pid) {
+            return Err(CommandError::NotInSquad(pid));
+        }
+    }
+    // A sub_plan rule may only ever resolve a player the team sheet
+    // actually dressed — `seen` is now every starter plus every bench name.
+    for rule in &lineup.sub_plan {
+        for cond in &rule.conditions {
+            let named = match *cond {
+                SubCondition::PlayerConditionBelow(pid, _) | SubCondition::PlayerInjured(pid) => {
+                    Some(pid)
+                }
+                SubCondition::MinuteAtLeast(_) | SubCondition::Score(_) | SubCondition::ManDown => {
+                    None
+                }
+            };
+            if let Some(pid) = named
+                && !seen.contains(&pid)
+            {
+                return Err(CommandError::UnknownSubPlanPlayer(pid));
+            }
+        }
+        if let SubAction::Substitute {
+            player_out,
+            player_in,
+        } = rule.action
+        {
+            if !seen.contains(&player_out) {
+                return Err(CommandError::UnknownSubPlanPlayer(player_out));
+            }
+            if !seen.contains(&player_in) {
+                return Err(CommandError::UnknownSubPlanPlayer(player_in));
+            }
         }
     }
     debug_assert_eq!(lineup.players.len(), XI);

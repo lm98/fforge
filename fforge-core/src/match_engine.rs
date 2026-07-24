@@ -242,6 +242,12 @@ fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
             // fills this in against a known opponent — kept separate since
             // this function doesn't know the opponent.
             tactics: Tactics::neutral(),
+            // MATCH_MODEL.md §16, T12: no AI bench-selection/default-plan
+            // policy yet (the `ai_pick_tactics` sibling seam this leaves for
+            // later) — every AI-controlled side plays unsubstituted, the
+            // substitution identity, until that policy lands.
+            bench: Vec::new(),
+            sub_plan: Vec::new(),
         };
         match &best {
             Some((score, _)) if *score >= mean => {}
@@ -653,6 +659,264 @@ mod tests {
             tired_goals < fresh_goals,
             "a tired home side ({tired_goals} goals pooled) should score fewer than the \
              identical side at full condition ({fresh_goals} goals pooled)"
+        );
+    }
+
+    /// The home lineup from `tiny_world_and_lineups`, with a bench drawn
+    /// from whichever squad players `ai_pick_lineup` didn't start
+    /// (`MATCH_MODEL.md` §16, T12) — the shared fixture the substitution
+    /// tests below build their plans against.
+    fn home_lineup_with_bench(world: &World, home: &Lineup, bench_size: usize) -> Lineup {
+        let squad = &world.club(world.club_of(home.players[0]).unwrap()).players;
+        let bench: Vec<PlayerId> = squad
+            .iter()
+            .copied()
+            .filter(|pid| !home.players.contains(pid))
+            .take(bench_size)
+            .collect();
+        assert_eq!(
+            bench.len(),
+            bench_size,
+            "the worldgen squad must have enough depth for this test's bench"
+        );
+        Lineup {
+            bench,
+            ..home.clone()
+        }
+    }
+
+    #[test]
+    fn a_hand_built_substitution_plan_is_honoured_deterministically() {
+        use fforge_domain::{SubAction, SubCondition, SubRule};
+
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut home = home_lineup_with_bench(&world, &home, 1);
+        let player_out = home.players[10];
+        let player_in = home.bench[0];
+        home.sub_plan = vec![SubRule {
+            conditions: vec![SubCondition::MinuteAtLeast(60)],
+            action: SubAction::Substitute {
+                player_out,
+                player_in,
+            },
+        }];
+
+        let run = || {
+            let mut rng = derive_stream(42, 1);
+            play(&world, &home, &away, &mut rng)
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(
+            a, b,
+            "identical inputs must resolve the same substitution the same way"
+        );
+
+        let subs: Vec<_> = a
+            .stream
+            .iter()
+            .filter(|e| matches!(e.kind, MatchEventKind::Substitution { .. }))
+            .collect();
+        assert_eq!(
+            subs.len(),
+            1,
+            "exactly the one plan rule's substitution must fire, no more"
+        );
+        let sub = subs[0];
+        assert_eq!(
+            sub.actor, player_in,
+            "the entering player is the beat's actor"
+        );
+        assert_eq!(sub.kind, MatchEventKind::Substitution { player_out });
+        assert!(
+            sub.minute >= 60,
+            "the rule's MinuteAtLeast(60) condition must gate when it fires, got minute {}",
+            sub.minute
+        );
+
+        // MATCH_MODEL.md §16/§2.8: minutes are now non-degenerate — both the
+        // departing starter and the entering substitute record partial
+        // (neither zero nor a flat 90) minutes.
+        let mins = |pid: PlayerId| a.minutes.iter().find(|&&(p, _)| p == pid).map(|&(_, m)| m);
+        let out_mins = mins(player_out).expect("the departed starter must still be recorded");
+        let in_mins = mins(player_in).expect("the entering substitute must be recorded");
+        assert!(
+            out_mins > 0 && out_mins < 90,
+            "the departed starter's minutes must be partial, got {out_mins}"
+        );
+        assert!(
+            in_mins > 0 && in_mins < 90,
+            "the entering substitute's minutes must be partial, got {in_mins}"
+        );
+    }
+
+    #[test]
+    fn substitution_count_never_exceeds_the_cap() {
+        use fforge_domain::{MAX_SUBSTITUTIONS, SubAction, SubCondition, SubRule};
+
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut home = home_lineup_with_bench(&world, &home, 5);
+        // Five immediately-eligible rules, each a distinct starter/bench
+        // pair — more than the cap, all triggerable from kickoff.
+        home.sub_plan = (0..5)
+            .map(|i| SubRule {
+                conditions: vec![SubCondition::MinuteAtLeast(0)],
+                action: SubAction::Substitute {
+                    player_out: home.players[6 + i],
+                    player_in: home.bench[i],
+                },
+            })
+            .collect();
+
+        let mut rng = derive_stream(7, 1);
+        let outcome = play(&world, &home, &away, &mut rng);
+        let subs = outcome
+            .stream
+            .iter()
+            .filter(|e| matches!(e.kind, MatchEventKind::Substitution { .. }))
+            .count();
+        assert_eq!(
+            subs, MAX_SUBSTITUTIONS,
+            "a plan offering more substitutions than the cap must still execute only {MAX_SUBSTITUTIONS}"
+        );
+    }
+
+    #[test]
+    fn forced_evaluation_fires_promptly_on_injury() {
+        use fforge_domain::{SubAction, SubCondition, SubRule};
+
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut home = home_lineup_with_bench(&world, &home, 1);
+        let player_in = home.bench[0];
+        // One rule per starter: whoever gets hurt first is covered — proves
+        // the *mechanism* (forced evaluation reacts to an injury, not just
+        // the fixed checkpoints) rather than depending on which player an
+        // extreme injury rate happens to hit.
+        home.sub_plan = home
+            .players
+            .iter()
+            .map(|&pid| SubRule {
+                conditions: vec![SubCondition::PlayerInjured(pid)],
+                action: SubAction::Substitute {
+                    player_out: pid,
+                    player_in,
+                },
+            })
+            .collect();
+
+        // Cranked far past any calibrated production value: this test only
+        // cares that a forced decision point fires *before* the next fixed
+        // checkpoint once an injury lands, not about a plausible rate.
+        let k = Knobs {
+            injury_rate: 1.0,
+            injury_ambient_base: 1.0,
+            injury_knock_prob: 1.0, // every hit is a trivial Knock — irrelevant to this test
+            ..Knobs::default()
+        };
+        let mut rng = derive_stream(0, 1);
+        let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
+        let mut injury_rng = derive_stream(0, INJURY_NS);
+        let mut foul_rng = derive_stream(0, FOUL_NS);
+        let outcome = play_match(
+            &world,
+            &home,
+            &away,
+            &mut rng,
+            &mut consistency_rng,
+            &mut injury_rng,
+            &mut foul_rng,
+            &k,
+            &std::collections::BTreeMap::new(),
+            GameDate { days: 0 },
+        );
+
+        assert!(
+            !outcome.injuries.is_empty(),
+            "the cranked ambient rate must produce at least one injury"
+        );
+        let sub = outcome
+            .stream
+            .iter()
+            .find(|e| matches!(e.kind, MatchEventKind::Substitution { .. }))
+            .expect("an injured starter must be covered by the matching plan rule");
+        assert!(
+            sub.minute < 45,
+            "forced evaluation must react before the next fixed checkpoint (half-time), \
+             got minute {} — a substitution this early cannot be explained by a fixed \
+             checkpoint alone",
+            sub.minute
+        );
+    }
+
+    #[test]
+    fn forced_evaluation_fires_promptly_on_a_red_card() {
+        use fforge_domain::{SubAction, SubCondition, SubRule};
+
+        let (world, home, away) = tiny_world_and_lineups();
+        let mut home = home_lineup_with_bench(&world, &home, 1);
+        let player_in = home.bench[0];
+        home.sub_plan = vec![SubRule {
+            conditions: vec![SubCondition::ManDown],
+            action: SubAction::Substitute {
+                // Bring the sub on for a nominal outfielder — the point of
+                // this test is *when* the plan reacts, not which player it
+                // covers.
+                player_out: home.players[9],
+                player_in,
+            },
+        }];
+
+        // Well above any calibrated production value (foul_base -2.5,
+        // foul_red_base 0.002) but deliberately *not* cranked to saturation
+        // — a foul_red_base near 1.0 sends off enough of a side that
+        // `sample_by_presence` runs out of on-pitch players for some zone
+        // before full time (11 players don't survive a whole match of
+        // "every foul is a red"). Pooled over a few seeds for robustness
+        // rather than betting on one hand-picked seed.
+        let k = Knobs {
+            foul_rate: 1.0,
+            foul_base: -1.0,
+            foul_red_base: 0.08,
+            ..Knobs::default()
+        };
+        let mut found = false;
+        for seed in 0..30u64 {
+            let mut rng = derive_stream(seed, 1);
+            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
+            let mut injury_rng = derive_stream(seed, INJURY_NS);
+            let mut foul_rng = derive_stream(seed, FOUL_NS);
+            let outcome = play_match(
+                &world,
+                &home,
+                &away,
+                &mut rng,
+                &mut consistency_rng,
+                &mut injury_rng,
+                &mut foul_rng,
+                &k,
+                &std::collections::BTreeMap::new(),
+                GameDate { days: 0 },
+            );
+            if let Some(sub) = outcome
+                .stream
+                .iter()
+                .find(|e| matches!(e.kind, MatchEventKind::Substitution { .. }))
+            {
+                assert!(
+                    sub.minute < 45,
+                    "forced evaluation must react before the next fixed checkpoint \
+                     (half-time), got minute {} — a substitution this early cannot be \
+                     explained by a fixed checkpoint alone",
+                    sub.minute
+                );
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "an elevated red-card rate, pooled over 30 seeds, must produce at least one \
+             ManDown-triggered substitution"
         );
     }
 }

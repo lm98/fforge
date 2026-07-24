@@ -96,6 +96,16 @@ pub enum MatchEventKind {
     Foul {
         card: Option<Card>,
     },
+    /// A substitution (`MATCH_MODEL.md` §16, T12), resolved at a decision
+    /// point rather than sampled — `side`/`actor` name the substituting
+    /// side and the *entering* player (per this struct's own convention:
+    /// `actor` is always a member of `side`'s fielding XI, which the
+    /// entering player just joined); `player_out` is the departing
+    /// starter/substitute, on the same side (not a duel, so `opponent` is
+    /// unused rather than misapplied to a same-side player).
+    Substitution {
+        player_out: PlayerId,
+    },
 }
 
 /// One beat in the minute-by-minute stream. `zone` is the zone-entry context
@@ -186,6 +196,9 @@ impl MatchEvent {
             MatchEventKind::Foul {
                 card: Some(Card::Red),
             } => format!("{m}' Foul {z} — red card!"),
+            MatchEventKind::Substitution { .. } => {
+                format!("{m}' Substitution ({side_name}): {actor} comes on.")
+            }
         }
     }
 }
@@ -236,6 +249,9 @@ mod tests {
             },
             MatchEventKind::Foul {
                 card: Some(Card::Red),
+            },
+            MatchEventKind::Substitution {
+                player_out: PlayerId(11),
             },
         ];
         for kind in kinds {

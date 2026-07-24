@@ -355,6 +355,11 @@ fn set_lineup_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
         // No tactics UI yet — the human's team sheet plays neutral until a
         // later batch adds the picker.
         tactics: Tactics::neutral(),
+        // No bench/substitution UI yet either (MATCH_MODEL.md §16, T12) —
+        // the human's team sheet plays unsubstituted until a later batch
+        // adds the picker.
+        bench: Vec::new(),
+        sub_plan: Vec::new(),
     };
     println!(
         "\nTeam sheet ({}), strength {:.1}:",

@@ -11,10 +11,14 @@ use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
 use super::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 use crate::rng::Rng;
-use fforge_domain::{Attribute, Attributes, GameDate, Lineup, PlayerId, Role, Tactics, World};
+use fforge_domain::{
+    Attribute, Attributes, GameDate, Lineup, MAX_SUBSTITUTIONS, PlayerId, Role, ScoreState,
+    SubAction, SubCondition, SubRule, Tactics, World, XI,
+};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 struct XiPlayer {
     /// The domain identity of this eleven's player, carried so the emitted
     /// stream can name who did what (`MATCH_MODEL.md` §9 / `TRANSFER_MODEL.md`
@@ -22,6 +26,14 @@ struct XiPlayer {
     pid: PlayerId,
     role: Role,
     attrs: Attributes,
+    /// Match minute this player entered the pitch (`MATCH_MODEL.md` §16,
+    /// T12): `0.0` for every starter (the identity — every `fatigue_mult`
+    /// call already effectively subtracts zero). A substitute's is his
+    /// entry minute, so his own fatigue clock starts there rather than
+    /// inheriting the departed player's accumulated drop — "fresh legs are
+    /// mechanically real via `fatigue_mult`'s minute argument being offset"
+    /// (§16), computed at each call site as `minute - entered_at_minute`.
+    entered_at_minute: f64,
     /// Pre-match condition (`MATCH_MODEL.md` §13, identity `1.0`) — looked up
     /// once here from the caller's `conditions` map, then read by every
     /// `fatigue_mult` call this player is involved in for the rest of the
@@ -125,6 +137,93 @@ fn contact_injury_mult(
 /// the same discipline Consistency's `z` follows: an onset-minute draw
 /// always happens, then `roll_injury`'s check (and, only if it fires, its
 /// severity draws).
+/// Builds one player's match-time `XiPlayer` — the per-slot body `build_xi`
+/// used to run unconditionally over exactly the starting XI; factored out
+/// (`MATCH_MODEL.md` §16, T12) so the same unconditional-fixed-order draw
+/// discipline extends to bench players too, letting a substitute enter with
+/// a properly-rolled Consistency multiplier and ambient-injury pre-roll
+/// instead of a special-cased default. `entered_at_minute` is `0.0` for a
+/// starter (the fatigue identity) or the caller-supplied entry minute for a
+/// substitute.
+#[allow(clippy::too_many_arguments)]
+fn build_xi_player(
+    world: &World,
+    pid: PlayerId,
+    role: Role,
+    entered_at_minute: f64,
+    consistency_rng: &mut Rng,
+    injury_rng: &mut Rng,
+    today: GameDate,
+    k: &Knobs,
+    conditions: &BTreeMap<PlayerId, f64>,
+) -> XiPlayer {
+    let player = world.player(pid);
+    let consistency = player.character.consistency as f64;
+    let sigma = k.consistency_sigma_max * (1.0 - consistency / 100.0);
+    let z = consistency_rng.normal(0.0, 1.0);
+    let mult = (1.0 + sigma * z).clamp(k.consistency_mult_min, k.consistency_mult_max);
+
+    let mut attrs = player.attributes.clone();
+    for attr in Attribute::ALL {
+        let scaled = (attrs.get(attr) as f64 * mult).round().clamp(0.0, 100.0);
+        attrs.set(attr, scaled as u8);
+    }
+    // Absent from the map = full condition (`MATCH_MODEL.md` §13's
+    // identity): a caller with no `GameState` to read (tests, a
+    // player with no recent appearances) gets exactly today's
+    // pre-condition behaviour without needing a special-case map.
+    let condition = conditions.get(&pid).copied().unwrap_or(1.0);
+    let contact_injury_mult = contact_injury_mult(
+        player.character.injury_proneness,
+        player.character.professionalism,
+        condition,
+        k,
+    );
+
+    let age = player.age(today) as f64;
+    let ambient_minute = injury_rng.f64() * 90.0; // always drawn — fixed order
+    let p_ambient = (k.injury_rate
+        * k.injury_ambient_base
+        * (1.0 + k.injury_ambient_condition_scale * (1.0 - condition))
+        * (1.0 + k.injury_ambient_age_scale * (age - k.injury_age_anchor).max(0.0)))
+    .clamp(0.0, 1.0);
+    let pending_ambient =
+        roll_injury(injury_rng, p_ambient, k).map(|days_out| (ambient_minute, days_out));
+
+    XiPlayer {
+        pid,
+        role,
+        attrs,
+        entered_at_minute,
+        condition,
+        contact_injury_mult,
+        pending_ambient: Cell::new(pending_ambient),
+        injured_from_minute: Cell::new(None),
+        foul_count: Cell::new(0),
+        has_yellow: Cell::new(false),
+        sent_off_from_minute: Cell::new(None),
+    }
+}
+
+/// Builds one side's starting XI, applying the Consistency per-match
+/// multiplier (`MATCH_MODEL.md` §17, T8) to each player's effective
+/// attributes for the whole match. `consistency_rng` is drawn from
+/// **unconditionally, one player at a time in slot order** — fixed count
+/// and order regardless of any attribute value, so stream position stays
+/// value-independent (`development::tick_changes`'s own rule). At
+/// `k.consistency_sigma_max == 0.0` every multiplier is exactly `1.0`
+/// (§2.1's identity), so this reproduces the pre-2e attributes bit-for-bit
+/// even though draws still happen — they land on `consistency_rng`, a
+/// stream wholly separate from the match's own `rng`, so the main draw
+/// sequence is never touched regardless of `sigma_max`. Also attaches each
+/// player's pre-match `condition` (`MATCH_MODEL.md` §13, T9) from the
+/// caller-supplied, already-derived `conditions` map — no RNG involved, so
+/// it can never perturb either stream's draw sequence at any setting.
+/// Rolls the ambient injury channel (`MATCH_MODEL.md` §14, T10) from
+/// `injury_rng` — its own stream, drawn **unconditionally, one player at a
+/// time in slot order**, the same discipline Consistency's `z` follows: an
+/// onset-minute draw always happens, then `roll_injury`'s check (and, only
+/// if it fires, its severity draws).
 #[allow(clippy::too_many_arguments)]
 fn build_xi(
     world: &World,
@@ -141,51 +240,59 @@ fn build_xi(
         .iter()
         .enumerate()
         .map(|(slot, &pid)| {
-            let player = world.player(pid);
-            let consistency = player.character.consistency as f64;
-            let sigma = k.consistency_sigma_max * (1.0 - consistency / 100.0);
-            let z = consistency_rng.normal(0.0, 1.0);
-            let mult = (1.0 + sigma * z).clamp(k.consistency_mult_min, k.consistency_mult_max);
-
-            let mut attrs = player.attributes.clone();
-            for attr in Attribute::ALL {
-                let scaled = (attrs.get(attr) as f64 * mult).round().clamp(0.0, 100.0);
-                attrs.set(attr, scaled as u8);
-            }
-            // Absent from the map = full condition (`MATCH_MODEL.md` §13's
-            // identity): a caller with no `GameState` to read (tests, a
-            // player with no recent appearances) gets exactly today's
-            // pre-condition behaviour without needing a special-case map.
-            let condition = conditions.get(&pid).copied().unwrap_or(1.0);
-            let contact_injury_mult = contact_injury_mult(
-                player.character.injury_proneness,
-                player.character.professionalism,
-                condition,
-                k,
-            );
-
-            let age = player.age(today) as f64;
-            let ambient_minute = injury_rng.f64() * 90.0; // always drawn — fixed order
-            let p_ambient = (k.injury_rate
-                * k.injury_ambient_base
-                * (1.0 + k.injury_ambient_condition_scale * (1.0 - condition))
-                * (1.0 + k.injury_ambient_age_scale * (age - k.injury_age_anchor).max(0.0)))
-            .clamp(0.0, 1.0);
-            let pending_ambient =
-                roll_injury(injury_rng, p_ambient, k).map(|days_out| (ambient_minute, days_out));
-
-            XiPlayer {
+            build_xi_player(
+                world,
                 pid,
-                role: def.slots[slot],
-                attrs,
-                condition,
-                contact_injury_mult,
-                pending_ambient: Cell::new(pending_ambient),
-                injured_from_minute: Cell::new(None),
-                foul_count: Cell::new(0),
-                has_yellow: Cell::new(false),
-                sent_off_from_minute: Cell::new(None),
-            }
+                def.slots[slot],
+                0.0,
+                consistency_rng,
+                injury_rng,
+                today,
+                k,
+                conditions,
+            )
+        })
+        .collect()
+}
+
+/// Builds a side's bench (`MATCH_MODEL.md` §16, T12), in `lineup.bench`'s
+/// own order — the fixed-order tail of the same unconditional whole-squad
+/// draw `build_xi` starts, so every dressed player (starter or bench) gets
+/// exactly one Consistency multiplier and one ambient-injury pre-roll at
+/// kickoff, regardless of whether he ever actually enters. This is what
+/// keeps substitution evaluation itself entirely draw-free (§16's own
+/// requirement): by the time a decision point runs, there is nothing left
+/// to roll. `entered_at_minute` is filled in for real once (if) a bench
+/// player is substituted on; `0.0` here is a harmless placeholder no
+/// `fatigue_mult` call ever reads before that (a bench player never
+/// appears in `att`/`def_side` until he's swapped into a starting slot).
+/// Each bench player's role is his own `natural_role` — there is no
+/// formation slot to assign him one from.
+fn build_bench(
+    world: &World,
+    lineup: &Lineup,
+    consistency_rng: &mut Rng,
+    injury_rng: &mut Rng,
+    today: GameDate,
+    k: &Knobs,
+    conditions: &BTreeMap<PlayerId, f64>,
+) -> Vec<XiPlayer> {
+    lineup
+        .bench
+        .iter()
+        .map(|&pid| {
+            let role = world.player(pid).natural_role;
+            build_xi_player(
+                world,
+                pid,
+                role,
+                0.0,
+                consistency_rng,
+                injury_rng,
+                today,
+                k,
+                conditions,
+            )
         })
         .collect()
 }
@@ -690,7 +797,7 @@ fn take_shot(
                     k,
                 ) * fatigue_mult(
                     &shooter.attrs,
-                    minute,
+                    minute - shooter.entered_at_minute,
                     k,
                     se_att.fatigue_mult,
                     shooter.condition,
@@ -705,7 +812,7 @@ fn take_shot(
                     k,
                 ) * fatigue_mult(
                     &shooter.attrs,
-                    minute,
+                    minute - shooter.entered_at_minute,
                     k,
                     se_att.fatigue_mult,
                     shooter.condition,
@@ -845,14 +952,14 @@ fn step(
                 k,
             ) * fatigue_mult(
                 &actor.attrs,
-                minute,
+                minute - actor.entered_at_minute,
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
             ) * impairment_mult(actor, minute, k);
             let def_fatigue = fatigue_mult(
                 &defender.attrs,
-                minute,
+                minute - defender.entered_at_minute,
                 k,
                 se_def.fatigue_mult,
                 defender.condition,
@@ -973,14 +1080,14 @@ fn step(
                 k,
             ) * fatigue_mult(
                 &actor.attrs,
-                minute,
+                minute - actor.entered_at_minute,
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
             ) * impairment_mult(actor, minute, k);
             let def_fatigue = fatigue_mult(
                 &defender.attrs,
-                minute,
+                minute - defender.entered_at_minute,
                 k,
                 se_def.fatigue_mult,
                 defender.condition,
@@ -1122,7 +1229,7 @@ fn step(
                 k,
             ) * fatigue_mult(
                 &actor.attrs,
-                minute,
+                minute - actor.entered_at_minute,
                 k,
                 se_att.fatigue_mult,
                 actor.condition,
@@ -1130,7 +1237,7 @@ fn step(
             let dfe = contest::score(&defender.attrs, contest::CROSS_DEF)
                 * fatigue_mult(
                     &defender.attrs,
-                    minute,
+                    minute - defender.entered_at_minute,
                     k,
                     se_def.fatigue_mult,
                     defender.condition,
@@ -1253,16 +1360,174 @@ pub fn play_match(
         k,
         conditions,
     );
+    // MATCH_MODEL.md §16, T12: the bench is built from the same
+    // unconditional whole-squad draw `build_xi` starts (see `build_bench`'s
+    // own doc comment) — an empty `Lineup.bench` (the identity) draws
+    // nothing extra and returns an empty `Vec`.
+    let home_bench = build_bench(
+        world,
+        home_lineup,
+        consistency_rng,
+        injury_rng,
+        today,
+        k,
+        conditions,
+    );
+    let away_bench = build_bench(
+        world,
+        away_lineup,
+        consistency_rng,
+        injury_rng,
+        today,
+        k,
+        conditions,
+    );
     simulate(
-        &home,
-        &away,
+        home,
+        away,
+        home_bench,
+        away_bench,
         home_lineup.tactics,
         away_lineup.tactics,
+        &home_lineup.sub_plan,
+        &away_lineup.sub_plan,
         rng,
         injury_rng,
         foul_rng,
         k,
     )
+}
+
+/// Fixed decision-point checkpoints within the second half (`MATCH_MODEL.md`
+/// §16): half-time itself is the natural boundary between `simulate`'s two
+/// `for half` iterations, handled separately below.
+const SUB_CHECKPOINTS: [f64; 3] = [60.0, 70.0, 80.0];
+
+/// Whether a single `SubCondition` clause currently holds (`MATCH_MODEL.md`
+/// §16, T12/§2.7's vocabulary) — a pure read of already-resolved match
+/// state, never a draw. `press_mult` is this side's own current
+/// `SideEffects::fatigue_mult`, needed to read `PlayerConditionBelow`'s live
+/// fatigue exactly the way every open-play contest already computes it.
+fn condition_holds(
+    cond: &SubCondition,
+    minute: f64,
+    goals: &[u32; 2],
+    side: Side,
+    xi: &[XiPlayer],
+    k: &Knobs,
+    press_mult: f64,
+) -> bool {
+    match *cond {
+        SubCondition::MinuteAtLeast(m) => minute >= m as f64,
+        SubCondition::Score(state) => {
+            let (own, opp) = match side {
+                Side::Home => (goals[0], goals[1]),
+                Side::Away => (goals[1], goals[0]),
+            };
+            match state {
+                ScoreState::Trailing => own < opp,
+                ScoreState::Level => own == opp,
+                ScoreState::Leading => own > opp,
+            }
+        }
+        SubCondition::PlayerConditionBelow(pid, threshold) => xi
+            .iter()
+            .find(|p| p.pid == pid && on_pitch(p, minute))
+            .map(|p| {
+                let live_fatigue = fatigue_mult(
+                    &p.attrs,
+                    minute - p.entered_at_minute,
+                    k,
+                    press_mult,
+                    p.condition,
+                );
+                live_fatigue * 100.0 < threshold as f64
+            })
+            .unwrap_or(false),
+        SubCondition::PlayerInjured(pid) => xi
+            .iter()
+            .any(|p| p.pid == pid && p.injured_from_minute.get().is_some()),
+        SubCondition::ManDown => xi.iter().filter(|p| on_pitch(p, minute)).count() < XI,
+    }
+}
+
+/// Evaluates one side's substitution/tactics-change plan at a decision
+/// point (`MATCH_MODEL.md` §16, T12: half-time, 60'/70'/80', or forced
+/// immediately on an injury/red card) — rules run in list order, each
+/// firing if every one of its `conditions` currently holds. RNG-free by
+/// construction (§16's own requirement, and the reason `build_xi`/
+/// `build_bench` pre-roll every dressed player's Consistency/ambient-injury
+/// state at kickoff): every condition and action here reads or mutates
+/// already-resolved match state, never draws. A `Substitute` whose
+/// `player_out` is no longer on the pitch (already subbed or sent off), or
+/// whose `player_in` is no longer on the bench (already brought on), is a
+/// silent no-op — the same "narrative branch doesn't apply" shape the rest
+/// of the engine already uses for a stale condition, not a violation of
+/// "the plan is honoured deterministically" (the plan *is* still followed;
+/// there is simply nothing left for that particular rule to do).
+#[allow(clippy::too_many_arguments)]
+fn evaluate_decision_point(
+    minute: f64,
+    goals: &[u32; 2],
+    side: Side,
+    xi: &mut [XiPlayer],
+    bench: &mut Vec<XiPlayer>,
+    tactics: &mut Tactics,
+    plan: &[SubRule],
+    subs_used: &mut u8,
+    k: &Knobs,
+    press_mult: f64,
+    departed_minutes: &mut Vec<(PlayerId, u8)>,
+    stream: &mut Vec<MatchEvent>,
+) {
+    for rule in plan {
+        let holds = rule
+            .conditions
+            .iter()
+            .all(|c| condition_holds(c, minute, goals, side, xi, k, press_mult));
+        if !holds {
+            continue;
+        }
+        match rule.action {
+            SubAction::Substitute {
+                player_out,
+                player_in,
+            } => {
+                if *subs_used as usize >= MAX_SUBSTITUTIONS {
+                    continue;
+                }
+                let Some(slot) = xi
+                    .iter()
+                    .position(|p| p.pid == player_out && on_pitch(p, minute))
+                else {
+                    continue;
+                };
+                let Some(bench_idx) = bench.iter().position(|p| p.pid == player_in) else {
+                    continue;
+                };
+                let outgoing_minutes = (minute - xi[slot].entered_at_minute)
+                    .round()
+                    .clamp(0.0, 90.0) as u8;
+                departed_minutes.push((player_out, outgoing_minutes));
+                let mut incoming = bench.remove(bench_idx);
+                incoming.entered_at_minute = minute;
+                xi[slot] = incoming;
+                *subs_used += 1;
+                stream.push(MatchEvent {
+                    minute: minute as u8,
+                    side,
+                    zone: Zone::Mid,
+                    kind: MatchEventKind::Substitution { player_out },
+                    actor: player_in,
+                    opponent: None,
+                });
+            }
+            SubAction::SetMentality(m) => tactics.mentality = m,
+            SubAction::SetTempo(t) => tactics.tempo = t,
+            SubAction::SetWidth(w) => tactics.width = w,
+            SubAction::SetPressing(p) => tactics.pressing = p,
+        }
+    }
 }
 
 /// The possession loop over two already-built XIs, independent of
@@ -1271,30 +1536,51 @@ pub fn play_match(
 /// inputs straight through the real Rust resolution loop. Takes `k`
 /// explicitly (rather than defaulting internally) so that harness can pin
 /// the notebook's own fitted snapshot independent of whatever
-/// `Knobs::default()` currently is in production.
+/// `Knobs::default()` currently is in production. Owns `home`/`away`/the
+/// bench `Vec`s (`MATCH_MODEL.md` §16, T12) rather than borrowing them,
+/// since a substitution replaces a slot's `XiPlayer` outright — `step`/
+/// `take_shot`/`sample_by_presence`/`team_means` still only ever see a
+/// borrowed `&[XiPlayer]` for the duration of one segment between decision
+/// points, so none of their own signatures changed for this.
 ///
-/// Tactics resolution (`TACTICS_MODEL.md` §3) happens once here, the same
-/// "resolve once per match" shape `team_means` already established — and
-/// consumes no RNG, which is what makes the §4 neutral-tactics invariant
-/// hold by construction.
+/// Tactics resolution (`TACTICS_MODEL.md` §3) happens once here initially,
+/// the same "resolve once per match" shape `team_means` already
+/// established — recomputed only when a decision point's tactics-change
+/// action actually fires (§16's tactic-change seam), which the identity
+/// setting (`sub_plan` empty on both sides) never does, so this stays
+/// consuming no RNG and the §4 neutral-tactics invariant still holds by
+/// construction.
 #[allow(clippy::too_many_arguments)]
 fn simulate(
-    home: &[XiPlayer],
-    away: &[XiPlayer],
+    mut home: Vec<XiPlayer>,
+    mut away: Vec<XiPlayer>,
+    mut home_bench: Vec<XiPlayer>,
+    mut away_bench: Vec<XiPlayer>,
     home_tactics: Tactics,
     away_tactics: Tactics,
+    home_plan: &[SubRule],
+    away_plan: &[SubRule],
     rng: &mut Rng,
     injury_rng: &mut Rng,
     foul_rng: &mut Rng,
     k: &Knobs,
 ) -> MatchOutcome {
-    let tm = [team_means(home, 0.0, k), team_means(away, 0.0, k)];
-    let se = resolve_tactics(home_tactics, away_tactics);
+    let mut tm = [team_means(&home, 0.0, k), team_means(&away, 0.0, k)];
+    let mut home_tactics = home_tactics;
+    let mut away_tactics = away_tactics;
+    let mut se = resolve_tactics(home_tactics, away_tactics);
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
     let mut injuries = Vec::new();
     let mut cards = Vec::new();
+    let mut home_subs_used = 0u8;
+    let mut away_subs_used = 0u8;
+    // Minutes for anyone ever substituted *off* — their `XiPlayer` is fully
+    // replaced in `home`/`away` at that point (a fresh struct occupies the
+    // slot from then on), so the final per-slot scan below can no longer
+    // see them; this is where their resolved minutes survive instead.
+    let mut departed_minutes: Vec<(PlayerId, u8)> = Vec::new();
 
     for half in 0..2u8 {
         let start = 45.0 * half as f64;
@@ -1303,11 +1589,14 @@ fn simulate(
         let mut zone = Zone::Mid;
         let mut minute = start;
         while minute < end {
+            let prev_minute = minute;
+            let injuries_before = injuries.len();
+            let cards_before = cards.len();
             let (next_poss, next_zone) = step(
                 poss,
                 zone,
-                home,
-                away,
+                &home,
+                &away,
                 &tm,
                 &se,
                 minute,
@@ -1326,27 +1615,120 @@ fn simulate(
             // MATCH_MODEL.md §14, T10: fire any ambient injury whose
             // pre-rolled onset the clock has now reached — no RNG here, the
             // draw already happened at kickoff in `build_xi`.
-            fire_due_ambient_injuries(home, minute, &mut injuries);
-            fire_due_ambient_injuries(away, minute, &mut injuries);
+            fire_due_ambient_injuries(&home, minute, &mut injuries);
+            fire_due_ambient_injuries(&away, minute, &mut injuries);
+
+            // MATCH_MODEL.md §16, T12: forced evaluation on a new injury or
+            // card this tick, attributed to whichever side it actually
+            // belongs to (never both, unless a genuinely simultaneous
+            // in-tick pair happens to touch both squads).
+            let home_forced = injuries[injuries_before..]
+                .iter()
+                .any(|i| home.iter().any(|p| p.pid == i.player))
+                || cards[cards_before..]
+                    .iter()
+                    .any(|c| home.iter().any(|p| p.pid == c.player));
+            let away_forced = injuries[injuries_before..]
+                .iter()
+                .any(|i| away.iter().any(|p| p.pid == i.player))
+                || cards[cards_before..]
+                    .iter()
+                    .any(|c| away.iter().any(|p| p.pid == c.player));
+            let crossed_checkpoint = SUB_CHECKPOINTS
+                .iter()
+                .any(|&cp| prev_minute < cp && minute >= cp);
+
+            if home_forced || crossed_checkpoint {
+                evaluate_decision_point(
+                    minute,
+                    &goals,
+                    Side::Home,
+                    &mut home,
+                    &mut home_bench,
+                    &mut home_tactics,
+                    home_plan,
+                    &mut home_subs_used,
+                    k,
+                    se[side_index(Side::Home)].fatigue_mult,
+                    &mut departed_minutes,
+                    &mut stream,
+                );
+            }
+            if away_forced || crossed_checkpoint {
+                evaluate_decision_point(
+                    minute,
+                    &goals,
+                    Side::Away,
+                    &mut away,
+                    &mut away_bench,
+                    &mut away_tactics,
+                    away_plan,
+                    &mut away_subs_used,
+                    k,
+                    se[side_index(Side::Away)].fatigue_mult,
+                    &mut departed_minutes,
+                    &mut stream,
+                );
+            }
+            if home_forced || away_forced || crossed_checkpoint {
+                tm = [team_means(&home, minute, k), team_means(&away, minute, k)];
+                se = resolve_tactics(home_tactics, away_tactics);
+            }
+        }
+        if half == 0 {
+            // Half-time: a fixed decision point regardless of anything
+            // forced during the first half.
+            evaluate_decision_point(
+                45.0,
+                &goals,
+                Side::Home,
+                &mut home,
+                &mut home_bench,
+                &mut home_tactics,
+                home_plan,
+                &mut home_subs_used,
+                k,
+                se[side_index(Side::Home)].fatigue_mult,
+                &mut departed_minutes,
+                &mut stream,
+            );
+            evaluate_decision_point(
+                45.0,
+                &goals,
+                Side::Away,
+                &mut away,
+                &mut away_bench,
+                &mut away_tactics,
+                away_plan,
+                &mut away_subs_used,
+                k,
+                se[side_index(Side::Away)].fatigue_mult,
+                &mut departed_minutes,
+                &mut stream,
+            );
+            tm = [team_means(&home, 45.0, k), team_means(&away, 45.0, k)];
+            se = resolve_tactics(home_tactics, away_tactics);
         }
     }
 
-    // MATCH_MODEL.md §15, T11: a sent-off player's minutes stop at his
-    // dismissal rather than running to 90 — the one case T4's "every starter
-    // plays the full 90" placeholder can now retire on its own, ahead of
-    // T12's substitutions. No RNG: `sent_off_from_minute` was already
-    // resolved above.
-    let minutes = home
+    // MATCH_MODEL.md §15/§16, T11/T12: a sent-off player's minutes stop at
+    // his dismissal; a substitute's start at his entry (`entered_at_minute`,
+    // `0.0` for every starter, the identity). Anyone substituted *off* no
+    // longer occupies a slot here at all — `departed_minutes` carries their
+    // resolved minutes instead. No RNG: every input was already resolved
+    // above.
+    let mut minutes: Vec<(PlayerId, u8)> = home
         .iter()
-        .chain(away)
+        .chain(&away)
         .map(|p| {
             let mins = match p.sent_off_from_minute.get() {
-                Some(off) => off.round().clamp(0.0, 90.0) as u8,
-                None => 90,
+                Some(off) => (off - p.entered_at_minute).round().clamp(0.0, 90.0) as u8,
+                None => (90.0 - p.entered_at_minute).round().clamp(0.0, 90.0) as u8,
             };
             (p.pid, mins)
         })
         .collect();
+    minutes.extend(departed_minutes);
 
     MatchOutcome {
         home_goals: goals[0].min(u8::MAX as u32) as u8,
@@ -1659,10 +2041,14 @@ mod tests {
         let mut injury_rng = Rng::seed_from(4);
         let mut foul_rng = Rng::seed_from(5);
         let outcome = simulate(
-            &home,
-            &away,
+            home,
+            away,
+            Vec::new(),
+            Vec::new(),
             Tactics::neutral(),
             Tactics::neutral(),
+            &[],
+            &[],
             &mut rng,
             &mut injury_rng,
             &mut foul_rng,
@@ -1718,10 +2104,14 @@ mod tests {
         let mut injury_rng = Rng::seed_from(7);
         let mut foul_rng = Rng::seed_from(8);
         let outcome = simulate(
-            &home,
-            &away,
+            home,
+            away,
+            Vec::new(),
+            Vec::new(),
             Tactics::neutral(),
             Tactics::neutral(),
+            &[],
+            &[],
             &mut rng,
             &mut injury_rng,
             &mut foul_rng,
@@ -1810,6 +2200,7 @@ mod notebook_parity {
                 pid: PlayerId(slot as u32),
                 role,
                 attrs: notebook_gen_player(rng, role, club_q),
+                entered_at_minute: 0.0,
                 condition: 1.0,
                 contact_injury_mult: 1.0,
                 pending_ambient: Cell::new(None),
@@ -1880,10 +2271,14 @@ mod notebook_parity {
                     PARITY_NS | crate::match_engine::FOUL_NS | (fixture.id.0 as u64 + 1),
                 );
                 let outcome = simulate(
-                    home,
-                    away,
+                    home.clone(),
+                    away.clone(),
+                    Vec::new(),
+                    Vec::new(),
                     Tactics::neutral(),
                     Tactics::neutral(),
+                    &[],
+                    &[],
                     &mut match_rng,
                     &mut injury_rng,
                     &mut foul_rng,
