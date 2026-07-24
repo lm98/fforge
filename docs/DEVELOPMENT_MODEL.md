@@ -175,7 +175,7 @@ compact (§5): the trajectory is nearly determined at birth, so little needs rec
 | Input | Phase 3? | How it enters |
 |---|:-:|---|
 | **Age** | ✅ core | the envelope `env_c(y)` and the plasticity window `plast(y)` — the spine of the model |
-| **Playing time** | ✅ | a `minutes` growth multiplier from the share of available minutes the player got that month (0 → stunted; regular starter → full). Starts as an appeared/benched/absent coarse multiplier; deepens to true minutes once the match loop tracks them |
+| **Playing time** | ✅ | a `minutes` growth multiplier from the share of available minutes the player got that month (0 → stunted; regular starter → full). Regular/rotation/absent bands read on minutes share, with a `minutes_absent_share` floor (`MATCH_MODEL.md` §12, batch handoff T4/§2.8) — inert (every starter still a flat 90) until T10/T11/T12 make partial minutes possible |
 | **Coaching quality** | ✅ (thin) | a single **per-club coaching coefficient** multiplying growth — the academy-quality lever. Worldgen sets it (default ~1.0); club/facility depth is later |
 | **Training focus** | ❌ defer | player-directed per-attribute allocation is a decision-layer / management-UI feature (Phase 4/6). Phase 3 grows attributes toward their role-weighted targets *without* a per-attribute focus knob |
 | **Noise** | ✅ | `E`, `φ`, monthly jitter, integer quantization (§2.3, §5) |
@@ -193,10 +193,11 @@ match's participants in the event schema, or re-derive past lineups at tick time
 Re-deriving is not replay-safe: a past matchday's effective lineup depends on transient
 `pending_lineup` state that is not reconstructable at tick time, and it would duplicate the selection
 logic. Recording the XIs (while `Event` was being extended for `DevelopmentTick` anyway) makes
-appearances first-class and drift-proof. `GameState` folds them into a per-tick window
-(`appearances_since_tick` / `club_matches_since_tick`, reset each tick); the coarse
-appeared/benched/absent multiplier reads that window. This is exactly the record-outcomes rule
-(`event.rs`), the same one `MatchPlayed`'s score already follows.
+appearances first-class and drift-proof. `GameState` folds `MatchPlayed.minutes` into a per-tick
+window (`appearances_since_tick` — minutes-valued since T4, despite the name — /
+`club_matches_since_tick`, reset each tick); the minutes-share regular/rotation/absent
+multiplier reads that window. This is exactly the record-outcomes rule (`event.rs`), the same
+one `MatchPlayed`'s score already follows.
 
 **Character attributes feeding development now:** **Determination** and **Professionalism**, via `E`
 (§2.3) — precisely the two `ATTRIBUTE_SCHEMA.md` §2 flags as "development-rate drivers the game needs

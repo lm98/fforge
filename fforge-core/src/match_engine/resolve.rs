@@ -8,9 +8,10 @@ use super::MatchOutcome;
 use super::contest::{self, blend, contest_p, fatigue_mult};
 use super::knobs::Knobs;
 use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
+use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
 use crate::rng::Rng;
-use fforge_domain::{Attribute, Attributes, Lineup, PlayerId, Role, World};
+use fforge_domain::{Attribute, Attributes, Lineup, PlayerId, Role, Tactics, World};
 
 struct XiPlayer {
     /// The domain identity of this eleven's player, carried so the emitted
@@ -179,9 +180,17 @@ enum Action {
 
 /// A weighted choice per zone, biased by the on-ball actor's attributes
 /// (dribblers take on more, crossers cross more, finishers shoot from range
-/// more) — where a future direct/patient tactic re-weights, no structural
-/// change (`MATCH_MODEL.md` §3).
-fn select_action(zone: Zone, actor: &XiPlayer, rng: &mut Rng, k: &Knobs) -> Action {
+/// more), and by the actor's side's own Tempo/Width tactics
+/// (`TACTICS_MODEL.md` §3: `w_longshot`/`w_takeon`/`w_cross` multipliers —
+/// identity `1.0` at neutral, so this is bit-identical to the pre-2e engine
+/// when `se` is `SideEffects::identity()`).
+fn select_action(
+    zone: Zone,
+    actor: &XiPlayer,
+    rng: &mut Rng,
+    k: &Knobs,
+    se: &SideEffects,
+) -> Action {
     match zone {
         Zone::Def => Action::Pass,
         Zone::Mid => weighted_choice(
@@ -189,7 +198,9 @@ fn select_action(zone: Zone, actor: &XiPlayer, rng: &mut Rng, k: &Knobs) -> Acti
                 (Action::Pass, k.w_pass_mid),
                 (
                     Action::TakeOn,
-                    k.w_takeon_mid * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
+                    k.w_takeon_mid
+                        * se.w_takeon_mult
+                        * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
                 ),
             ],
             rng,
@@ -199,11 +210,15 @@ fn select_action(zone: Zone, actor: &XiPlayer, rng: &mut Rng, k: &Knobs) -> Acti
                 (Action::Pass, k.w_pass_attc),
                 (
                     Action::TakeOn,
-                    k.w_takeon_attc * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
+                    k.w_takeon_attc
+                        * se.w_takeon_mult
+                        * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
                 ),
                 (
                     Action::LongShot,
-                    k.w_longshot_attc * (actor.attrs.get(Attribute::Finishing) as f64 / 50.0),
+                    k.w_longshot_attc
+                        * se.w_longshot_mult
+                        * (actor.attrs.get(Attribute::Finishing) as f64 / 50.0),
                 ),
             ],
             rng,
@@ -212,11 +227,15 @@ fn select_action(zone: Zone, actor: &XiPlayer, rng: &mut Rng, k: &Knobs) -> Acti
             &[
                 (
                     Action::Cross,
-                    k.w_cross_attw * (actor.attrs.get(Attribute::Crossing) as f64 / 50.0),
+                    k.w_cross_attw
+                        * se.w_cross_mult
+                        * (actor.attrs.get(Attribute::Crossing) as f64 / 50.0),
                 ),
                 (
                     Action::TakeOn,
-                    k.w_takeon_attw * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
+                    k.w_takeon_attw
+                        * se.w_takeon_mult
+                        * (actor.attrs.get(Attribute::Dribbling) as f64 / 50.0),
                 ),
                 (Action::Pass, k.w_pass_attw),
             ],
@@ -251,6 +270,7 @@ fn take_shot(
     att: &[XiPlayer],
     def_side: &[XiPlayer],
     tm_att: &TeamMeans,
+    se_att: &SideEffects,
     minute: f64,
     rng: &mut Rng,
     k: &Knobs,
@@ -283,7 +303,7 @@ fn take_shot(
                     contest::score(&shooter.attrs, contest::HEADER_ATK),
                     tm_att.header_atk,
                     k,
-                ) * fatigue_mult(&shooter.attrs, minute, k),
+                ) * fatigue_mult(&shooter.attrs, minute, k, se_att.fatigue_mult),
                 contest::score(&defender.attrs, contest::AERIAL_DEF),
                 contest::score(&gk.attrs, contest::GK_AERIAL),
             ),
@@ -292,7 +312,7 @@ fn take_shot(
                     contest::score(&shooter.attrs, contest::FINISH_ATK),
                     tm_att.finish_atk,
                     k,
-                ) * fatigue_mult(&shooter.attrs, minute, k),
+                ) * fatigue_mult(&shooter.attrs, minute, k, se_att.fatigue_mult),
                 contest::score(&defender.attrs, contest::BLOCK_DEF),
                 contest::score(&gk.attrs, contest::GK_SHOT),
             ),
@@ -380,6 +400,7 @@ fn step(
     home: &[XiPlayer],
     away: &[XiPlayer],
     tm: &[TeamMeans; 2],
+    se: &[SideEffects; 2],
     minute: f64,
     rng: &mut Rng,
     k: &Knobs,
@@ -391,12 +412,20 @@ fn step(
         Side::Away => (away, home),
     };
     let tm_att = &tm[side_index(poss)];
+    let se_att = &se[side_index(poss)];
+    let se_def = &se[side_index(other_side(poss))];
     let home_attacking = poss == Side::Home;
     let minute_u8 = minute as u8;
 
     let actor = &att[sample_by_presence(att, zone, zone::attacking_presence, rng)];
     let defender = &def_side[sample_by_presence(def_side, zone, zone::defending_presence, rng)];
-    let action = select_action(zone, actor, rng, k);
+    let action = select_action(zone, actor, rng, k, se_att);
+
+    // Pressing/Mentality's bias term (`TACTICS_MODEL.md` §3): the attacker's
+    // own posture, plus the defender's own defensive posture negated — a
+    // positive `def_bias_by_zone` entry means *their* defence is better in
+    // this (possessor's) zone, which subtracts from the attacker's success.
+    let tactics_bias = se_att.atk_bias - se_def.def_bias_by_zone[zone.index()];
 
     match action {
         Action::Pass => {
@@ -404,10 +433,11 @@ fn step(
                 contest::score(&actor.attrs, contest::PASS_ATK),
                 tm_att.pass_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k);
+            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
             let dfe = contest::score(&defender.attrs, contest::PASS_DEF)
-                * fatigue_mult(&defender.attrs, minute, k);
-            let success = rng.f64() < contest_p(atk, dfe, k.b_pass, k, home_attacking);
+                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+            let bias = k.b_pass + se_att.b_pass_delta + tactics_bias;
+            let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
                 minute: minute_u8,
                 side: poss,
@@ -424,17 +454,20 @@ fn step(
             match zone {
                 Zone::Def => (
                     poss,
-                    if rng.f64() < k.p_def_advance {
+                    if rng.f64() < (k.p_def_advance * se_att.advance_mult).clamp(0.0, 1.0) {
                         Zone::Mid
                     } else {
                         Zone::Def
                     },
                 ),
                 Zone::Mid => {
-                    if rng.f64() < k.p_mid_advance {
+                    let p_mid_advance =
+                        (k.p_mid_advance * se_att.advance_mult * se_def.opp_mid_advance_mult)
+                            .clamp(0.0, 1.0);
+                    if rng.f64() < p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < tm_att.p_wide {
+                            if rng.f64() < (tm_att.p_wide * se_att.p_wide_mult).clamp(0.0, 1.0) {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -445,7 +478,10 @@ fn step(
                     }
                 }
                 Zone::AttC => {
-                    if rng.f64() < k.p_attc_penetrate {
+                    let p_penetrate =
+                        (k.p_attc_penetrate * se_att.penetrate_mult * se_def.opp_penetrate_mult)
+                            .clamp(0.0, 1.0);
+                    if rng.f64() < p_penetrate {
                         take_shot(
                             poss,
                             ShotKind::Finish,
@@ -454,6 +490,7 @@ fn step(
                             att,
                             def_side,
                             tm_att,
+                            se_att,
                             minute,
                             rng,
                             k,
@@ -482,10 +519,11 @@ fn step(
                 contest::score(&actor.attrs, contest::TAKEON_ATK),
                 tm_att.takeon_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k);
+            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
             let dfe = contest::score(&defender.attrs, contest::TAKEON_DEF)
-                * fatigue_mult(&defender.attrs, minute, k);
-            let success = rng.f64() < contest_p(atk, dfe, k.b_takeon, k, home_attacking);
+                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+            let bias = k.b_takeon + tactics_bias;
+            let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
                 minute: minute_u8,
                 side: poss,
@@ -501,10 +539,13 @@ fn step(
             }
             match zone {
                 Zone::Mid => {
-                    if rng.f64() < k.p_mid_advance {
+                    let p_mid_advance =
+                        (k.p_mid_advance * se_att.advance_mult * se_def.opp_mid_advance_mult)
+                            .clamp(0.0, 1.0);
+                    if rng.f64() < p_mid_advance {
                         (
                             poss,
-                            if rng.f64() < tm_att.p_wide {
+                            if rng.f64() < (tm_att.p_wide * se_att.p_wide_mult).clamp(0.0, 1.0) {
                                 Zone::AttW
                             } else {
                                 Zone::AttC
@@ -515,7 +556,9 @@ fn step(
                     }
                 }
                 Zone::AttC => {
-                    if rng.f64() < k.p_attc_dribble_box {
+                    let p_dribble_box =
+                        (k.p_attc_dribble_box * se_att.penetrate_mult).clamp(0.0, 1.0);
+                    if rng.f64() < p_dribble_box {
                         take_shot(
                             poss,
                             ShotKind::Finish,
@@ -524,6 +567,7 @@ fn step(
                             att,
                             def_side,
                             tm_att,
+                            se_att,
                             minute,
                             rng,
                             k,
@@ -545,6 +589,7 @@ fn step(
                             att,
                             def_side,
                             tm_att,
+                            se_att,
                             minute,
                             rng,
                             k,
@@ -568,10 +613,11 @@ fn step(
                 contest::score(&actor.attrs, contest::CROSS_ATK),
                 tm_att.cross_atk,
                 k,
-            ) * fatigue_mult(&actor.attrs, minute, k);
+            ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
             let dfe = contest::score(&defender.attrs, contest::CROSS_DEF)
-                * fatigue_mult(&defender.attrs, minute, k);
-            let success = rng.f64() < contest_p(atk, dfe, k.b_cross_delivery, k, home_attacking);
+                * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
+            let bias = k.b_cross_delivery + tactics_bias;
+            let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
                 minute: minute_u8,
                 side: poss,
@@ -591,6 +637,7 @@ fn step(
                     att,
                     def_side,
                     tm_att,
+                    se_att,
                     minute,
                     rng,
                     k,
@@ -621,6 +668,7 @@ fn step(
             att,
             def_side,
             tm_att,
+            se_att,
             minute,
             rng,
             k,
@@ -639,7 +687,14 @@ pub fn play_match(
 ) -> MatchOutcome {
     let home = build_xi(world, home_lineup);
     let away = build_xi(world, away_lineup);
-    simulate(&home, &away, rng, &Knobs::default())
+    simulate(
+        &home,
+        &away,
+        home_lineup.tactics,
+        away_lineup.tactics,
+        rng,
+        &Knobs::default(),
+    )
 }
 
 /// The possession loop over two already-built XIs, independent of
@@ -649,8 +704,21 @@ pub fn play_match(
 /// explicitly (rather than defaulting internally) so that harness can pin
 /// the notebook's own fitted snapshot independent of whatever
 /// `Knobs::default()` currently is in production.
-fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> MatchOutcome {
+///
+/// Tactics resolution (`TACTICS_MODEL.md` §3) happens once here, the same
+/// "resolve once per match" shape `team_means` already established — and
+/// consumes no RNG, which is what makes the §4 neutral-tactics invariant
+/// hold by construction.
+fn simulate(
+    home: &[XiPlayer],
+    away: &[XiPlayer],
+    home_tactics: Tactics,
+    away_tactics: Tactics,
+    rng: &mut Rng,
+    k: &Knobs,
+) -> MatchOutcome {
     let tm = [team_means(home, k), team_means(away, k)];
+    let se = resolve_tactics(home_tactics, away_tactics);
 
     let mut goals = [0u32, 0u32];
     let mut stream = Vec::new();
@@ -668,6 +736,7 @@ fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> M
                 home,
                 away,
                 &tm,
+                &se,
                 minute,
                 rng,
                 k,
@@ -691,6 +760,10 @@ fn simulate(home: &[XiPlayer], away: &[XiPlayer], rng: &mut Rng, k: &Knobs) -> M
         injuries: Vec::new(),
         cards: Vec::new(),
         ratings: Vec::new(),
+        // T4 (§12, §16, R7): every starter plays the full 90 until T10/T11/T12
+        // make partial minutes possible. No RNG, so this is as draw-free as
+        // the empty vectors above.
+        minutes: home.iter().chain(away).map(|p| (p.pid, 90u8)).collect(),
     }
 }
 
@@ -876,7 +949,14 @@ mod notebook_parity {
                 let home = &teams[fixture.home.0 as usize];
                 let away = &teams[fixture.away.0 as usize];
                 let mut match_rng = derive_stream(league, PARITY_NS | (fixture.id.0 as u64 + 1));
-                let outcome = simulate(home, away, &mut match_rng, &notebook_knobs);
+                let outcome = simulate(
+                    home,
+                    away,
+                    Tactics::neutral(),
+                    Tactics::neutral(),
+                    &mut match_rng,
+                    &notebook_knobs,
+                );
                 total_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
                 total_matches += 1;
             }

@@ -5,15 +5,17 @@
 //! (`match_model_prototype.ipynb`, referenced from `MATCH_MODEL.md` §1) —
 //! nothing here is a re-guess of the shape-finding, only its translation.
 //!
-//! Deferred to Phase 2e (behind this same call site, no structural change):
-//! tactics as transition-matrix modifiers, cards & fouls, injuries, set
-//! pieces, substitutions, and the character/hidden attributes.
+//! Phase 2e has begun: tactics (`TACTICS_MODEL.md`) lands as transition-
+//! matrix modifiers behind this same call site (no structural change).
+//! Still deferred: cards & fouls, injuries, set pieces, substitutions, and
+//! the character/hidden attributes.
 
 mod calibrate;
 mod contest;
 mod knobs;
 mod resolve;
 mod stream;
+mod tactics;
 mod zone;
 
 pub use calibrate::{
@@ -26,7 +28,7 @@ pub use zone::Zone;
 
 use crate::rng::Rng;
 use fforge_domain::{
-    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
+    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +97,12 @@ pub struct MatchOutcome {
     pub cards: Vec<CardOutcome>,
     /// Per-player rating in tenths (`68` = 6.8), `MATCH_MODEL.md` §18.
     pub ratings: Vec<(PlayerId, u8)>,
+    /// True minutes played, substitutions included (`MATCH_MODEL.md` §12,
+    /// §16, R7). Every starting-XI player at 90 until T10/T11/T12 (injuries,
+    /// red cards, substitutions) make partial minutes possible — there is no
+    /// bench yet, so "0 otherwise" is simply absence from this vec, not a
+    /// recorded entry.
+    pub minutes: Vec<(PlayerId, u8)>,
 }
 
 /// Simulate one match: `(lineups, world, rng)` in, score + trace out. A pure
@@ -125,6 +133,10 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
         let candidate = Lineup {
             formation: fi as u8,
             players: chosen,
+            // T7 adds ai_pick_tactics; until then every AI side plays
+            // neutral (T6's scope fence — nothing selects non-neutral
+            // tactics here).
+            tactics: Tactics::neutral(),
         };
         match &best {
             Some((score, _)) if *score >= mean => {}
@@ -156,15 +168,7 @@ mod tests {
     use fforge_domain::World;
 
     fn tiny_world_and_lineups() -> (World, Lineup, Lineup) {
-        let cfg = crate::worldgen::WorldGenConfig {
-            num_clubs: 2,
-            ..Default::default()
-        };
-        let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
-        let clubs = world.competition.clubs.clone();
-        let home = ai_pick_lineup(&world, clubs[0]);
-        let away = ai_pick_lineup(&world, clubs[1]);
-        (world, home, away)
+        super::golden::phase_2a_world_and_lineups()
     }
 
     #[test]
@@ -308,5 +312,122 @@ mod tests {
             home_wins > away_wins,
             "home_bias must be visible: {home_wins} home wins vs {away_wins} away wins"
         );
+    }
+}
+
+/// The pinned Phase-2a golden baseline (batch-3 handoff T5): the reference
+/// every 2e identity invariant in the batch asserts against (§2.1). Captured
+/// as the last commit before any engine change, per the handoff's explicit
+/// ordering — it cannot be captured retroactively, since T3 (`natural_fitness`)
+/// already changed which world every worldgen seed produces.
+///
+/// `TACTICS_MODEL.md` §4's `neutral_tactics_reproduce_phase_2a_bit_for_bit`
+/// (T6) replays these seeds through the tactics-aware engine at
+/// `neutral()`/`neutral()` and asserts equality against this table; any
+/// accidental extra draw or perturbed probability at the neutral setting
+/// fails it loudly, as a wiring bug rather than a value to update.
+#[cfg(test)]
+pub(crate) mod golden {
+    use super::*;
+    use crate::rng::derive_stream;
+
+    /// The exact fixture `TACTICS_MODEL.md` §4 names: a 2-club world at
+    /// worldgen seed 7, `ai_pick_lineup` XIs for each club.
+    pub(crate) fn phase_2a_world_and_lineups() -> (World, Lineup, Lineup) {
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (world, _schedule, _start) = crate::worldgen::generate(7, &cfg);
+        let clubs = world.competition.clubs.clone();
+        let home = ai_pick_lineup(&world, clubs[0]);
+        let away = ai_pick_lineup(&world, clubs[1]);
+        (world, home, away)
+    }
+
+    /// `(home_goals, away_goals, stream.len())` for seeds `0..32`, RNG stream
+    /// tag `1` (`derive_stream(seed, 1)`), against
+    /// `phase_2a_world_and_lineups()`. The two clubs in this seed-7, 2-club
+    /// world sit at the extreme ends of worldgen's quality spread (§3's
+    /// evenly-spread-then-shuffled anchors collapse to the min/max with only
+    /// two clubs), so every match is a lopsided home win — irrelevant here,
+    /// since this table exists to catch *any* movement, not to be a
+    /// representative match.
+    pub(crate) const PHASE_2A_SEEDS_0_32: [(u8, u8, usize); 32] = [
+        (16, 0, 869),
+        (20, 0, 873),
+        (14, 0, 866),
+        (13, 0, 867),
+        (14, 0, 857),
+        (18, 0, 882),
+        (18, 0, 870),
+        (9, 0, 862),
+        (10, 0, 861),
+        (20, 0, 877),
+        (20, 0, 865),
+        (12, 0, 879),
+        (18, 0, 865),
+        (10, 0, 862),
+        (14, 0, 852),
+        (15, 0, 870),
+        (11, 0, 859),
+        (14, 0, 869),
+        (18, 0, 860),
+        (14, 0, 869),
+        (12, 0, 860),
+        (12, 0, 872),
+        (8, 0, 860),
+        (16, 0, 871),
+        (20, 0, 858),
+        (12, 0, 877),
+        (20, 0, 864),
+        (15, 0, 868),
+        (12, 0, 857),
+        (12, 0, 856),
+        (23, 0, 881),
+        (19, 0, 863),
+    ];
+
+    #[test]
+    fn phase_2a_golden_baseline_reproduces() {
+        // Tracks whatever `ai_pick_lineup` currently produces — neutral
+        // tactics today (T6's scope fence), but T7 will make it call
+        // `ai_pick_tactics`, at which point this reading is expected to move
+        // and gets re-pinned deliberately (§8's rollout discipline), same as
+        // `favourite_discrimination_regression_guard`.
+        let (world, home, away) = phase_2a_world_and_lineups();
+        for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &home, &away, &mut rng);
+            assert_eq!(
+                (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
+                (hg, ag, len),
+                "seed {seed}: Phase-2a golden baseline moved — a wiring bug \
+                 in whatever landed since T5, never a re-tune"
+            );
+        }
+    }
+
+    #[test]
+    fn neutral_tactics_reproduce_phase_2a_bit_for_bit() {
+        // TACTICS_MODEL.md §4's named golden test: explicitly force
+        // `Tactics::neutral()` on both sides — independent of whatever
+        // `ai_pick_lineup` defaults to (today neutral, but T7 changes that)
+        // — so this stays a permanent bit-identity guardrail rather than
+        // tracking the AI policy's evolving choice.
+        let (world, mut home, mut away) = phase_2a_world_and_lineups();
+        home.tactics = fforge_domain::Tactics::neutral();
+        away.tactics = fforge_domain::Tactics::neutral();
+        for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
+            let mut rng = derive_stream(seed, 1);
+            let outcome = play_match(&world, &home, &away, &mut rng);
+            assert_eq!(
+                (outcome.home_goals, outcome.away_goals, outcome.stream.len()),
+                (hg, ag, len),
+                "seed {seed}: neutral tactics must reproduce the Phase-2a \
+                 baseline bit-for-bit (§4) — movement here is a wiring bug, \
+                 never a re-tune"
+            );
+        }
     }
 }

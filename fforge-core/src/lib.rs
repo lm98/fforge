@@ -249,6 +249,7 @@ mod tests {
                 let lineup = Lineup {
                     formation: 0,
                     players: arr,
+                    tactics: fforge_domain::Tactics::neutral(),
                 };
                 session
                     .execute(Command::SubmitLineup(lineup), &mut [])

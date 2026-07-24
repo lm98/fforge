@@ -453,6 +453,7 @@ mod tests {
             injuries: Vec::new(),
             cards: Vec::new(),
             ratings: Vec::new(),
+            minutes: Vec::new(),
         };
 
         let mut telemetry = StreamTelemetry::default();
@@ -514,6 +515,7 @@ mod tests {
                 injuries: Vec::new(),
                 cards: Vec::new(),
                 ratings: Vec::new(),
+                minutes: Vec::new(),
             }
         }
 

@@ -101,12 +101,18 @@ pub fn sigmoid(x: f64) -> f64 {
 
 /// Effective-attribute multiplier from fatigue (`MATCH_MODEL.md` §4): grows
 /// with match minute, larger for low-Stamina, high-Work-Rate players — they
-/// fade late.
-pub fn fatigue_mult(attrs: &Attributes, minute: f64, k: &Knobs) -> f64 {
+/// fade late. `press_mult` is `TACTICS_MODEL.md` §3's Pressing exertion cost
+/// (identity `1.0`): a side's own tactical press intensity, applied to every
+/// player on that side regardless of whether they're the actor or the
+/// defender in a given contest.
+pub fn fatigue_mult(attrs: &Attributes, minute: f64, k: &Knobs, press_mult: f64) -> f64 {
     let stamina = attrs.get(Attribute::Stamina) as f64 / 100.0;
     let work_rate = attrs.get(Attribute::WorkRate) as f64 / 100.0;
-    let drop =
-        k.fatigue_base * (minute / 90.0) * (1.0 - stamina) * (1.0 + k.fatigue_wr * work_rate);
+    let drop = k.fatigue_base
+        * press_mult
+        * (minute / 90.0)
+        * (1.0 - stamina)
+        * (1.0 + k.fatigue_wr * work_rate);
     (1.0 - drop).clamp(0.7, 1.0)
 }
 
@@ -135,17 +141,23 @@ mod tests {
         let iron_man = Attributes::new([100; NUM_ATTRIBUTES]); // max stamina, max work rate
         let liability = Attributes::new([0; NUM_ATTRIBUTES]); // min stamina, min work rate (no drop either)
         // Full stamina: no drop regardless of minute.
-        assert_eq!(fatigue_mult(&iron_man, 90.0, &k), 1.0);
+        assert_eq!(fatigue_mult(&iron_man, 90.0, &k, 1.0), 1.0);
         // Zero stamina but also zero work rate at kickoff: no drop yet (minute=0).
-        assert_eq!(fatigue_mult(&liability, 0.0, &k), 1.0);
+        assert_eq!(fatigue_mult(&liability, 0.0, &k, 1.0), 1.0);
         // Multiplier never leaves the sanctioned band.
         for minute in [0.0, 30.0, 45.0, 90.0] {
-            let m = fatigue_mult(&liability, minute, &k);
+            let m = fatigue_mult(&liability, minute, &k, 1.0);
             assert!(
                 (0.7..=1.0).contains(&m),
                 "fatigue multiplier {m} out of band at minute {minute}"
             );
         }
+        // A higher press_mult (Pressing High, TACTICS_MODEL.md §3) deepens
+        // the drop at the same minute; the identity value must reproduce the
+        // 3-arg-equivalent baseline exactly (bit-for-bit, §4).
+        let boosted = fatigue_mult(&liability, 45.0, &k, 1.30);
+        let baseline = fatigue_mult(&liability, 45.0, &k, 1.0);
+        assert!(boosted <= baseline);
     }
 
     #[test]

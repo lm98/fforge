@@ -124,12 +124,15 @@ pub struct GameState {
     /// The lineup most recently used, reused as the default next time.
     pub last_lineup: Option<Lineup>,
     pub champion: Option<ClubId>,
-    /// Appearances accrued since the last `DevelopmentTick` — the playing-time
-    /// window feeding development (`DEVELOPMENT_MODEL.md` §3). Folded from each
-    /// `MatchPlayed`'s XIs; reset on each tick.
+    /// Minutes accrued since the last `DevelopmentTick` — the playing-time
+    /// window feeding development (`DEVELOPMENT_MODEL.md` §3). Folded from
+    /// each `MatchPlayed.minutes` (T4/§2.8: minutes-share bands replaced the
+    /// coarse appeared/benched/absent read on appearance counts); reset on
+    /// each tick.
     pub appearances_since_tick: BTreeMap<PlayerId, u32>,
     /// Matches each club played in the current development window — the
-    /// denominator for the appeared/benched/absent share. Reset on each tick.
+    /// denominator's basis for the minutes-share bands (available minutes =
+    /// 90 × this count). Reset on each tick.
     pub club_matches_since_tick: BTreeMap<ClubId, u32>,
     /// The date each currently contract-less player last lost his contract
     /// (`Event::PlayerReleased`) — `pool::retirements`' "gone a full season
@@ -228,14 +231,18 @@ impl GameState {
                 injuries,
                 cards,
                 ratings,
+                minutes,
             } => {
                 self.results.insert(*fixture, (*home_goals, *away_goals));
-                // Accrue the playing-time window (DEVELOPMENT_MODEL.md §3).
+                // Accrue the playing-time window in minutes (T4/§2.8).
+                for &(pid, mins) in minutes {
+                    *self.appearances_since_tick.entry(pid).or_default() += mins as u32;
+                }
+                // The rolling condition window (MATCH_MODEL.md §13) is
+                // presence-based, not minutes-based, so it still reads the
+                // XIs directly — `self.date` is still this matchday's date
+                // here; the `MatchdayAdvanced` that moves it folds after.
                 for &pid in home_xi.iter().chain(away_xi) {
-                    *self.appearances_since_tick.entry(pid).or_default() += 1;
-                    // And the rolling condition window (MATCH_MODEL.md §13) —
-                    // `self.date` is still this matchday's date here; the
-                    // `MatchdayAdvanced` that moves it folds after.
                     self.recent_appearances.entry(pid).or_default().push(self.date);
                 }
                 if let Some(fx) = self.schedule.iter().find(|f| f.id == *fixture) {
@@ -866,6 +873,11 @@ mod match_boundary_tests {
         let injured = home_xi[0];
         let booked = home_xi[1];
         let sent_off = away_xi[2];
+        let minutes = home_xi
+            .iter()
+            .chain(&away_xi)
+            .map(|&pid| (pid, 90u8))
+            .collect();
         let event = Event::MatchPlayed {
             fixture: fx.id,
             matchday: fx.matchday,
@@ -890,6 +902,7 @@ mod match_boundary_tests {
                 },
             ],
             ratings: vec![(injured, 61), (booked, 74)],
+            minutes,
         };
         (event, injured, booked, sent_off)
     }
@@ -927,8 +940,9 @@ mod match_boundary_tests {
         assert_eq!(replayed.recent_ratings.get(&injured), Some(&vec![61]));
         assert_eq!(replayed.recent_ratings.get(&booked), Some(&vec![74]));
 
-        // Appearances accrued exactly once in *both* windows.
-        assert_eq!(replayed.appearances_since_tick.get(&injured), Some(&1));
+        // Appearances accrued exactly once in *both* windows (minutes-valued
+        // since T4: a full ninety for this hand-built XI entry).
+        assert_eq!(replayed.appearances_since_tick.get(&injured), Some(&90));
         assert_eq!(
             replayed.recent_appearances.get(&injured),
             Some(&vec![match_date])
@@ -957,6 +971,7 @@ mod match_boundary_tests {
                 injuries: Vec::new(),
                 cards: Vec::new(),
                 ratings: vec![(pid, 60 + i)],
+                minutes: Vec::new(),
             });
         }
         let replayed = GameState::replay(&log);
@@ -991,6 +1006,7 @@ mod match_boundary_tests {
             }],
             cards: Vec::new(),
             ratings: Vec::new(),
+            minutes: Vec::new(),
         });
         let replayed = GameState::replay(&log);
         assert_eq!(
@@ -1034,15 +1050,19 @@ mod match_boundary_tests {
                 injuries: Vec::new(),
                 cards: Vec::new(),
                 ratings: Vec::new(),
+                minutes: Vec::new(),
             }
         );
 
-        // Forward: with the vectors empty (as the engine emits today), the
-        // serialized form *is* the old shape — no new keys — so a new save
-        // stays readable by the pre-extension schema too.
+        // Forward: with the vectors empty (as a pre-T4 log would have them),
+        // the serialized form *is* the old shape — no new keys — so a new
+        // save stays readable by the pre-extension schema too.
         let out = serde_json::to_string(&event).unwrap();
         assert!(
-            !out.contains("injuries") && !out.contains("cards") && !out.contains("ratings"),
+            !out.contains("injuries")
+                && !out.contains("cards")
+                && !out.contains("ratings")
+                && !out.contains("minutes"),
             "empty 2e fields must serialize to the pre-2e byte shape, got {out}"
         );
     }
@@ -1126,6 +1146,44 @@ mod match_boundary_tests {
             "the rolling window must survive the monthly reset that empties appearances_since_tick"
         );
         // And the whole run replays to identical state, new windows included.
+        assert_eq!(state, GameState::replay(&log));
+    }
+
+    #[test]
+    fn the_monthly_minutes_window_stays_bounded_across_a_full_season() {
+        // T4/§2.8: `appearances_since_tick` now accumulates minutes, not
+        // appearance counts. It must never exceed the club's available
+        // minutes in the window (90 × matches so far this window) — with
+        // every starter at a flat 90 until T10/T11/T12, that is also an
+        // exact equality check, not just an upper bound.
+        let (mut log, mut state) = base_log(7);
+
+        while !state.season_over() {
+            let events = step(&state, Command::AdvanceMatchday).expect("advance");
+            for e in &events {
+                state.apply(e);
+            }
+            log.extend(events);
+
+            for (&pid, &mins) in &state.appearances_since_tick {
+                let club = state.world.club_of(pid).expect("rostered player");
+                let matches = state
+                    .club_matches_since_tick
+                    .get(&club)
+                    .copied()
+                    .unwrap_or(0);
+                assert!(
+                    mins <= matches * 90,
+                    "player {pid}: {mins} minutes exceeds {matches} matches' worth (90 each)"
+                );
+                assert!(
+                    mins % 90 == 0,
+                    "player {pid}: {mins} minutes isn't a multiple of 90 \
+                     — every starter plays a flat 90 until T10/T11/T12"
+                );
+            }
+        }
+
         assert_eq!(state, GameState::replay(&log));
     }
 }

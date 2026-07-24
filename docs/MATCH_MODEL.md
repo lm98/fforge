@@ -339,10 +339,14 @@ per-draw-count.
 
 ## 12. The extended `MatchOutcome` / `MatchPlayed` boundary (R6)
 
-*Status: landed (sequencing step 1) for the three consumers below that have models drafted
-— `injuries`, `cards`, `ratings` — with the engine emitting all of them empty; `minutes`
-and `cond_drain` join the struct when §16/§13 land, behind the same serde-default seam.
-Calibration readings verified unchanged.*
+*Status: landed (sequencing step 1) for `injuries`, `cards`, `ratings` — the engine emits all
+three empty; `cond_drain` joins the struct when §13 lands, behind the same serde-default seam.
+`minutes` landed early instead, ahead of §16 (batch handoff T4/§2.8): every starter records a
+flat 90, every non-starter is absent from the vec — degenerate and inert (all four pooled
+calibration guards read unchanged) until T10/T11/T12 make partial minutes possible, but the
+playing-time input to development (below) needs the field and its minutes-share redefinition
+in place well before substitutions do, so landing it separately costs nothing and de-risks the
+larger §16 change. Calibration readings verified unchanged.*
 
 2e produces per-player consequences that outlive the match. The §7 rule (record outcomes; the
 fold consumes without re-running engines) dictates the boundary: **every consequence that

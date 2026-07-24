@@ -188,13 +188,28 @@ pub(crate) fn gen_player(
     };
     let potential = (best_ca as i32 + headroom).clamp(best_ca as i32, 97) as u8;
 
+    let determination = rng.range_i32(20, 95) as u8;
+    let professionalism = rng.range_i32(20, 95) as u8;
+    let consistency = rng.range_i32(25, 90) as u8;
+    let injury_proneness = rng.range_i32(5, 85) as u8;
+    // Natural Fitness (MATCH_MODEL.md §13, R8): a modest positive correlation
+    // with Professionalism keeps existing character makeup plausible, per
+    // §13's resolution — deliberately *not* correlated with Injury-proneness,
+    // since the emergent condition→injury channel (§2.4) already produces
+    // that correlation in observed outcomes; imposing it here would
+    // double-count it and narrow the population.
+    let natural_fitness = rng
+        .normal(57.5 + 0.3 * (professionalism as f64 - 57.5), 18.0)
+        .clamp(20.0, 95.0) as u8;
+    let leadership = rng.range_i32(10, 90) as u8;
     let character = Character {
         potential,
-        determination: rng.range_i32(20, 95) as u8,
-        professionalism: rng.range_i32(20, 95) as u8,
-        consistency: rng.range_i32(25, 90) as u8,
-        injury_proneness: rng.range_i32(5, 85) as u8,
-        leadership: rng.range_i32(10, 90) as u8,
+        determination,
+        professionalism,
+        consistency,
+        injury_proneness,
+        natural_fitness,
+        leadership,
     };
 
     // Once-resolved development trajectory (DEVELOPMENT_MODEL.md §2.3), derived
@@ -433,6 +448,69 @@ mod tests {
         assert!(
             r > 0.5,
             "reputation should correlate with squad quality; Pearson r = {r:.3}"
+        );
+    }
+
+    #[test]
+    fn natural_fitness_is_generated_within_its_worldgen_range() {
+        // MATCH_MODEL.md §13/R8: the Phase 2e split. Sanity-check the draw
+        // actually lands inside the range gen_player clamps it to, across a
+        // full generated league.
+        let (world, _s, _d) = generate(17, &WorldGenConfig::default());
+        for player in world.players.values() {
+            let nf = player.character.natural_fitness;
+            assert!(
+                (20..=95).contains(&nf),
+                "player {} natural_fitness {} out of range",
+                player.id,
+                nf
+            );
+        }
+    }
+
+    #[test]
+    fn natural_fitness_correlates_with_professionalism_not_injury_proneness() {
+        // §2.4/§13: a modest positive correlation with Professionalism is
+        // deliberate (plausible character makeup); Injury-proneness must stay
+        // uncorrelated at generation — the emergent condition-driven channel
+        // supplies that correlation in observed outcomes, so imposing it here
+        // would double-count it. Pooled over two leagues (~960 players) to
+        // keep the read stable.
+        fn pearson(points: &[(f64, f64)]) -> f64 {
+            let n = points.len() as f64;
+            let mean_x = points.iter().map(|p| p.0).sum::<f64>() / n;
+            let mean_y = points.iter().map(|p| p.1).sum::<f64>() / n;
+            let mut cov = 0.0;
+            let mut var_x = 0.0;
+            let mut var_y = 0.0;
+            for (x, y) in points {
+                cov += (x - mean_x) * (y - mean_y);
+                var_x += (x - mean_x).powi(2);
+                var_y += (y - mean_y).powi(2);
+            }
+            cov / (var_x.sqrt() * var_y.sqrt())
+        }
+
+        let mut vs_prof = Vec::new();
+        let mut vs_injury = Vec::new();
+        for seed in [17, 23] {
+            let (world, _s, _d) = generate(seed, &WorldGenConfig::default());
+            for player in world.players.values() {
+                let c = &player.character;
+                vs_prof.push((c.professionalism as f64, c.natural_fitness as f64));
+                vs_injury.push((c.injury_proneness as f64, c.natural_fitness as f64));
+            }
+        }
+
+        let r_prof = pearson(&vs_prof);
+        let r_injury = pearson(&vs_injury);
+        assert!(
+            r_prof > 0.15,
+            "natural_fitness should correlate positively with professionalism; r = {r_prof:.3}"
+        );
+        assert!(
+            r_injury.abs() < 0.15,
+            "natural_fitness should not correlate with injury_proneness at generation; r = {r_injury:.3}"
         );
     }
 
