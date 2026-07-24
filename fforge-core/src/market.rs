@@ -555,6 +555,7 @@ mod tests {
                 professionalism: 50,
                 consistency: 50,
                 injury_proneness: 50,
+                natural_fitness: 50,
                 leadership: 50,
             },
             development: DevProfile {
