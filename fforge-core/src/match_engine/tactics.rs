@@ -38,8 +38,14 @@ pub(super) struct SideEffects {
     pub(super) w_takeon_mult: f64,
     /// Width → `w_cross_attw`.
     pub(super) w_cross_mult: f64,
-    /// Tempo → added into the pass-specific bias (`Knobs::b_pass`).
-    pub(super) b_pass_delta: f64,
+    /// Tempo → added into the pass-specific bias (`Knobs::b_pass`), keyed by
+    /// the passing side's own zone (T7 addendum §5/Fix B — structural, not a
+    /// magnitude change: a deep giveaway costs more under §3's turnover
+    /// mirroring than a giveaway in midfield, since a turnover won in this
+    /// side's own `Def` mirrors to the opponent's `AttC`, while one won in
+    /// `Mid` mirrors back to `Mid`. A uniform delta priced every zone's risk
+    /// the same and let Direct discount its risk into the cheap zone).
+    pub(super) b_pass_delta_by_zone: [f64; NUM_ZONES],
     /// Mentality → added into `contest_p`'s bias when this side attacks.
     pub(super) atk_bias: f64,
     /// Pressing/Mentality → added, negated, into the *opponent's* attacking
@@ -73,7 +79,7 @@ impl SideEffects {
             w_longshot_mult: 1.0,
             w_takeon_mult: 1.0,
             w_cross_mult: 1.0,
-            b_pass_delta: 0.0,
+            b_pass_delta_by_zone: [0.0; NUM_ZONES],
             atk_bias: 0.0,
             def_bias_by_zone: [0.0; NUM_ZONES],
             fatigue_mult: 1.0,
@@ -115,12 +121,22 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
             e.advance_mult *= 1.30;
             e.w_longshot_mult *= 1.5;
             e.w_takeon_mult *= 1.1;
-            e.b_pass_delta -= 0.15;
+            // T7 addendum §5/Fix B: zone-profiled, not uniform. Direct's
+            // ×1.30 advance_mult already means it spends less time in its
+            // own (expensive-to-lose) Def zone and more in the cheap Mid
+            // zone — a uniform −0.15 didn't price that shift, so Direct was
+            // taking a discount rather than the risk §5 credited it with.
+            e.b_pass_delta_by_zone[Zone::Def.index()] -= 0.25;
+            e.b_pass_delta_by_zone[Zone::Mid.index()] -= 0.10;
+            e.b_pass_delta_by_zone[Zone::AttC.index()] -= 0.10;
+            e.b_pass_delta_by_zone[Zone::AttW.index()] -= 0.10;
         }
         Tempo::Patient => {
             e.advance_mult *= 0.80;
             e.w_longshot_mult *= 0.6;
-            e.b_pass_delta += 0.10;
+            for b in &mut e.b_pass_delta_by_zone {
+                *b += 0.10;
+            }
         }
         Tempo::Balanced => {}
     }
@@ -139,8 +155,20 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
 
     match t.pressing {
         Pressing::High => {
-            e.def_bias_by_zone[Zone::Def.index()] += 0.15;
-            e.def_bias_by_zone[Zone::Mid.index()] += 0.15;
+            // T7 addendum §4/Fix A: concentrated where a turnover mirrors
+            // expensively (§3's own mirroring table) instead of flat across
+            // Def/Mid — a turnover won in the opponent's Def mirrors to this
+            // side's AttC (expensive for them); won in Mid, it mirrors to
+            // Mid (nearly free). A flat +0.15 spent equal pressure on
+            // contests of unequal value, and — measured against the fixed
+            // fatigue cost below, plus Patient's own +0.10 b_pass_delta
+            // sitting in the same zones with the opposite sign — netted to
+            // a wash (the T7 triangle's flat 0.502 read against Patient).
+            // Closes ATTRIBUTE_SCHEMA.md-adjacent TACTICS_MODEL.md §9 item 3
+            // ("texture question... same seam, finer key") in favour of
+            // differentiating.
+            e.def_bias_by_zone[Zone::Def.index()] += 0.25;
+            e.def_bias_by_zone[Zone::Mid.index()] += 0.10;
             e.fatigue_mult *= 1.30;
             e.opp_mid_advance_mult *= 1.15;
         }
@@ -186,7 +214,7 @@ mod tests {
             assert_eq!(e.w_longshot_mult, 1.0);
             assert_eq!(e.w_takeon_mult, 1.0);
             assert_eq!(e.w_cross_mult, 1.0);
-            assert_eq!(e.b_pass_delta, 0.0);
+            assert_eq!(e.b_pass_delta_by_zone, [0.0; NUM_ZONES]);
             assert_eq!(e.atk_bias, 0.0);
             assert_eq!(e.def_bias_by_zone, [0.0; NUM_ZONES]);
             assert_eq!(e.fatigue_mult, 1.0);

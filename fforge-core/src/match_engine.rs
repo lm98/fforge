@@ -147,6 +147,31 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
     best.expect("at least one formation").1
 }
 
+/// T7 addendum §7: the AI tactics policy is gated off by default until T7's
+/// triangle finding resolves. `ai_pick_lineup_vs` (below) reads this, so
+/// every real AI-controlled match runs `Tactics::neutral()` — which by the
+/// §4 invariant reproduces the T5 golden baseline bit-for-bit — rather than
+/// against a still-open §3 effect table. T8-T13 can therefore each measure
+/// a clean single-feature delta against a stable reference in parallel; T7
+/// itself only has to resolve before T14 re-banks the harnesses. Flip this
+/// to `true` (and re-enable `favourite_discrimination_regression_guard`'s
+/// and `bin/calibrate`'s AI-tactics wiring alongside it) once the triangle
+/// closes or §6's design conversation resolves it another way.
+pub const AI_TACTICS_ENABLED: bool = false;
+
+/// An AI-controlled side's lineup *and* tactics for a real fixture
+/// (`TACTICS_MODEL.md` §7): `ai_pick_lineup`'s XI, with `ai_pick_tactics`'s
+/// choice against the named opponent applied only while
+/// `AI_TACTICS_ENABLED` is `true`. The call-site convenience every real
+/// AI-vs-AI (and AI-vs-human) match uses.
+pub fn ai_pick_lineup_vs(world: &World, club: ClubId, opponent: ClubId, is_home: bool) -> Lineup {
+    let mut lineup = ai_pick_lineup(world, club);
+    if AI_TACTICS_ENABLED {
+        lineup.tactics = ai_pick_tactics(world, club, opponent, is_home, &AiTacticKnobs::default());
+    }
+    lineup
+}
+
 /// Thresholds for `ai_pick_tactics` (`TACTICS_MODEL.md` §7) — plausibility-
 /// picked from real `worldgen` + `ai_pick_lineup` percentiles (roughly the
 /// 25th/75th split on each signal, so about half of matches land Balanced

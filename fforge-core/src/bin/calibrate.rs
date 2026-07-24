@@ -15,8 +15,7 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    AiTacticKnobs, ELO_SCALE_S, StreamTelemetry, ai_pick_lineup, ai_pick_tactics, lineup_strength,
-    play_match, run_head_to_head,
+    ELO_SCALE_S, StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, run_head_to_head,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
@@ -27,8 +26,11 @@ struct CalibReport {
     pooled: StreamTelemetry,
 }
 
+/// Whatever `ai_pick_lineup_vs` actually does — AI tactics gated off by
+/// default pending T7's triangle finding (batch-3 T7 addendum §7), so this
+/// currently pools the same neutral engine T6 landed with; it picks up AI
+/// tactics automatically once `match_engine::AI_TACTICS_ENABLED` flips.
 fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
-    let ai_knobs = AiTacticKnobs::default();
     let mut pooled = StreamTelemetry::default();
     let mut per_seed_gpm = Vec::with_capacity(seeds.len());
 
@@ -38,12 +40,8 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
         let mut seed_matches = 0u32;
 
         for fixture in &schedule {
-            let mut home_lineup = ai_pick_lineup(&world, fixture.home);
-            home_lineup.tactics =
-                ai_pick_tactics(&world, fixture.home, fixture.away, true, &ai_knobs);
-            let mut away_lineup = ai_pick_lineup(&world, fixture.away);
-            away_lineup.tactics =
-                ai_pick_tactics(&world, fixture.away, fixture.home, false, &ai_knobs);
+            let home_lineup = ai_pick_lineup_vs(&world, fixture.home, fixture.away, true);
+            let away_lineup = ai_pick_lineup_vs(&world, fixture.away, fixture.home, false);
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
@@ -230,19 +228,37 @@ fn run_head_to_head_report(num_seeds: u64) {
     println!("=== Head-to-head (equal-strength squad, {num_seeds} seeds x2) ===");
     println!("TACTICS_MODEL.md §5's triangle — jointly cyclic if the model is sound:");
     let high_vs_patient = run_head_to_head(&world, club, high, patient, &seeds);
-    println!("  High press vs Patient    : {:.3} / {:.3}", high_vs_patient, 1.0 - high_vs_patient);
+    println!(
+        "  High press vs Patient    : {:.3} / {:.3}",
+        high_vs_patient,
+        1.0 - high_vs_patient
+    );
     let direct_vs_high = run_head_to_head(&world, club, direct, high, &seeds);
-    println!("  Direct vs High press     : {:.3} / {:.3}", direct_vs_high, 1.0 - direct_vs_high);
+    println!(
+        "  Direct vs High press     : {:.3} / {:.3}",
+        direct_vs_high,
+        1.0 - direct_vs_high
+    );
     let patient_vs_direct = run_head_to_head(&world, club, patient, direct, &seeds);
-    println!("  Patient vs Direct        : {:.3} / {:.3}", patient_vs_direct, 1.0 - patient_vs_direct);
+    println!(
+        "  Patient vs Direct        : {:.3} / {:.3}",
+        patient_vs_direct,
+        1.0 - patient_vs_direct
+    );
     println!();
     println!("Mentality (off-triangle risk axis):");
-    let attacking_vs_neutral = run_head_to_head(&world, club, attacking, Tactics::neutral(), &seeds);
-    println!("  Attacking vs Balanced    : {:.3} / {:.3}", attacking_vs_neutral, 1.0 - attacking_vs_neutral);
+    let attacking_vs_neutral =
+        run_head_to_head(&world, club, attacking, Tactics::neutral(), &seeds);
+    println!(
+        "  Attacking vs Balanced    : {:.3} / {:.3}",
+        attacking_vs_neutral,
+        1.0 - attacking_vs_neutral
+    );
     let counter_vs_attacking = run_head_to_head(&world, club, defensive_direct, attacking, &seeds);
     println!(
         "  Defensive+Direct vs Attacking : {:.3} / {:.3}",
-        counter_vs_attacking, 1.0 - counter_vs_attacking
+        counter_vs_attacking,
+        1.0 - counter_vs_attacking
     );
 }
 

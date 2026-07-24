@@ -185,8 +185,7 @@ impl StreamTelemetry {
                     if success {
                         self.pass_completions_by_zone[idx][event.zone.index()] += 1;
                     } else {
-                        self.turnovers_won_by_zone[1 - idx]
-                            [mirrored_zone(event.zone).index()] += 1;
+                        self.turnovers_won_by_zone[1 - idx][mirrored_zone(event.zone).index()] += 1;
                     }
                 }
                 MatchEventKind::TakeOn { success: false } => {
@@ -497,6 +496,81 @@ mod tests {
     use crate::match_engine::stream::MatchEvent;
     use fforge_domain::PlayerId;
 
+    /// T7 addendum §2/T7a: the press-wiring verification. Confirms
+    /// `Pressing::High`'s `def_bias_by_zone` lands where `TACTICS_MODEL.md`
+    /// §3 says it must — the *possessing* side's zone, i.e. the opponent's
+    /// build-up (`Def`/`Mid`) — and nowhere else, ruling out the frame-flip
+    /// failure mode the addendum names before any effect-table change was
+    /// considered. Bands are set from the actually-measured effect (Def
+    /// −1.7pts, Mid −2.0pts at 3000-seed pooling — smaller than §8's
+    /// original ±3-6pt prediction, but astronomically significant given
+    /// ~200k pooled attempts per zone) rather than re-asserting §8's
+    /// pre-registered band, which this run showed was optimistic.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    #[test]
+    fn pressing_high_lands_in_the_opponents_def_and_mid_and_nowhere_else() {
+        use crate::worldgen::{WorldGenConfig, generate};
+        use fforge_domain::{Pressing, Tactics};
+
+        let cfg = WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let (world, _s, _d) = generate(7, &cfg);
+        let club = world.competition.clubs[0];
+
+        let mut press = ai_pick_lineup(&world, club);
+        press.tactics = Tactics {
+            pressing: Pressing::High,
+            ..Tactics::neutral()
+        };
+        let neutral_opp = ai_pick_lineup(&world, club);
+        let neutral_baseline = ai_pick_lineup(&world, club);
+
+        let mut tel_pressed = StreamTelemetry::default();
+        let mut tel_baseline = StreamTelemetry::default();
+        for seed in 0..3000u64 {
+            let mut rng = derive_stream(seed, HEAD_TO_HEAD_NS);
+            // Home presses, Away neutral: Away is the "opponent" whose
+            // build-up we're checking.
+            let out = play_match(&world, &press, &neutral_opp, &mut rng);
+            tel_pressed.record(&out, 0, 0, 50.0, 50.0);
+
+            let mut rng2 = derive_stream(seed, HEAD_TO_HEAD_NS | 1);
+            let out2 = play_match(&world, &neutral_baseline, &neutral_opp, &mut rng2);
+            tel_baseline.record(&out2, 0, 0, 50.0, 50.0);
+        }
+
+        for zone in [Zone::Def, Zone::Mid] {
+            let pressed = tel_pressed.pass_completion_in_zone(Side::Away, zone);
+            let baseline = tel_baseline.pass_completion_in_zone(Side::Away, zone);
+            assert!(
+                pressed < baseline - 0.005,
+                "{zone:?}: pressing must measurably depress the opponent's \
+                 build-up completion; pressed={pressed:.4} baseline={baseline:.4}"
+            );
+        }
+        for zone in [Zone::AttC, Zone::AttW] {
+            let pressed = tel_pressed.pass_completion_in_zone(Side::Away, zone);
+            let baseline = tel_baseline.pass_completion_in_zone(Side::Away, zone);
+            assert!(
+                (pressed - baseline).abs() < 0.02,
+                "{zone:?}: pressing High targets only Def/Mid — a completion \
+                 shift here is the frame-flip failure mode; pressed={pressed:.4} \
+                 baseline={baseline:.4}"
+            );
+        }
+
+        let turnovers_pressed = tel_pressed.turnovers_won_in_zone(Side::Home, Zone::AttC);
+        let turnovers_baseline = tel_baseline.turnovers_won_in_zone(Side::Home, Zone::AttC);
+        assert!(
+            turnovers_pressed > turnovers_baseline,
+            "pressing must win more turnovers restarting in the presser's \
+             own AttC (turnover mirroring off the opponent's Def); \
+             pressed={turnovers_pressed} baseline={turnovers_baseline}"
+        );
+    }
+
     fn shot(side: Side, kind: ShotKind, source: ShotSource, outcome: ShotOutcome) -> MatchEvent {
         MatchEvent {
             minute: 10,
@@ -768,29 +842,27 @@ mod tests {
     #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn favourite_discrimination_regression_guard() {
-        // TACTICS_MODEL.md §8's rollout discipline: this guard re-runs with
-        // AI tactics on (T7), not the neutral engine T6 landed with.
-        let ai_knobs = crate::match_engine::AiTacticKnobs::default();
+        // TACTICS_MODEL.md §8's rollout discipline: re-runs with whatever
+        // ai_pick_lineup_vs actually does — AI tactics gated off by default
+        // pending T7's triangle finding (batch-3 T7 addendum §7), so this
+        // currently guards the same neutral engine T6 landed with; it picks
+        // up AI tactics automatically once `AI_TACTICS_ENABLED` flips.
         let cfg = crate::WorldGenConfig::default();
         let mut telemetry = StreamTelemetry::default();
         for seed in 0..8u64 {
             let (world, schedule, _start) = crate::worldgen::generate(seed, &cfg);
             for fixture in &schedule {
-                let mut home_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.home);
-                home_lineup.tactics = crate::match_engine::ai_pick_tactics(
+                let home_lineup = crate::match_engine::ai_pick_lineup_vs(
                     &world,
                     fixture.home,
                     fixture.away,
                     true,
-                    &ai_knobs,
                 );
-                let mut away_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.away);
-                away_lineup.tactics = crate::match_engine::ai_pick_tactics(
+                let away_lineup = crate::match_engine::ai_pick_lineup_vs(
                     &world,
                     fixture.away,
                     fixture.home,
                     false,
-                    &ai_knobs,
                 );
                 let home_strength = crate::match_engine::lineup_strength(&world, &home_lineup);
                 let away_strength = crate::match_engine::lineup_strength(&world, &away_lineup);

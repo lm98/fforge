@@ -443,7 +443,7 @@ fn step(
             ) * fatigue_mult(&actor.attrs, minute, k, se_att.fatigue_mult);
             let dfe = contest::score(&defender.attrs, contest::PASS_DEF)
                 * fatigue_mult(&defender.attrs, minute, k, se_def.fatigue_mult);
-            let bias = k.b_pass + se_att.b_pass_delta + tactics_bias;
+            let bias = k.b_pass + se_att.b_pass_delta_by_zone[zone.index()] + tactics_bias;
             let success = rng.f64() < contest_p(atk, dfe, bias, k, home_attacking);
             stream.push(MatchEvent {
                 minute: minute_u8,

@@ -10,7 +10,7 @@ use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
-use crate::match_engine::{AiTacticKnobs, ai_pick_lineup, ai_pick_tactics, play_match};
+use crate::match_engine::{ai_pick_lineup, ai_pick_lineup_vs, play_match};
 use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
@@ -179,17 +179,6 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
     }
     debug_assert_eq!(lineup.players.len(), XI);
     Ok(())
-}
-
-/// An AI-controlled side's lineup *and* tactics for a real fixture
-/// (`TACTICS_MODEL.md` §7, T7): `ai_pick_lineup`'s XI with `ai_pick_tactics`'s
-/// choice against the named opponent. The call-site convenience every real
-/// AI-vs-AI (and AI-vs-human) match uses so pooled aggregates reflect
-/// non-neutral tactics, not the neutral-everywhere engine T6 landed with.
-fn ai_pick_lineup_vs(world: &World, club: ClubId, opponent: ClubId, is_home: bool) -> Lineup {
-    let mut lineup = ai_pick_lineup(world, club);
-    lineup.tactics = ai_pick_tactics(world, club, opponent, is_home, &AiTacticKnobs::default());
-    lineup
 }
 
 /// The human club's effective lineup for this matchday: the submitted one,

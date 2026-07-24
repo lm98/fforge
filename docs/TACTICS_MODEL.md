@@ -26,10 +26,14 @@ are drafted as sections in the note that already pins that model.
   `simulate` (three deformation types only, no new contest types, no new zones, no presence-
   table edits). Both §4 tests land green: `resolve_tactics_neutral_is_the_exact_identity` and
   `neutral_tactics_reproduce_phase_2a_bit_for_bit` (replaying the T5 golden table). All four
-  pooled calibration guards re-ran unchanged. `ai_pick_lineup` still emits `Tactics::neutral()`
-  everywhere — §7's AI policy (T7) is not yet wired in, so no non-neutral tactics reach a real
-  match outside tests. §5's interaction model and §8's calibration predictions remain to be
-  verified by T7's triangle harness. No scratchpad was used to settle the structure — the
+  pooled calibration guards re-ran unchanged.
+- **§7 landed but gated off (batch-3 T7 + T7 addendum).** `ai_pick_tactics`/`AiTacticKnobs`
+  and the head-to-head harness (`calibrate::run_head_to_head`, `bin/calibrate --head-to-head`)
+  are implemented and tested, but `match_engine::AI_TACTICS_ENABLED = false` keeps every
+  AI-controlled match at `Tactics::neutral()` — §5's triangle did not close (see §5's finding),
+  and rather than block the rest of Phase 2e on that open design question, the policy stays
+  gated so T8–T13 measure clean deltas against T5's baseline. §9 item 6 is the open decision;
+  flip the flag once it resolves. No scratchpad was used to settle the structure — the
   `TRANSFER_MODEL.md` §1.1 reasoning applies verbatim: the *structure* is settled by this note
   (every tactic effect is a deformation of an already-calibrated probability), and the numbers
   are knob-table entries the existing Rust harness (`match_engine::calibrate`, `bin/calibrate`)
@@ -173,16 +177,24 @@ and are therefore omitted.
 |---|---|
 | Mentality `Attacking` | `advance_mult` ×1.20, `penetrate_mult` ×1.20, `atk_bias` +0.08, `def_bias_by_zone` −0.08 in every zone (men committed forward defend everything worse) |
 | Mentality `Defensive` | mirror: ×0.83, ×0.83, −0.08, +0.08 |
-| Tempo `Direct` | `advance_mult` ×1.30, `w_longshot` ×1.5, `w_takeon` ×1.1, `b_pass_delta` −0.15 (forward balls fail more) |
-| Tempo `Patient` | `advance_mult` ×0.80, `w_longshot` ×0.6, `b_pass_delta` +0.10 |
+| Tempo `Direct` | `advance_mult` ×1.30, `w_longshot` ×1.5, `w_takeon` ×1.1, `b_pass_delta` **own `Def` −0.25, `Mid`/`AttC`/`AttW` −0.10** (T7 addendum §5/Fix B, resolved below — was a uniform −0.15) |
+| Tempo `Patient` | `advance_mult` ×0.80, `w_longshot` ×0.6, `b_pass_delta` +0.10 uniform (unchanged) |
 | Width `Wide` | `p_wide_mult` ×1.35, `w_cross` ×1.2 |
 | Width `Narrow` | `p_wide_mult` ×0.70, `w_cross` ×0.85 |
-| Pressing `High` | `def_bias_by_zone` +0.15 in opponent `Def`/`Mid`, 0 elsewhere; own `fatigue_mult` ×1.30; **beaten-press term:** opponent's successful `Mid` advance gets ×1.15 on `p_mid_advance` (the space behind a committed press) |
+| Pressing `High` | `def_bias_by_zone` **opponent `Def` +0.25, opponent `Mid` +0.10** (T7 addendum §4/Fix A, resolved below — was +0.15 flat), 0 elsewhere; own `fatigue_mult` ×1.30; **beaten-press term:** opponent's successful `Mid` advance gets ×1.15 on `p_mid_advance` (the space behind a committed press) |
 | Pressing `Deep` | `def_bias_by_zone` −0.10 in opponent `Def`/`Mid` (sitting off), +0.10 in opponent `AttC`/`AttW`/`Box` (the compact block); opponent `p_attc_penetrate` ×0.85 (no space behind) |
 
 Where Mentality and Tempo both touch `advance_mult`, the multipliers stack (they are
 independent levers on the same probability, like `formation_p_wide` × `p_wide_mult`); all
 composed probabilities clamp to `[0, 1]` at the point of use, the `formation_p_wide` precedent.
+
+**`b_pass_delta` is zone-keyed, not scalar (T7 addendum §5/Fix B — structural, not a
+magnitude change).** `SideEffects.b_pass_delta_by_zone: [f64; NUM_ZONES]` replaces the
+single `b_pass_delta` field this section originally specified. §3's own turnover mirroring
+makes a giveaway's cost zone-dependent — lost in this side's own `Def`, the opponent
+restarts in their `AttC` (expensive); lost in `Mid`, they restart in `Mid` (nearly free) — so
+a uniform bias prices every zone's risk identically regardless of what mirroring actually
+charges for it. See §5 below for what this was diagnosing.
 
 **What tactics deliberately does not touch:** the role→zone presence tables (`MATCH_MODEL.md`
 §6). Who *is* in a zone stays a property of the fielded roles; tactics changes what they
@@ -273,6 +285,70 @@ instruction (it moves the wide-origin share, §8) and interacts mainly with the 
 formation through `formation_p_wide`, not with the opponent — by design, so at least one
 instruction has an almost-orthogonal, easily-verified signature.
 
+**T7 finding (batch-3 addendum) — the triangle did not close on first measurement, and did
+not close after two principled fixes.** B3.9's own head-to-head harness (`bin/calibrate
+--head-to-head`, `calibrate::run_head_to_head`), pooled to 6,000 matches on an equal-strength
+squad (std error ≈ 0.0065), read:
+
+| Edge | First measurement | After Fix A (press zone-profile) | After Fix B (Direct zone-profile) |
+|---|---|---|---|
+| High press vs Patient | 0.502 / 0.498 (flat) | 0.495 / 0.505 (unchanged) | 0.495 / 0.505 (unchanged) |
+| Direct vs High press | 0.513 / 0.487 (weak, right direction) | 0.513 / 0.487 (unchanged) | 0.513 / 0.487 (unchanged) |
+| Patient vs Direct | 0.485 / 0.515 (**wrong direction**) | 0.485 / 0.515 (n/a — press not in this matchup) | 0.483 / 0.517 (**still wrong direction**) |
+
+Before touching any effect magnitude, T7a verified the press's own wiring: forcing
+`Pressing::High` with everything else neutral, pooled to 6,000 matches, the opponent's pass
+completion measurably drops in their own `Def` (−1.7pts) and `Mid` (−2.0pts) and is
+unchanged in `AttC`/`AttW` (both within 1pt, no localisation violation), and turnovers won
+in the presser's own `AttC` rise (+9.9%) — smaller than this section's original ±3–6pt /
++30–60% predictions, but real, correctly localised, and enormous relative to sampling noise
+(~200k pooled pass attempts per zone). **Not a wiring bug: the per-instruction rate effects
+land exactly where §3 says they should.** T7b then checked whether the strategy space even
+supports a cycle — `Pressing::High + Tempo::Direct` combined does not dominate all three
+corners (it loses to pure `Direct`, 0.491 vs pure-combined's 0.509, and reads flat against
+`High` and `Patient`), so a cycle is structurally possible; the flat/wrong-signed reads are
+not an artifact of Pressing being orthogonal to the Tempo axis.
+
+Two zone-profiling fixes were then applied, each with a specific, falsifiable prediction, and
+each measured in isolation before the next was applied (Fix A first, alone; Fix B applied on
+top of Fix A, not in place of it):
+
+- **Fix A** (§3, above): Pressing `High`'s bias concentrated `Def +0.25, Mid +0.10` (was
+  `+0.15` flat) — diagnosed cause: a flat bias spent equal pressure on contests of unequal
+  mirroring value, and against Patient's own `+0.10` `b_pass_delta` sitting in the same zones
+  with the opposite sign, very nearly cancelled (net ≈ +0.05, roughly one point per contest at
+  p ≈ 0.5) while the press's `fatigue_mult ×1.30` cost is global and certain. Predicted to move
+  Press-vs-Patient and Direct-vs-Press both upward. **Measured: moved neither, within noise.**
+- **Fix B** (§3, above): Direct's `b_pass_delta` zone-profiled `Def −0.25, Mid/Att −0.10` (was
+  `−0.15` uniform) — diagnosed cause: Direct's `advance_mult ×1.30` means it spends less time
+  in its own (expensive-to-lose) `Def` and more in the cheap `Mid`, so a uniform delta priced a
+  risk Direct was mostly not taking; Direct was winning Patient-vs-Direct by discount, not by
+  losing a real risk the way this section's original narrative credited Patient for punishing.
+  Predicted to move Patient-vs-Direct upward (Direct's discount priced out) without touching
+  Press-vs-Patient. **Measured: moved Patient-vs-Direct by −0.002 — statistically indistinguishable
+  from no effect, and if anything further in the wrong direction.**
+
+**Conclusion: this is a design question, not a magnitude-fitting one.** Both fixes were
+individually well-motivated re-readings of the mirroring mechanics — the diagnosis (unequal
+zone value under mirroring, discounted risk) may still be correct as *rate-level* mechanics
+(T7a's localisation numbers confirm the machinery moves as designed) — but neither translated
+into a detectable *win-rate* shift even after roughly doubling the press's zone concentration
+and restructuring Direct's risk pricing entirely. That insensitivity is itself informative: a
+whole match accumulates on the order of 800+ possession steps, and the stochastic variance
+across all of them appears to swamp a handful of zone-localised probability shifts of this
+magnitude before they can surface as a net win/loss/draw signal — even where the underlying
+rate statistics (completion, turnovers, shots) move exactly as designed. Per the batch-3 T7
+addendum's own stop condition, further magnitude iteration was not attempted. The addendum's
+proposed alternative framing — **squad-conditional non-dominance** (the best tactic depends on
+the fielded squad's attributes, not a strict opponent-relative cycle) rather than a strict
+3-corner simplex — is recorded as the live open question (§9) pending a design decision; it is
+not yet adopted, and this section's cyclic-triangle claim is not yet retracted, only
+unconfirmed. `ai_pick_tactics`/`AiTacticKnobs` (§7) and the two fix commits stay landed;
+`match_engine::AI_TACTICS_ENABLED` gates the AI policy off by default (§7) so downstream 2e
+work is not blocked on this resolving, and no matchup table was introduced by either fix — the
+commitment at the top of this section still holds structurally, whichever way §9's open item
+resolves.
+
 ## 6. Determinism & the event-log seam — `Tactics` rides the `Lineup`
 
 **Decision: `Tactics` is a field of `Lineup`**, not a new command/event pair.
@@ -308,6 +384,17 @@ pub struct Lineup {
 inputs are recorded.
 
 ## 7. The AI tactics policy — and the Phase-5 seam it becomes
+
+**Status: landed but gated off by default (T7 addendum §7).** `ai_pick_tactics` and
+`AiTacticKnobs` are implemented and tested; `match_engine::AI_TACTICS_ENABLED` (currently
+`false`) gates whether `ai_pick_lineup_vs` actually applies the policy's choice or leaves
+every AI-controlled lineup at `Tactics::neutral()`. This is not a rollback — it is the
+mechanism that lets the rest of Phase 2e (T8–T13) proceed against T5's stable golden baseline
+while §5's triangle finding is unresolved, rather than each measuring its own feature's delta
+against a still-moving tactics baseline. Flip the flag once §5's open item resolves (the fixes
+land clean, or the design moves to squad-conditional non-dominance) — by §4's invariant,
+`Tactics::neutral()` is bit-identical to T5's baseline regardless, so nothing downstream that
+ran with the flag off needs to be redone; only re-measured if it cares about the movement.
 
 **v1: `ai_pick_tactics(world, club, opponent, is_home) -> Tactics`** — deterministic,
 RNG-free, the tactics sibling of `ai_pick_lineup` and described the same way: *the Phase-1-
@@ -370,21 +457,21 @@ per-zone pass completion, and turnover-won-by-zone.
 | Mentality `Attacking` | match goals (both sides') | +0.2–0.4 |
 | Mentality `Attacking` | opponent goals from deep-mirrored restarts (counter-origin, via stream zone context) | visibly up |
 | Mentality `Defensive` | match goals | −0.2–0.4 |
-| Pressing `High` | opponent pass completion in their `Def`/`Mid` | −3–6 pts |
-| Pressing `High` | turnovers won in the opponent's `Def` (→ own `AttC` restarts) | +30–60% |
-| Pressing `High` | own contest success after 75' | measurably down (the fatigue cost is real) |
+| Pressing `High` | opponent pass completion in their `Def`/`Mid` | **[re-banked, T7a]** −3–6 pts predicted; measured −1.7pt (`Def`) / −2.0pt (`Mid`) at 3000-seed pooling — real and correctly localised (`AttC`/`AttW` within 1pt) but smaller than predicted |
+| Pressing `High` | turnovers won in the opponent's `Def` (→ own `AttC` restarts) | **[re-banked, T7a]** +30–60% predicted; measured +9.9% — right direction, smaller than predicted |
+| Pressing `High` | own contest success after 75' | measurably down (the fatigue cost is real) — not yet measured directly; T7a checked build-up completion and turnovers only |
 | any single instruction | pooled league H/D/A, favourite-discrimination slope | **within the existing §8 band / guard** |
 
 And the §5 triangle, as pooled head-to-head predictions (many seeds, equal-strength squads,
 only tactics varied):
 
-| Matchup | Prediction |
-|---|---|
-| `High` press vs `Patient` | press side +2–5 pts expected-points share |
-| `Direct` vs `High` press | direct side +2–5 pts |
-| `Patient` vs `Direct` (no press) | patient side +2–5 pts |
-| the three edges jointly | **cyclic** — no setting dominates the triangle |
-| `Defensive+Direct` vs `Attacking` | counter side profits; both-`Attacking` gpm > both-`Defensive` gpm |
+| Matchup | Prediction | **[re-banked, T7 — see §5's finding]** |
+|---|---|---|
+| `High` press vs `Patient` | press side +2–5 pts expected-points share | measured flat, 0.502→0.495 across two fixes — **not confirmed** |
+| `Direct` vs `High` press | direct side +2–5 pts | measured +1.3pts (0.513), unmoved by either fix — **direction right, magnitude far under prediction** |
+| `Patient` vs `Direct` (no press) | patient side +2–5 pts | measured **Direct** winning by 1.5–1.7pts throughout — **wrong direction, not confirmed** |
+| the three edges jointly | **cyclic** — no setting dominates the triangle | **not confirmed** — Direct beats both other corners; T7b confirmed the space is not simplex-degenerate (a combined High+Direct strategy does not dominate all three corners), so the failure is in the pairwise magnitudes/mechanism, not the strategy space. Open item, §9 |
+| `Defensive+Direct` vs `Attacking` | counter side profits; both-`Attacking` gpm > both-`Defensive` gpm | measured **Attacking** winning the counter matchup (0.549 vs 0.451) — **wrong direction, not confirmed**; gpm comparison not yet measured |
 
 **Rollout discipline:** the engine + neutral-everywhere lands first (zero drift, §4);
 `ai_pick_tactics` is enabled second, at which point pooled league aggregates *will* shift
@@ -405,9 +492,13 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
    presence (men genuinely upfield, not just better odds)? Reserved with `MATCH_MODEL.md` §10
    item 1 — it is the same "derive presence from context" question, and it stays closed until
    real calibration demands it.
-3. **Per-zone press profile.** Pressing is one level applied to a fixed zone profile; whether
-   `High` should differentiate pressing the `Def` build-up vs the `Mid` progression is a
-   texture question — same seam, finer key.
+3. **Per-zone press profile.** **[resolved, T7 addendum §4/Fix A]** — differentiated:
+   `Pressing::High`'s `def_bias_by_zone` is `Def +0.25, Mid +0.10` (was `+0.15` flat), on the
+   reasoning that a turnover's mirrored cost is zone-dependent so a flat bias spent equal
+   pressure on contests of unequal value. The resolution did **not**, however, close the §5
+   triangle (item 6, below) — the differentiation is kept on its own textural merit (T7a
+   confirmed it lands correctly-localised in the opponent's `Def`/`Mid`), not because it fixed
+   the win-rate finding it was originally proposed to fix.
 4. **The reactive-plan vocabulary.** §7 fixes the pre-commitment shape; the exact condition
    set ("trailing", "after minute M", "man down") is pinned with substitutions
    (`MATCH_MODEL.md` §16) and should stay small enough for a utility baseline to search
@@ -415,3 +506,23 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
 5. **Line height as a sixth-zone tenant.** If `Box` ever becomes a dwell zone or the zone
    count grows (`MATCH_MODEL.md` §10 item 5), line height gets geometry of its own and
    re-enters as the fifth instruction (§2's reservation).
+6. **[open, T7 addendum §6] Is non-dominance cyclic, or squad-conditional?** §5's triangle did
+   not close after two targeted, individually-diagnosed zone-profiling fixes (§5's finding,
+   above) — win-rate edges stayed within noise of flat (or wrong-signed) even where the
+   underlying rate mechanics (pass completion, turnovers) moved exactly as designed and by
+   correspondingly larger magnitudes after the fixes. `DESIGN.md` §4.1 asks only for "soft"
+   rock-paper-scissors — no tactic dominating — and a strict opponent-relative 3-cycle is one
+   way to deliver that, but not the only one. The addendum's alternative: **squad-conditional
+   non-dominance**, where the best tactic depends on the fielded squad's own attributes (a
+   high-`PASS_ATK` squad doing better with `Patient` than `Direct` even though `Direct` beats
+   `Patient` on a neutral squad) rather than on the opponent's choice. This would still satisfy
+   §4.1's "no tactic dominates," would make squad composition and `ai_pick_tactics`'s own
+   attribute-driven policy meaningful in a way a pure cycle doesn't require, and would give
+   Phase 5's ablation a real decision-quality axis — but it retires this section's "intransitivity
+   emerges structurally from turnover mirroring" claim as this batch's mechanism for
+   non-dominance, one of this note's more load-bearing arguments, so it is recorded here as an
+   open design decision rather than adopted. Not yet tested empirically (the addendum's proposed
+   check: hold tactics fixed, vary squad composition across high-`PASS_ATK` / high-physical /
+   high-work-rate profiles, and look for different squads favouring different tactics with no
+   tactic best for every profile). `match_engine::AI_TACTICS_ENABLED` stays `false` (§7) until
+   this resolves one way or the other.
