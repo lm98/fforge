@@ -6,6 +6,7 @@
 
 use super::contest::{self, blend, contest_p, fatigue_mult};
 use super::knobs::Knobs;
+use super::ratings;
 use super::stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::tactics::{SideEffects, resolve_tactics};
 use super::zone::{self, Zone};
@@ -1477,7 +1478,7 @@ fn evaluate_decision_point(
     subs_used: &mut u8,
     k: &Knobs,
     press_mult: f64,
-    departed_minutes: &mut Vec<(PlayerId, u8)>,
+    departed: &mut Vec<(PlayerId, Side, Role, u8)>,
     stream: &mut Vec<MatchEvent>,
 ) {
     for rule in plan {
@@ -1508,7 +1509,7 @@ fn evaluate_decision_point(
                 let outgoing_minutes = (minute - xi[slot].entered_at_minute)
                     .round()
                     .clamp(0.0, 90.0) as u8;
-                departed_minutes.push((player_out, outgoing_minutes));
+                departed.push((player_out, side, xi[slot].role, outgoing_minutes));
                 let mut incoming = bench.remove(bench_idx);
                 incoming.entered_at_minute = minute;
                 xi[slot] = incoming;
@@ -1576,11 +1577,13 @@ fn simulate(
     let mut cards = Vec::new();
     let mut home_subs_used = 0u8;
     let mut away_subs_used = 0u8;
-    // Minutes for anyone ever substituted *off* — their `XiPlayer` is fully
-    // replaced in `home`/`away` at that point (a fresh struct occupies the
-    // slot from then on), so the final per-slot scan below can no longer
-    // see them; this is where their resolved minutes survive instead.
-    let mut departed_minutes: Vec<(PlayerId, u8)> = Vec::new();
+    // `(player, side, role, minutes)` for anyone ever substituted *off* —
+    // their `XiPlayer` is fully replaced in `home`/`away` at that point (a
+    // fresh struct occupies the slot from then on), so the final per-slot
+    // scan below can no longer see them; this is where their resolved
+    // minutes (and role, for the rating clean-sheet gate, §18) survive
+    // instead.
+    let mut departed: Vec<(PlayerId, Side, Role, u8)> = Vec::new();
 
     for half in 0..2u8 {
         let start = 45.0 * half as f64;
@@ -1650,7 +1653,7 @@ fn simulate(
                     &mut home_subs_used,
                     k,
                     se[side_index(Side::Home)].fatigue_mult,
-                    &mut departed_minutes,
+                    &mut departed,
                     &mut stream,
                 );
             }
@@ -1666,7 +1669,7 @@ fn simulate(
                     &mut away_subs_used,
                     k,
                     se[side_index(Side::Away)].fatigue_mult,
-                    &mut departed_minutes,
+                    &mut departed,
                     &mut stream,
                 );
             }
@@ -1689,7 +1692,7 @@ fn simulate(
                 &mut home_subs_used,
                 k,
                 se[side_index(Side::Home)].fatigue_mult,
-                &mut departed_minutes,
+                &mut departed,
                 &mut stream,
             );
             evaluate_decision_point(
@@ -1703,7 +1706,7 @@ fn simulate(
                 &mut away_subs_used,
                 k,
                 se[side_index(Side::Away)].fatigue_mult,
-                &mut departed_minutes,
+                &mut departed,
                 &mut stream,
             );
             tm = [team_means(&home, 45.0, k), team_means(&away, 45.0, k)];
@@ -1714,21 +1717,47 @@ fn simulate(
     // MATCH_MODEL.md §15/§16, T11/T12: a sent-off player's minutes stop at
     // his dismissal; a substitute's start at his entry (`entered_at_minute`,
     // `0.0` for every starter, the identity). Anyone substituted *off* no
-    // longer occupies a slot here at all — `departed_minutes` carries their
-    // resolved minutes instead. No RNG: every input was already resolved
-    // above.
-    let mut minutes: Vec<(PlayerId, u8)> = home
+    // longer occupies a slot here at all — `departed` carries their
+    // resolved minutes (and role, side) instead. No RNG: every input was
+    // already resolved above.
+    let mut rated_players: Vec<ratings::RatedPlayer> = home
         .iter()
-        .chain(&away)
-        .map(|p| {
+        .map(|p| (p, Side::Home))
+        .chain(away.iter().map(|p| (p, Side::Away)))
+        .map(|(p, side)| {
             let mins = match p.sent_off_from_minute.get() {
                 Some(off) => (off - p.entered_at_minute).round().clamp(0.0, 90.0) as u8,
                 None => (90.0 - p.entered_at_minute).round().clamp(0.0, 90.0) as u8,
             };
-            (p.pid, mins)
+            ratings::RatedPlayer {
+                pid: p.pid,
+                side,
+                role: p.role,
+                minutes: mins,
+            }
         })
         .collect();
-    minutes.extend(departed_minutes);
+    rated_players.extend(
+        departed
+            .iter()
+            .map(|&(pid, side, role, minutes)| ratings::RatedPlayer {
+                pid,
+                side,
+                role,
+                minutes,
+            }),
+    );
+
+    // MATCH_MODEL.md §18, T13: a pure fold over the already-resolved stream
+    // — no RNG, so it can run after `stream` is fully built without
+    // touching any draw sequence.
+    let resolved_ratings = ratings::compute_ratings(
+        &stream,
+        &rated_players,
+        goals[0].min(u8::MAX as u32) as u8,
+        goals[1].min(u8::MAX as u32) as u8,
+    );
+    let minutes: Vec<(PlayerId, u8)> = rated_players.iter().map(|p| (p.pid, p.minutes)).collect();
 
     MatchOutcome {
         home_goals: goals[0].min(u8::MAX as u32) as u8,
@@ -1738,11 +1767,8 @@ fn simulate(
         injuries,
         // MATCH_MODEL.md §15, T11: resolved fouls' cards.
         cards,
-        // The remaining 2e boundary field (MATCH_MODEL.md §12), still empty
-        // until §18 lands: constructing an empty vector draws nothing, so
-        // neither the 2a RNG sequence nor any calibration reading depending
-        // on ratings is touched.
-        ratings: Vec::new(),
+        // MATCH_MODEL.md §18, T13: resolved per-player ratings.
+        ratings: resolved_ratings,
         minutes,
     }
 }

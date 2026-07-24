@@ -827,7 +827,27 @@ hidden Consistency (should correlate negatively), late-goal share vs defense Con
 
 ## 18. Match ratings (R9)
 
-**Definition: a per-player 1.0–10.0 rating, a pure RNG-free function of the player's recorded
+**Status: landed (batch-3 T13).** Implementation is a new `match_engine::ratings` module:
+`compute_ratings(stream, players, home_goals, away_goals)` is a pure fold over an
+already-resolved `MatchOutcome.stream`, called at the end of `simulate` once the stream is
+fully built (no RNG anywhere in it, so it can never touch a draw sequence). `players: &[RatedPlayer]`
+— `(pid, side, role, minutes)` for every starter, substitute, and departed player — is
+assembled from the final `home`/`away: Vec<XiPlayer>` plus T12's `departed` accumulator
+(extended to also carry `Role`, needed for the clean-sheet gate below). `MatchOutcome.ratings`
+is populated for the first time (previously always empty, §12's sequencing-step-1 placeholder).
+Two implementation notes worth recording alongside the delta table:
+- **The blame rule ("caused an opposition goal's turnover") is an approximation**, documented
+  as such at the call site: it credits whichever failed action (`Pass`/`TakeOn`/`Cross`/
+  `Clearance`) is *most recent* for the conceding side, not a full reconstruction of the exact
+  zone-by-zone possession chain that produced this particular goal. Cheap and directionally
+  right; a possession-chain-exact version is future work if the man-of-the-match spread ever
+  needs it.
+- **The doc/clamp mismatch below is resolved in favour of the clamp**: this section's original
+  prose said "1.0–10.0" while the very next sentence's clamp said `[3.0, 10.0]` — landed at
+  `[3.0, 10.0]`, correcting the prose to match (a real-world match rating essentially never
+  reads below 3, and the clamp value is the one every other section already cross-references).
+
+**Definition: a per-player 3.0–10.0 rating, a pure RNG-free function of the player's recorded
 stream events plus the team result**, computed once at match end and recorded (`ratings`,
 §12 — recorded because the stream is not persisted for AI matches, and news/form/morale need
 it replay-safe). Stored as tenths in a `u8` (68 = 6.8), clamped to `[3.0, 10.0]`.
@@ -853,14 +873,21 @@ The assist and blame rules are derivable purely from stream ordering (the stream
 chronological and side-tagged), so the rating needs no new engine hooks — it is a fold over
 `MatchOutcome.stream` performed while the stream is still in hand.
 
-**Ratings drive nothing mechanical in 2e.** They feed the news Trace (R2's `NewsObserver` gets
-man-of-the-match material) and become the input the deferred systems were designed around: the
-form multiplier valuation deliberately left out (`TRANSFER_MODEL.md` §2.5 — its "small,
-bounded, decaying" sketch is a decayed rating average), and Phase-5 morale — which, when it
-closes the loop, does so under `DESIGN.md` §7's bounded/event-triggered feedback rules. Not
-before.
+**Ratings now drive one mechanical consumer: form.** `TRANSFER_MODEL.md` §2.5's deferral is
+closed — `GameState.recent_ratings` (the rolling last-`RATING_FORM_WINDOW` window, already
+fold-maintained since the §12 boundary was grown) feeds `valuation::MarketContext::from_world`'s
+new `form` field, and `value()` multiplies a bounded `form_mult` in alongside `contract_mult`/
+`scarcity_mult`. A player absent from the window (never played, or the window emptied at a
+season boundary) reads `form_mult = 1.0` exactly — the identity, never a penalty. `ValueKnobs`
+gained `form_scale`/`form_bound` (§9's plausibility-picked-starting-point discipline): a full
+rating point above/below the 6.0 neutral moves value 5%, clamped to `±12%` — inside the ±10-15%
+§2.10 named. What's still deferred: the news Trace's man-of-the-match consumer (R2's
+`NewsObserver`) and Phase-5 morale, both still future work, unaffected by this task.
 
-**§8 impact: none** (a derivation moves no aggregate). New §8 rows: league mean rating ~6.4–6.6,
-winning-side mean ≈ +0.3 over losing-side, goalscorer mean > 7, and a sane man-of-the-match
-spread (forwards overrepresented but defenders present — if the weights can't produce a
-defender MOTM, the tackle/clean-sheet weights are wrong, not the world).
+**§8 impact: none for the match engine itself** (a derivation moves no engine aggregate — no
+new draw, no changed contest). The predicted rows (league mean rating ~6.4–6.6, winning-side
+mean ≈ +0.3 over losing-side, goalscorer mean > 7, a sane man-of-the-match spread) are
+`bin/calibrate`-reportable but not yet added as a printed row there — a reporting gap, not a
+modelling one, the same shape T11's suspension-matches-served gap was. The real, *new* §8-shaped
+impact is on the transfer market: `TRANSFER_MODEL.md` §9's fee distribution moves now that
+`resolve_window` prices against live form — re-read there.

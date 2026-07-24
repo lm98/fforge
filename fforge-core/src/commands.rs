@@ -646,6 +646,7 @@ fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, 
             &market_knobs,
             Some(state.player_club),
             &state.pending_transfer_decisions,
+            &state.recent_ratings,
         );
         for t in &outcome.transfers {
             apply_transfer_completed(&mut work_world, t.player, t.from, t.to, t.fee, t.contract);

@@ -976,7 +976,7 @@ mod tests {
         let club = world.competition.clubs[0];
         let dev = DevKnobs::default();
         let vk = ValueKnobs::default();
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         let valuations = value_all(&world, start, &ctx, &vk, &dev);
         let knobs = UtilityKnobs::default();
 
@@ -1016,7 +1016,7 @@ mod tests {
         let (world, _schedule, start) = generate(5, &cfg);
         let dev = DevKnobs::default();
         let vk = ValueKnobs::default();
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         let valuations = value_all(&world, start, &ctx, &vk, &dev);
         let knobs = UtilityKnobs::default();
         let policy = UtilityPolicy::new(knobs);
@@ -1076,7 +1076,7 @@ mod tests {
         let (world, _schedule, start) = generate(21, &cfg);
         let dev = DevKnobs::default();
         let vk = ValueKnobs::default();
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         let valuations = value_all(&world, start, &ctx, &vk, &dev);
         let knobs = UtilityKnobs::default();
         let policy = UtilityPolicy::default();

@@ -74,6 +74,17 @@ pub struct ValueKnobs {
     /// scarcity term is an inflation engine.
     pub scarcity_min: f64,
     pub scarcity_max: f64,
+    /// Form (`MATCH_MODEL.md` §18, T13, closing §2.5's deferral): per rating
+    /// point above/below the 6.0 neutral, how much `form_mult` moves before
+    /// `form_bound` clamps it. A player with no recent ratings reads exactly
+    /// `1.0` — the identity.
+    pub form_scale: f64,
+    /// `form_mult` clamp band, `[1 − form_bound, 1 + form_bound]` — bounded
+    /// deliberately, the same "not a dominant term" discipline `scarcity_min`/
+    /// `_max` already applies: an unbounded form term makes a hot streak
+    /// unaffordable and reintroduces exactly the volatility §2.2's convexity
+    /// was tuned around.
+    pub form_bound: f64,
 }
 
 impl Default for ValueKnobs {
@@ -88,30 +99,46 @@ impl Default for ValueKnobs {
             contract_max_discount: 0.60,
             scarcity_min: 0.85,
             scarcity_max: 1.20,
+            // T13: plausibility-picked, the same discipline `beta`'s own doc
+            // comment names — a full rating point above/below neutral moves
+            // value 5%, so a genuinely hot/cold run (avg ~8.0/~4.0) reads
+            // ~±10%, comfortably inside the ±10-15% §2.10 named, with the
+            // ±12% clamp as the hard stop for the extremes.
+            form_scale: 0.05,
+            form_bound: 0.12,
         }
     }
 }
 
-/// The market-state inputs valuation needs beyond the player themself — today
-/// just the per-role scarcity multiplier (`TRANSFER_MODEL.md` §2.4). Held
-/// separately from `ValueKnobs` because it is *world*-derived, not a tuning
-/// constant, and because §2.7's frozen-snapshot rule wants one context computed
-/// once per window and shared by every club's valuations. It carries no club
-/// decisions — Layer 2 stays decision-free.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The market-state inputs valuation needs beyond the player themself —
+/// today the per-role scarcity multiplier (`TRANSFER_MODEL.md` §2.4) and,
+/// since T13, each player's form multiplier (§2.5's deferral, closed by
+/// `MATCH_MODEL.md` §18). Held separately from `ValueKnobs` because it is
+/// *world*/*state*-derived, not a tuning constant, and because §2.7's
+/// frozen-snapshot rule wants one context computed once per window and
+/// shared by every club's valuations. It carries no club decisions — Layer
+/// 2 stays decision-free.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MarketContext {
     /// League-wide scarcity multiplier per role, already bounded to
     /// `[scarcity_min, scarcity_max]`.
     scarcity: [f64; NUM_ROLES],
+    /// Per-player form multiplier, already computed and bounded to
+    /// `[1 − form_bound, 1 + form_bound]` — a player absent from the map
+    /// (no recent ratings) reads exactly `1.0` at the lookup site, the
+    /// identity, rather than needing a special-cased entry here.
+    form: BTreeMap<fforge_domain::PlayerId, f64>,
 }
 
 impl MarketContext {
-    /// The neutral context: scarcity 1.0 for every role. The right baseline for
-    /// isolating the CA/age/contract behaviour of `value`, and a fine stand-in
-    /// wherever league drift is not being modelled.
+    /// The neutral context: scarcity 1.0 for every role, no form data. The
+    /// right baseline for isolating the CA/age/contract behaviour of
+    /// `value`, and a fine stand-in wherever league drift is not being
+    /// modelled.
     pub fn neutral() -> Self {
         MarketContext {
             scarcity: [1.0; NUM_ROLES],
+            form: BTreeMap::new(),
         }
     }
 
@@ -122,7 +149,18 @@ impl MarketContext {
     /// up; an abundant one prices down. Pure function of the world — near-1.0
     /// while the league still mirrors its uniform starting template, its job is
     /// to react to youth-intake drift over decades (§2.4, §8).
-    pub fn from_world(world: &World, knobs: &ValueKnobs) -> Self {
+    ///
+    /// `recent_ratings` (`MATCH_MODEL.md` §18, T13) is `GameState.recent_ratings`
+    /// verbatim — a rolling last-`RATING_FORM_WINDOW` window per player,
+    /// already fold-maintained — or an empty map for any caller with no real
+    /// `GameState` to read (harnesses, tests): the identity, exactly the
+    /// `conditions` map's own absent-means-neutral convention
+    /// (`match_engine::play_match`).
+    pub fn from_world(
+        world: &World,
+        knobs: &ValueKnobs,
+        recent_ratings: &BTreeMap<fforge_domain::PlayerId, Vec<u8>>,
+    ) -> Self {
         // Formation-implied demand: mean slots per role across the formations,
         // times the number of clubs (each club fields one XI).
         let mut demand = [0.0f64; NUM_ROLES];
@@ -164,12 +202,42 @@ impl MarketContext {
             };
             scarcity[role.index()] = raw.clamp(knobs.scarcity_min, knobs.scarcity_max);
         }
-        MarketContext { scarcity }
+
+        // Form (§18, T13): the average of each player's recent-ratings
+        // window (tenths → the 3.0-10.0 scale), mapped around the 6.0
+        // neutral and bounded — a player absent from `recent_ratings`
+        // (never appeared, or the window emptied at a season boundary) is
+        // simply absent here too, so `form_mult` reads the identity `1.0`
+        // for him without a special case.
+        let form = recent_ratings
+            .iter()
+            .filter(|(_, window)| !window.is_empty())
+            .map(|(&pid, window)| {
+                let avg_tenths: f64 =
+                    window.iter().map(|&r| r as f64).sum::<f64>() / window.len() as f64;
+                let avg = avg_tenths / 10.0;
+                let raw = 1.0 + knobs.form_scale * (avg - 6.0);
+                (
+                    pid,
+                    raw.clamp(1.0 - knobs.form_bound, 1.0 + knobs.form_bound),
+                )
+            })
+            .collect();
+
+        MarketContext { scarcity, form }
     }
 
     #[inline]
     fn for_role(&self, role: Role) -> f64 {
         self.scarcity[role.index()]
+    }
+
+    /// This player's form multiplier (§18, T13) — `1.0`, the identity, for
+    /// anyone absent from the window (no recent matches: a neutral read,
+    /// never a penalty).
+    #[inline]
+    fn form_mult(&self, player: fforge_domain::PlayerId) -> f64 {
+        self.form.get(&player).copied().unwrap_or(1.0)
     }
 }
 
@@ -474,8 +542,9 @@ fn value_with(
     let contract_mult = contract_multiplier(p.contract, today, knobs);
     let (role, _) = best_role(&p.attributes, &ROLE_WEIGHTS);
     let scarcity_mult = ctx.for_role(role);
+    let form_mult = ctx.form_mult(player);
 
-    Money((base * contract_mult * scarcity_mult).round() as i64)
+    Money((base * contract_mult * scarcity_mult * form_mult).round() as i64)
 }
 
 /// Value **every** player against one frozen snapshot into a
@@ -702,7 +771,7 @@ mod tests {
         let cfg = crate::WorldGenConfig::default();
         let (world, _s, _d) = crate::worldgen::generate(1, &cfg);
         let vk = ValueKnobs::default();
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         for role in Role::ALL {
             let s = ctx.for_role(role);
             assert!(
@@ -723,7 +792,7 @@ mod tests {
         let (world, _s, start) = crate::worldgen::generate(3, &cfg);
         let dev = DevKnobs::default();
         let vk = ValueKnobs::default();
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         let cache = value_all(&world, start, &ctx, &vk, &dev);
         let cache2 = value_all(&world, start, &ctx, &vk, &dev);
         assert_eq!(cache, cache2, "valuation must be deterministic");
@@ -731,5 +800,89 @@ mod tests {
             assert_eq!(v, value(&world, pid, start, &ctx, &vk, &dev));
             assert!(v.0 > 0, "a contracted league player should price positive");
         }
+    }
+
+    #[test]
+    fn a_player_with_no_recent_matches_reads_a_neutral_form_multiplier() {
+        // §18/T13: no recent ratings is a neutral read, never a penalty —
+        // absent from the map entirely (never played) and present-but-empty
+        // (a rolling window that has genuinely emptied) both hit this path.
+        let vk = ValueKnobs::default();
+        let cfg = crate::WorldGenConfig::default();
+        let (world, _s, _d) = crate::worldgen::generate(1, &cfg);
+        let mut recent_ratings = BTreeMap::new();
+        recent_ratings.insert(PlayerId(999_999), Vec::new()); // empty window
+        let ctx = MarketContext::from_world(&world, &vk, &recent_ratings);
+        assert_eq!(ctx.form_mult(PlayerId(0)), 1.0, "never-rated player");
+        assert_eq!(ctx.form_mult(PlayerId(999_999)), 1.0, "empty rating window");
+    }
+
+    #[test]
+    fn the_form_multiplier_respects_its_bound_at_both_extremes() {
+        // §18/T13: bounded deliberately, the same "not a dominant term"
+        // discipline the scarcity multiplier already applies — even the most
+        // extreme possible rating history (every recent match a perfect
+        // 10.0, or the floor 3.0) must never move value beyond `form_bound`.
+        let vk = ValueKnobs::default();
+        let cfg = crate::WorldGenConfig::default();
+        let (world, _s, _d) = crate::worldgen::generate(1, &cfg);
+        let hot = PlayerId(1);
+        let cold = PlayerId(2);
+        let mut recent_ratings = BTreeMap::new();
+        recent_ratings.insert(hot, vec![100, 100, 100, 100, 100]); // 10.0 every time
+        recent_ratings.insert(cold, vec![30, 30, 30, 30, 30]); // 3.0 every time
+        let ctx = MarketContext::from_world(&world, &vk, &recent_ratings);
+        assert!(
+            (ctx.form_mult(hot) - (1.0 + vk.form_bound)).abs() < 1e-9,
+            "a maxed-out hot streak must clamp at the upper bound, got {}",
+            ctx.form_mult(hot)
+        );
+        assert!(
+            (ctx.form_mult(cold) - (1.0 - vk.form_bound)).abs() < 1e-9,
+            "a floored cold streak must clamp at the lower bound, got {}",
+            ctx.form_mult(cold)
+        );
+    }
+
+    #[test]
+    fn form_moves_value_in_the_expected_direction_and_stays_bounded() {
+        // End-to-end: `value()` itself must actually move with form, in the
+        // right direction, and never by more than `form_bound` either way.
+        let dev = DevKnobs::default();
+        let vk = ValueKnobs::default();
+        let world = mini_world(vec![shaped_player(0, Role::Cm, 65, 24, 80)]);
+        // `from_world` with an empty ratings map for the baseline too — not
+        // `MarketContext::neutral()`, whose flat scarcity=1.0 would differ
+        // from this tiny mini-world's own computed scarcity and swamp the
+        // form signal the test is isolating.
+        let neutral_ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
+        let neutral_value = value(&world, PlayerId(0), TODAY, &neutral_ctx, &vk, &dev).0 as f64;
+
+        let mut hot_ratings = BTreeMap::new();
+        hot_ratings.insert(PlayerId(0), vec![90, 90, 90, 90, 90]); // 9.0 average
+        let hot_ctx = MarketContext::from_world(&world, &vk, &hot_ratings);
+        let hot_value = value(&world, PlayerId(0), TODAY, &hot_ctx, &vk, &dev).0 as f64;
+
+        let mut cold_ratings = BTreeMap::new();
+        cold_ratings.insert(PlayerId(0), vec![40, 40, 40, 40, 40]); // 4.0 average
+        let cold_ctx = MarketContext::from_world(&world, &vk, &cold_ratings);
+        let cold_value = value(&world, PlayerId(0), TODAY, &cold_ctx, &vk, &dev).0 as f64;
+
+        assert!(
+            hot_value > neutral_value,
+            "good recent form should price above neutral: {hot_value} vs {neutral_value}"
+        );
+        assert!(
+            cold_value < neutral_value,
+            "poor recent form should price below neutral: {cold_value} vs {neutral_value}"
+        );
+        assert!(
+            hot_value <= neutral_value * (1.0 + vk.form_bound) + 1.0,
+            "form must never move value beyond its documented bound"
+        );
+        assert!(
+            cold_value >= neutral_value * (1.0 - vk.form_bound) - 1.0,
+            "form must never move value beyond its documented bound"
+        );
     }
 }

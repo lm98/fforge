@@ -427,7 +427,7 @@ fn build_transfer_context(session: &Session) -> TransferContext {
     let dev = DevKnobs::default();
     let vk = ValueKnobs::default();
     let uk = UtilityKnobs::default();
-    let ctx = MarketContext::from_world(&s.world, &vk);
+    let ctx = MarketContext::from_world(&s.world, &vk, &s.recent_ratings);
     let valuations = value_all(&s.world, s.date, &ctx, &vk, &dev);
     let obs = observe(&s.world, s.player_club, s.date, &valuations, &dev, &uk);
     TransferContext {

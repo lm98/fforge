@@ -13,6 +13,7 @@
 mod calibrate;
 mod contest;
 mod knobs;
+mod ratings;
 mod resolve;
 mod stream;
 mod tactics;
@@ -500,20 +501,33 @@ mod tests {
     }
 
     #[test]
-    fn remaining_boundary_consequences_stay_empty_until_the_2e_models_land() {
-        // MATCH_MODEL.md §12/§11 sequencing step 1: the boundary is grown
-        // ahead of the models that fill it. `injuries` (T10) and `cards`
-        // (T11) are now populated, each with its own test coverage
-        // elsewhere; `ratings` must still emit empty — anything else here
-        // means an unsanctioned model (and its RNG draws) sneaked in ahead
-        // of its design gate.
+    fn every_boundary_consequence_is_now_populated() {
+        // MATCH_MODEL.md §12/§11 sequencing step 1: the boundary was grown
+        // ahead of the models that fill it (`injuries` T10, `cards` T11,
+        // `ratings` T13, each with its own dedicated test coverage
+        // elsewhere) — this is the closing half of that sequencing note,
+        // now that every field the boundary was grown for is real: a full
+        // 90-minute match must produce a non-empty rating for every player
+        // who actually appeared.
         let (world, home, away) = tiny_world_and_lineups();
         for seed in 0..32u64 {
             let mut rng = derive_stream(seed, 1);
             let outcome = play(&world, &home, &away, &mut rng);
             assert!(
-                outcome.ratings.is_empty(),
-                "seed {seed}: the engine must populate no ratings ahead of §18"
+                !outcome.ratings.is_empty(),
+                "seed {seed}: a full match must rate every appeared player"
+            );
+            let appeared: std::collections::BTreeSet<PlayerId> = outcome
+                .minutes
+                .iter()
+                .filter(|&&(_, m)| m > 0)
+                .map(|&(pid, _)| pid)
+                .collect();
+            let rated: std::collections::BTreeSet<PlayerId> =
+                outcome.ratings.iter().map(|&(pid, _)| pid).collect();
+            assert_eq!(
+                appeared, rated,
+                "seed {seed}: exactly the players with minutes > 0 must be rated"
             );
         }
     }

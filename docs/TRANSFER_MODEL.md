@@ -148,20 +148,28 @@ to [0.85, 1.20]**. Near-1.0 at t=0 by construction (`SQUAD_TEMPLATE` is uniform)
 to drift over decades, and it is the natural home for youth-intake imbalance (§8). Bounded because an
 unbounded scarcity term is an inflation engine.
 
-### 2.5 Form — deliberately absent from v1
+### 2.5 Form — landed at batch-3 T13, closing the v1 deferral
 
-`DESIGN.md` §4.3 lists form as a valuation input. **It is not implementable today**, and the reason
-is worth recording rather than quietly skipping.
+**Status: landed.** The two prerequisites this section named — actor identity in the stream
+(§12 item 1) and a real per-player performance signal (`MATCH_MODEL.md` §18) — both landed
+(the identity enrichment earlier in Phase 2e; ratings at T13). `valuation::MarketContext` now
+carries a per-player `form` multiplier built from `GameState.recent_ratings`
+(`MATCH_MODEL.md` §18's own rolling window, reused verbatim — not a second, decaying-average
+encoding of the same idea), multiplied into `value()` alongside `contract_mult`/`scarcity_mult`,
+bounded to `±form_bound` (§9's knob table). A player with no recent ratings prices at the
+neutral `form_mult = 1.0`. See `MATCH_MODEL.md` §18 for the implementation and `TRANSFER_MODEL.md`
+§9's T13 re-read for the fee-distribution effect.
 
-The match event stream (`MATCH_MODEL.md` §9) carries `MatchEvent { minute, side, zone, kind }` — the
-resolver samples an actor from the presence table (§6) and then **discards their identity**. There is
-no per-player performance signal anywhere in the system: `MatchPlayed` records the two XIs, so
-*appearances* exist, but nothing distinguishes a striker who scored a hat-trick from one who missed
-five.
-
-Team-results-and-appearances would be a poor proxy, and a poor proxy in a design-once artifact is
-worse than an honest absence. **Form enters valuation when the stream carries actors** — see §12
-item 1, tracked as the Phase-2b addendum.
+**Original deferral, kept for the record.** `DESIGN.md` §4.3 lists form as a valuation input,
+and it was **not implementable at v1's start** — worth having recorded rather than quietly
+skipped. The match event stream (`MATCH_MODEL.md` §9) originally carried
+`MatchEvent { minute, side, zone, kind }` — the resolver sampled an actor from the presence
+table (§6) and then **discarded their identity**. There was no per-player performance signal
+anywhere in the system: `MatchPlayed` recorded the two XIs, so *appearances* existed, but
+nothing distinguished a striker who scored a hat-trick from one who missed five.
+Team-results-and-appearances would have been a poor proxy, and a poor proxy in a design-once
+artifact is worse than an honest absence — so the deferral, until the stream carried actors and
+a rating existed to read off it.
 
 ### 2.6 Hidden information — and why that is correct
 
@@ -557,6 +565,41 @@ market's binding constraint on volume — relieving it barely moved the number. 
 into this residual should look at the buy side and the clearing loop (`market::resolve_window`'s round
 cap, or `club_ai`'s buy shortlist thresholds) rather than squad-side selling pressure again. Still outside
 this pass's scope fence: `beta` and `revenue_per_reputation` remain untouched.
+
+**T13 re-read: form multiplier live in production (pooled, 24 seeds × 15 seasons, same pooling as the
+banked reading above).** §2.5's form multiplier (`ValueKnobs::form_scale`/`form_bound`, wired through
+`MarketContext.form` from `GameState.recent_ratings`) now feeds every real `market::resolve_window` call
+inside `commands::transfer_window_events`, not just `MarketContext::neutral()`'s identity value. Re-ran
+`cargo run --release --bin market -- --seeds 24 --seasons 15` at the banked knobs, unchanged, to see
+whether a bounded (±12%) per-player nudge measurably moves the pooled market-level statistics:
+
+| Metric | Banked (pre-T13) | T13 re-read (form live) |
+|---|---|---|
+| Transfers / club / window | ~1.75 | 1.778 (sd 0.224) |
+| Fee median | ~1.2M | 1.205M (sd 166k) |
+| Fee p90 | ~3.1M | 3.045M (sd 359k) |
+| Points-Gini, early → late | 0.313 → 0.302 | 0.300 → 0.286 |
+| Season-to-season rank churn | ~1.08 | 1.182 (sd 0.123) |
+| Top-3 share of top-20, early → late | 0.633 → 0.649 | 0.620 → 0.633 |
+| Median fee, last season / first season | ~0.68× | 0.479× (sd 0.186, range 0.150–0.786) |
+| Clubs insolvent | ~5.3 / 20 | 5.525 / 20 |
+| Clubs hoarding cash | ~0.7 / 20 | 0.686 / 20 |
+| League mean age | ~27.5 | 27.567 |
+| Squad size, min / max | ~22.6 / 30 | 22.333 / 30 |
+| Role-coverage violations | ~2.5 (sd 3.4) | 1.042 (sd 1.781) |
+| Squad-size snapshots below `squad_max` | ~0.74 | 0.740 |
+| Share majority-pinned at `squad_max` | ~0.07 | 0.092 |
+
+Every row lands inside (or within a fraction of an sd of) the banked reading's own seed-to-seed noise
+band — including the largest-looking mover, last/first median fee, whose 0.150–0.786 range already
+straddles both the old ~0.68 point estimate and the new 0.479 one. This is the expected result, not a
+null finding to explain away: form is a bounded, per-player, recent-form-only nudge on top of a
+CA-dominated valuation, and the harness pools 20 clubs × 15 seasons × 24 seeds of aggregate market
+behaviour — exactly the regime where a ±12%-bounded individual-player multiplier should wash out at the
+population level while still doing its job player-by-player (§2.5's own tests assert the per-player
+direction and bound directly, since this pooled harness is the wrong tool to see it). No knob was
+touched for this re-read; it is a regression check on `beta`/`revenue_per_reputation`'s existing bank,
+confirming form's addition doesn't require re-fitting either.
 
 ---
 
