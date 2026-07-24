@@ -90,7 +90,7 @@ const REFERENCE_XI_ROLES: [Role; 11] = [
 /// (`MATCH_MODEL.md` §6's existing, unedited table) that sits in `AttW` — a
 /// team's structural wide-outlet strength, purely a function of who's on
 /// the pitch.
-fn wide_presence_share(roles: &[Role]) -> f64 {
+pub(super) fn wide_presence_share(roles: &[Role]) -> f64 {
     let (mut attc, mut attw) = (0u32, 0u32);
     for &role in roles {
         attc += zone::attacking_presence(role, Zone::AttC);
@@ -132,18 +132,25 @@ fn other_side(s: Side) -> Side {
     }
 }
 
-/// Turnover mirroring (`MATCH_MODEL.md` §3): possession flips and the winner
-/// restarts in the mirrored zone — lose it deep and the opponent wins it
-/// high; lose it high and they win it deep.
-fn turnover(poss: Side, zone: Zone) -> (Side, Zone) {
-    let next_zone = match zone {
+/// The zone a turnover's winner restarts in (`MATCH_MODEL.md` §3): lose it
+/// deep and the opponent wins it high; lose it high and they win it deep.
+/// `pub(super)` so `calibrate`'s turnover-won-by-zone telemetry cut
+/// (`TACTICS_MODEL.md` §8, T7) reads the same mapping rather than a second
+/// encoding of it.
+pub(super) fn mirrored_zone(zone: Zone) -> Zone {
+    match zone {
         Zone::Def => Zone::AttC,
         Zone::Mid => Zone::Mid,
         Zone::AttC => Zone::Def,
         Zone::AttW => Zone::Def,
         Zone::Box => Zone::Def,
-    };
-    (other_side(poss), next_zone)
+    }
+}
+
+/// Turnover mirroring (`MATCH_MODEL.md` §3): possession flips and the winner
+/// restarts in the mirrored zone.
+fn turnover(poss: Side, zone: Zone) -> (Side, Zone) {
+    (other_side(poss), mirrored_zone(zone))
 }
 
 /// Sample a slot index from `xi` weighted by zone presence (`MATCH_MODEL.md`

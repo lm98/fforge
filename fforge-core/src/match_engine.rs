@@ -20,7 +20,7 @@ mod zone;
 
 pub use calibrate::{
     DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, StreamTelemetry,
-    elo_expected,
+    elo_expected, run_head_to_head,
 };
 pub use knobs::Knobs;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
@@ -28,7 +28,8 @@ pub use zone::Zone;
 
 use crate::rng::Rng;
 use fforge_domain::{
-    ClubId, FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI, current_ability,
+    Attribute, ClubId, FORMATIONS, Lineup, Mentality, PlayerId, Pressing, ROLE_WEIGHTS, Role,
+    Tactics, Tempo, Width, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -133,9 +134,9 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
         let candidate = Lineup {
             formation: fi as u8,
             players: chosen,
-            // T7 adds ai_pick_tactics; until then every AI side plays
-            // neutral (T6's scope fence — nothing selects non-neutral
-            // tactics here).
+            // Neutral here; ai_pick_tactics (below) is the sibling that
+            // fills this in against a known opponent — kept separate since
+            // this function doesn't know the opponent.
             tactics: Tactics::neutral(),
         };
         match &best {
@@ -144,6 +145,128 @@ pub fn ai_pick_lineup(world: &World, club: ClubId) -> Lineup {
         }
     }
     best.expect("at least one formation").1
+}
+
+/// Thresholds for `ai_pick_tactics` (`TACTICS_MODEL.md` §7) — plausibility-
+/// picked from real `worldgen` + `ai_pick_lineup` percentiles (roughly the
+/// 25th/75th split on each signal, so about half of matches land Balanced
+/// and a quarter each way), the `ValueKnobs`/`Knobs` discipline: a fit
+/// target for the calibration harness, not a finished calibration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AiTacticKnobs {
+    /// Mentality: `|own − opponent| lineup_strength` beyond this →
+    /// Attacking (favourite) / Defensive (underdog); else Balanced.
+    pub mentality_strength_gap: f64,
+    /// Width: `wide_presence_share` of the chosen XI above/below these →
+    /// Wide / Narrow; else Balanced.
+    pub width_wide_share: f64,
+    pub width_narrow_share: f64,
+    /// Tempo: team `PASS_ATK` mean above/below these → Patient / Direct;
+    /// else Balanced.
+    pub tempo_patient_pass_atk: f64,
+    pub tempo_direct_pass_atk: f64,
+    /// Pressing: team Work-Rate + Stamina mean above/below these → High /
+    /// Deep; else Balanced.
+    pub pressing_high_legs: f64,
+    pub pressing_deep_legs: f64,
+}
+
+impl Default for AiTacticKnobs {
+    fn default() -> Self {
+        AiTacticKnobs {
+            mentality_strength_gap: 8.0,
+            width_wide_share: 0.555,
+            width_narrow_share: 0.48,
+            tempo_patient_pass_atk: 71.0,
+            tempo_direct_pass_atk: 58.0,
+            pressing_high_legs: 144.0,
+            pressing_deep_legs: 117.0,
+        }
+    }
+}
+
+/// Deterministic AI tactics policy (`TACTICS_MODEL.md` §7) — the tactics
+/// sibling of `ai_pick_lineup`: same seam ("Phase-1-style stub of the
+/// layer-3 decision AI"), richer policy later (Phase 5). RNG-free.
+///
+/// Deliberately opponent-blind beyond the strength gap: real counter-
+/// picking (reading the opponent's likely tactics and choosing the §5
+/// counter) is a decision-*quality* behaviour Phase 5's ablation measures —
+/// building it into the v1 baseline would flatten that ablation.
+pub fn ai_pick_tactics(
+    world: &World,
+    club: ClubId,
+    opponent: ClubId,
+    is_home: bool,
+    k: &AiTacticKnobs,
+) -> Tactics {
+    let own = ai_pick_lineup(world, club);
+    let opp = ai_pick_lineup(world, opponent);
+    let gap = lineup_strength(world, &own) - lineup_strength(world, &opp);
+
+    let mentality = if gap > k.mentality_strength_gap {
+        Mentality::Attacking
+    } else if gap < -k.mentality_strength_gap {
+        Mentality::Defensive
+    } else {
+        Mentality::Balanced
+    };
+
+    // Reuses the exact function `formation_p_wide` already scales against —
+    // no second encoding of "how wide is this team."
+    let roles: Vec<Role> = own.formation_def().slots.to_vec();
+    let wide_share = resolve::wide_presence_share(&roles);
+    let width = if wide_share > k.width_wide_share {
+        Width::Wide
+    } else if wide_share < k.width_narrow_share {
+        Width::Narrow
+    } else {
+        Width::Balanced
+    };
+
+    let n = XI as f64;
+    let pass_atk_mean: f64 = own
+        .players
+        .iter()
+        .map(|&pid| contest::score(&world.player(pid).attributes, contest::PASS_ATK))
+        .sum::<f64>()
+        / n;
+    let mut tempo = if pass_atk_mean > k.tempo_patient_pass_atk {
+        Tempo::Patient
+    } else if pass_atk_mean < k.tempo_direct_pass_atk {
+        Tempo::Direct
+    } else {
+        Tempo::Balanced
+    };
+    // Away underdogs pair Defensive with Direct — the counter posture of §5,
+    // emerging from the policy rather than hard-coded as a named tactic.
+    if !is_home && mentality == Mentality::Defensive {
+        tempo = Tempo::Direct;
+    }
+
+    let legs_mean: f64 = own
+        .players
+        .iter()
+        .map(|&pid| {
+            let a = &world.player(pid).attributes;
+            a.get(Attribute::WorkRate) as f64 + a.get(Attribute::Stamina) as f64
+        })
+        .sum::<f64>()
+        / n;
+    let pressing = if legs_mean > k.pressing_high_legs {
+        Pressing::High
+    } else if legs_mean < k.pressing_deep_legs {
+        Pressing::Deep
+    } else {
+        Pressing::Balanced
+    };
+
+    Tactics {
+        mentality,
+        tempo,
+        width,
+        pressing,
+    }
 }
 
 fn pick_best(world: &World, pool: &[PlayerId], role: Role) -> (usize, u8) {

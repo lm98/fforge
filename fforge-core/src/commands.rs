@@ -10,7 +10,7 @@ use crate::development::{self, period_date, period_index, DevKnobs};
 use crate::event::Event;
 use crate::finance::{finance_deltas, FinanceKnobs};
 use crate::market::{self, MarketKnobs};
-use crate::match_engine::{ai_pick_lineup, play_match};
+use crate::match_engine::{AiTacticKnobs, ai_pick_lineup, ai_pick_tactics, play_match};
 use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
@@ -181,6 +181,17 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
     Ok(())
 }
 
+/// An AI-controlled side's lineup *and* tactics for a real fixture
+/// (`TACTICS_MODEL.md` §7, T7): `ai_pick_lineup`'s XI with `ai_pick_tactics`'s
+/// choice against the named opponent. The call-site convenience every real
+/// AI-vs-AI (and AI-vs-human) match uses so pooled aggregates reflect
+/// non-neutral tactics, not the neutral-everywhere engine T6 landed with.
+fn ai_pick_lineup_vs(world: &World, club: ClubId, opponent: ClubId, is_home: bool) -> Lineup {
+    let mut lineup = ai_pick_lineup(world, club);
+    lineup.tactics = ai_pick_tactics(world, club, opponent, is_home, &AiTacticKnobs::default());
+    lineup
+}
+
 /// The human club's effective lineup for this matchday: the submitted one,
 /// else the last one used, else a deterministic auto-pick. Never fails —
 /// forgetting to set a team costs quality, not a crash.
@@ -214,12 +225,12 @@ pub fn player_match_preview(
     let home_lineup = if fixture.home == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup(&state.world, fixture.home)
+        ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true)
     };
     let away_lineup = if fixture.away == state.player_club {
         effective_player_lineup(state)
     } else {
-        ai_pick_lineup(&state.world, fixture.away)
+        ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
     };
     let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
     Some(play_match(&state.world, &home_lineup, &away_lineup, &mut rng))
@@ -239,12 +250,12 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
         let home_lineup = if fixture.home == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup(&state.world, fixture.home)
+            ai_pick_lineup_vs(&state.world, fixture.home, fixture.away, true)
         };
         let away_lineup = if fixture.away == state.player_club {
             effective_player_lineup(state)
         } else {
-            ai_pick_lineup(&state.world, fixture.away)
+            ai_pick_lineup_vs(&state.world, fixture.away, fixture.home, false)
         };
         let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
         // The minute-by-minute stream is a Trace, not a fold input

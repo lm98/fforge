@@ -11,8 +11,20 @@
 //! never feeds back into `Knobs` or the presence tables by itself.
 
 use super::MatchOutcome;
+use super::resolve::mirrored_zone;
 use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
+use super::zone::{NUM_ZONES, Zone};
+use super::{ai_pick_lineup, play_match};
+use crate::rng::derive_stream;
+use fforge_domain::{ClubId, Tactics, World};
 use std::collections::BTreeMap;
+
+fn side_idx(s: Side) -> usize {
+    match s {
+        Side::Home => 0,
+        Side::Away => 1,
+    }
+}
 
 /// Per-formation usage seen by `StreamTelemetry::record` — one increment per
 /// side per match (a formation used by both home and away in the same match
@@ -108,6 +120,18 @@ pub struct StreamTelemetry {
     /// does the engine's favourite-vs-underdog discrimination look sane,
     /// scored against `elo_expected` in `score_against_reference`.
     pub by_strength_gap: BTreeMap<i32, GapBinStats>,
+    /// Pass attempts/completions keyed by `[side_idx][zone.index()]` — the
+    /// per-zone pass completion cut `TACTICS_MODEL.md` §8/T7 adds (Pressing
+    /// `High`'s prediction: opponent pass completion in their own
+    /// `Def`/`Mid` drops).
+    pub pass_attempts_by_zone: [[u32; NUM_ZONES]; 2],
+    pub pass_completions_by_zone: [[u32; NUM_ZONES]; 2],
+    /// Turnovers *won*, keyed by `[winning_side_idx][zone the winner
+    /// restarts in]` (turnover mirroring, `MATCH_MODEL.md` §3) — the
+    /// turnover-won-by-zone cut `TACTICS_MODEL.md` §8/T7 adds (Pressing
+    /// `High`'s prediction: turnovers won in the opponent's `Def` mirror to
+    /// this side's own `AttC` restarts).
+    pub turnovers_won_by_zone: [[u32; NUM_ZONES]; 2],
 }
 
 impl StreamTelemetry {
@@ -150,9 +174,30 @@ impl StreamTelemetry {
         let mut away_goals = 0u32;
 
         for event in &outcome.stream {
+            let idx = side_idx(event.side);
             match event.side {
                 Side::Home => self.home_events += 1,
                 Side::Away => self.away_events += 1,
+            }
+            match event.kind {
+                MatchEventKind::Pass { success } => {
+                    self.pass_attempts_by_zone[idx][event.zone.index()] += 1;
+                    if success {
+                        self.pass_completions_by_zone[idx][event.zone.index()] += 1;
+                    } else {
+                        self.turnovers_won_by_zone[1 - idx]
+                            [mirrored_zone(event.zone).index()] += 1;
+                    }
+                }
+                MatchEventKind::TakeOn { success: false } => {
+                    self.turnovers_won_by_zone[1 - idx][mirrored_zone(event.zone).index()] += 1;
+                }
+                MatchEventKind::Clearance => {
+                    // A cleared cross is also a turnover (resolve.rs: a
+                    // failed Cross delivery falls through to `turnover`).
+                    self.turnovers_won_by_zone[1 - idx][mirrored_zone(event.zone).index()] += 1;
+                }
+                _ => {}
             }
             if let MatchEventKind::Shot {
                 kind,
@@ -267,6 +312,24 @@ impl StreamTelemetry {
         self.home_events as f64 / total as f64
     }
 
+    /// Pass completion rate for `side` in `zone` — the per-zone pass-
+    /// completion cut (`TACTICS_MODEL.md` §8/T7).
+    pub fn pass_completion_in_zone(&self, side: Side, zone: Zone) -> f64 {
+        let idx = side_idx(side);
+        let att = self.pass_attempts_by_zone[idx][zone.index()];
+        if att == 0 {
+            return 0.0;
+        }
+        self.pass_completions_by_zone[idx][zone.index()] as f64 / att as f64
+    }
+
+    /// Turnovers won *by* `side`, restarting in `zone` — the turnover-won-
+    /// by-zone cut (`TACTICS_MODEL.md` §8/T7). `zone` is the zone the
+    /// *winner* restarts in (post-mirroring), not where the ball was lost.
+    pub fn turnovers_won_in_zone(&self, side: Side, zone: Zone) -> u32 {
+        self.turnovers_won_by_zone[side_idx(side)][zone.index()]
+    }
+
     /// The empirical expected-points-vs-strength-gap curve: one row per
     /// populated bin, `(gap_bin_center, expected_points, matches)`, sorted
     /// by ascending gap. `gap_bin_center` is the midpoint of the
@@ -369,6 +432,62 @@ pub struct DeviationReport {
     pub per_bin: Vec<GapDeviation>,
     pub max_abs_deviation: f64,
     pub weighted_mean_abs_deviation: f64,
+}
+
+/// Namespace tag for the head-to-head harness's RNG stream
+/// (`rng::derive_stream`), distinct from `commands::FIXTURE_STREAM_NS`.
+/// `TACTICS_MODEL.md` §7's triangle harness needs its own mode: the v1 AI
+/// never counter-picks (§7's opponent-blindness), so the §5 triangle is
+/// never exercised in ordinary league play — it can only be tested by
+/// forcing both sides' tactics directly, pooled over many seeds.
+const HEAD_TO_HEAD_NS: u64 = 0x4832_485F_0000_0000; // "H2H_"
+
+/// Home-side expected-points contribution for one match (win = 1.0, draw =
+/// 0.5, loss = 0.0) — the same convention `GapBinStats::expected_points`
+/// pools.
+fn match_expected_points(home_goals: u8, away_goals: u8) -> f64 {
+    match home_goals.cmp(&away_goals) {
+        std::cmp::Ordering::Greater => 1.0,
+        std::cmp::Ordering::Equal => 0.5,
+        std::cmp::Ordering::Less => 0.0,
+    }
+}
+
+/// The `TACTICS_MODEL.md` §7/§5 triangle harness: pool `2 * seeds.len()`
+/// matches between two forced tactics settings on an **equal-strength**
+/// squad (the same club fielded on both sides, so `lineup_strength` is
+/// identical and `home_bias` is the only asymmetry) — each seed is played
+/// once with `tactics_a` at home and once with `tactics_b` at home, so
+/// pooling both directions cancels `home_bias` out of the read. Returns
+/// `tactics_a`'s pooled expected-points share (`tactics_b`'s is `1.0 - a`).
+pub fn run_head_to_head(
+    world: &World,
+    club: ClubId,
+    tactics_a: Tactics,
+    tactics_b: Tactics,
+    seeds: &[u64],
+) -> f64 {
+    let mut lineup_a = ai_pick_lineup(world, club);
+    lineup_a.tactics = tactics_a;
+    let mut lineup_b = ai_pick_lineup(world, club);
+    lineup_b.tactics = tactics_b;
+
+    let mut total_points_a = 0.0;
+    let mut matches = 0u32;
+    for &seed in seeds {
+        let mut rng_a_home = derive_stream(seed, HEAD_TO_HEAD_NS);
+        let out_a_home = play_match(world, &lineup_a, &lineup_b, &mut rng_a_home);
+        total_points_a += match_expected_points(out_a_home.home_goals, out_a_home.away_goals);
+        matches += 1;
+
+        let mut rng_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | 1);
+        let out_b_home = play_match(world, &lineup_b, &lineup_a, &mut rng_b_home);
+        // a is away in this leg: a's points share = 1 - home (b)'s.
+        total_points_a += 1.0 - match_expected_points(out_b_home.home_goals, out_b_home.away_goals);
+        matches += 1;
+    }
+
+    total_points_a / matches as f64
 }
 
 #[cfg(test)]
@@ -649,13 +768,30 @@ mod tests {
     #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn favourite_discrimination_regression_guard() {
+        // TACTICS_MODEL.md §8's rollout discipline: this guard re-runs with
+        // AI tactics on (T7), not the neutral engine T6 landed with.
+        let ai_knobs = crate::match_engine::AiTacticKnobs::default();
         let cfg = crate::WorldGenConfig::default();
         let mut telemetry = StreamTelemetry::default();
         for seed in 0..8u64 {
             let (world, schedule, _start) = crate::worldgen::generate(seed, &cfg);
             for fixture in &schedule {
-                let home_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.home);
-                let away_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.away);
+                let mut home_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.home);
+                home_lineup.tactics = crate::match_engine::ai_pick_tactics(
+                    &world,
+                    fixture.home,
+                    fixture.away,
+                    true,
+                    &ai_knobs,
+                );
+                let mut away_lineup = crate::match_engine::ai_pick_lineup(&world, fixture.away);
+                away_lineup.tactics = crate::match_engine::ai_pick_tactics(
+                    &world,
+                    fixture.away,
+                    fixture.home,
+                    false,
+                    &ai_knobs,
+                );
                 let home_strength = crate::match_engine::lineup_strength(&world, &home_lineup);
                 let away_strength = crate::match_engine::lineup_strength(&world, &away_lineup);
                 let mut rng =
