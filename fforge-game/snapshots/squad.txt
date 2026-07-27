@@ -1,26 +1,39 @@
 
- Pos Name                 Age  CA Best role
- GK  Sergio Carvalho       23  74
- GK  Kofi Rossi            22  69
- GK  Kenji Conti           33  64
- CB  Giorgio Sato          24  70
- CB  Anders Conti          24  64
- CB  Milan Vitale          29  63
- CB  Owen Duarte           25  61
- FB  Marco Kovac           23  73
- FB  Kofi Mori             30  67
- FB  Josip Moretti         25  66 CB (66)
- FB  Dario Tanaka          17  55 DM (56)
- DM  Callum Colombo        25  70
- DM  Sergio Colombo        31  68
- CM  Petar Serra           25  69 DM (69)
- CM  Anders Kane           23  68 FB (68)
- CM  Ivan Pereira          21  59 DM (59)
- AM  Giorgio Horvat        32  71
- AM  Pedro Tanaka          28  62
- W   Sota Rossi            31  81
- W   Nicola Tanaka         25  66
- W   Giorgio Serra         23  58 AM (58)
- ST  Ibrahim Carvalho      25  76
- ST  João Moretti          20  73
- ST  Sota Barbieri         22  64
+ Pos Name                 Age  CA     Wage    Contract   Value* Best role
+ GK  Sergio Carvalho       23  74     1.2M        4.4y     5.0M
+ GK  Kofi Rossi            22  69     1.4M        4.6y     3.2M
+ GK  Kenji Conti           33  64     1.3M        3.0y     1.4M
+ CB  Giorgio Sato          24  70     1.2M        4.3y     3.0M
+ CB  Anders Conti          24  64     1.2M        4.5y     1.7M
+ CB  Milan Vitale          29  63     962k        2.6y     1.2M
+ CB  Owen Duarte           25  61     856k        3.1y     1.3M
+ FB  Marco Kovac           23  73     1.6M        4.8y     4.0M
+ FB  Kofi Mori             30  67     959k        3.0y     2.0M
+ FB  Josip Moretti         25  66     1.1M        3.9y     1.9M CB (66)
+ FB  Dario Tanaka          17  55     905k        4.1y     1.3M DM (56)
+ DM  Callum Colombo        25  70     1.3M        3.0y     4.2M
+ DM  Sergio Colombo        31  68     1.4M        3.0y     2.5M
+ CM  Petar Serra           25  69     1.3M        3.9y     3.8M DM (69)
+ CM  Anders Kane           23  68     1.4M        4.0y     3.9M FB (68)
+ CM  Ivan Pereira          21  59     1.0M        3.7y     2.8M DM (59)
+ AM  Giorgio Horvat        32  71     1.6M        3.5y     2.4M
+ AM  Pedro Tanaka          28  62     986k        2.9y     1.2M
+ W   Sota Rossi            31  81     2.1M        3.4y     8.2M
+ W   Nicola Tanaka         25  66     1.1M        3.9y     2.4M
+ W   Giorgio Serra         23  58     840k        3.2y     1.1M AM (58)
+ ST  Ibrahim Carvalho      25  76     1.7M        4.2y     5.7M
+ ST  João Moretti          20  73     1.8M        5.4y     9.1M
+ ST  Sota Barbieri         22  64     1.2M        4.3y     2.9M
+ * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).
+
+ Squad depth by natural role:
+ Role  Have Template
+ GK       3        3
+ CB       4        4
+ FB       4        4
+ DM       2        2
+ CM       3        3
+ AM       2        2
+ W        3        3
+ ST       3        3
+ Squad size 24 (the market's hard bounds are 18–30)

@@ -35,7 +35,11 @@ const WORLDGEN_STREAM: u64 = 0x574F_524C_4447_454E; // "WORLDGEN"
 /// Squad template: role → headcount. 24 players per club. Also the
 /// `depth_gap` target `club_ai::UtilityPolicy::need` reads (`TRANSFER_MODEL.md`
 /// §6) — reused rather than re-encoded, so the two can never drift apart.
-pub(crate) const SQUAD_TEMPLATE: [(Role, usize); 8] = [
+///
+/// `pub` rather than `pub(crate)` for the same reason: `fforge-game`'s squad
+/// screen shows depth against this template, and a second copy of the numbers
+/// in the CLI would be exactly the drift this constant exists to prevent.
+pub const SQUAD_TEMPLATE: [(Role, usize); 8] = [
     (Role::Gk, 3),
     (Role::Cb, 4),
     (Role::Fb, 4),

@@ -19,7 +19,7 @@
 //! the core's own test suite leans on.
 
 use crate::render::sem::Palette;
-use crate::screens::{fixtures, header, season_end, squad, stats, table};
+use crate::screens::{finances, fixtures, header, season_end, squad, stats, table};
 use fforge_core::{Command, SeasonTelemetry, Session, WorldGenConfig, new_game};
 use fforge_domain::ClubId;
 use std::path::PathBuf;
@@ -95,6 +95,24 @@ fn squad_screen_snapshot() {
     assert_snapshot("squad", &squad::render(&session, Palette::PLAIN));
 }
 
+/// The finances screen wants a session far enough in that at least one
+/// monthly `FinanceTick` has fired, or the trend half never renders.
+#[test]
+fn finances_screen_snapshot() {
+    let (session, _) = fixture(20);
+    assert_snapshot("finances", &finances::render(&session, Palette::PLAIN));
+}
+
+/// ...and the pre-first-tick branch is its own case.
+#[test]
+fn finances_screen_snapshot_before_any_tick() {
+    let (session, _) = fixture(0);
+    assert_snapshot(
+        "finances_no_ticks",
+        &finances::render(&session, Palette::PLAIN),
+    );
+}
+
 #[test]
 fn table_screen_snapshot() {
     let (session, _) = fixture(5);
@@ -153,6 +171,7 @@ fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
     let (finished, finished_telemetry) = finished_season();
     vec![
         ("squad", squad::render(&session, p)),
+        ("finances", finances::render(&session, p)),
         ("table", table::render(&session, p)),
         ("fixtures", fixtures::render(&session, p)),
         ("stats", stats::render(&telemetry)),

@@ -71,9 +71,14 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry, p: Palette) {
         }
         print!("{}", screens::header::render(&session, p));
         println!(
-            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Transfers  [0] Quit without saving"
+            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Transfers  [$] Finances  [0] Quit without saving"
         );
-        match prompt_choice("> ", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]).as_str() {
+        match prompt_choice(
+            "> ",
+            &["1", "2", "3", "4", "5", "6", "7", "8", "9", "$", "0"],
+        )
+        .as_str()
+        {
             "1" => print!("{}", screens::squad::render(&session, p)),
             "2" => print!("{}", screens::table::render(&session, p)),
             "3" => print!("{}", screens::fixtures::render(&session, p)),
@@ -86,6 +91,7 @@ fn game_loop(mut session: Session, mut telemetry: SeasonTelemetry, p: Palette) {
                 return;
             }
             "9" => transfer_flow(&mut session, &mut telemetry, p),
+            "$" => print!("{}", screens::finances::render(&session, p)),
             _ => return,
         }
     }

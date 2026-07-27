@@ -16,7 +16,7 @@ pub mod sem;
 pub mod table;
 
 use fforge_core::{Session, league_table};
-use fforge_domain::{ClubId, Player, ROLE_WEIGHTS, World, current_ability};
+use fforge_domain::{ClubId, Money, Player, ROLE_WEIGHTS, World, current_ability};
 use sem::{Palette, Sem};
 
 /// A player's headline CA: his ability *in his own natural role*, which is the
@@ -75,6 +75,31 @@ pub fn result_line(
     p.paint(line, if is_mine { Sem::Mine } else { Sem::Ok })
 }
 
+/// Money for humans: `1_500_000` → `1.5M`, `250_000` → `250k`, `900` → `900`.
+///
+/// Wage bills and transfer fees run to seven and eight digits, and a column of
+/// raw integers is unreadable at a glance — you end up counting digits to tell
+/// 1_200_000 from 12_000_000. Precision is never the point on these screens;
+/// magnitude is.
+pub fn money(m: Money) -> String {
+    let sign = if m.0 < 0 { "-" } else { "" };
+    let v = m.0.unsigned_abs();
+    if v >= 1_000_000 {
+        let millions = v as f64 / 1_000_000.0;
+        // 1.5M, but 15M rather than 15.0M — a decimal only earns its place
+        // while it is still a significant digit.
+        if millions < 10.0 {
+            format!("{sign}{millions:.1}M")
+        } else {
+            format!("{sign}{}M", millions.round() as u64)
+        }
+    } else if v >= 10_000 {
+        format!("{sign}{}k", v / 1_000)
+    } else {
+        format!("{sign}{v}")
+    }
+}
+
 /// `1` → `1st`, `2` → `2nd`, ... including the 11th/12th/13th exceptions.
 pub fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
@@ -89,7 +114,19 @@ pub fn ordinal(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ordinal;
+    use super::{money, ordinal};
+    use fforge_domain::Money;
+
+    #[test]
+    fn money_reads_as_magnitude_not_digits() {
+        assert_eq!(money(Money(0)), "0");
+        assert_eq!(money(Money(900)), "900");
+        assert_eq!(money(Money(9_999)), "9999");
+        assert_eq!(money(Money(250_000)), "250k");
+        assert_eq!(money(Money(1_500_000)), "1.5M");
+        assert_eq!(money(Money(12_000_000)), "12M");
+        assert_eq!(money(Money(-2_500_000)), "-2.5M");
+    }
 
     #[test]
     fn ordinal_handles_the_teens() {

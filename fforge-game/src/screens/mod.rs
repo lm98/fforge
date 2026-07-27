@@ -13,6 +13,7 @@
 //! Each screen returns a string that already ends in a newline, so callers
 //! print it with `print!`, not `println!`.
 
+pub mod finances;
 pub mod fixtures;
 pub mod header;
 pub mod season_end;

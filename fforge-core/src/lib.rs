@@ -49,7 +49,7 @@ pub use pool::{PoolKnobs, YOUTH_STREAM_NS, summer_pool_events};
 pub use session::{Session, load_log, save_log};
 pub use state::{GameState, TableRow, league_table};
 pub use valuation::{MarketContext, ValueKnobs, project_ca, project_ca_batch, value, value_all};
-pub use worldgen::{WorldGenConfig, generate};
+pub use worldgen::{SQUAD_TEMPLATE, WorldGenConfig, generate};
 
 /// Convenience: assemble the opening event for a new game.
 pub fn new_game(seed: u64, cfg: &WorldGenConfig, player_club: fforge_domain::ClubId) -> Vec<Event> {

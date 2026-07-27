@@ -1,0 +1,11 @@
+
+=== Finances — FC Nerana · 2026, day 220 ===
+  Cash balance                   3.2M
+    less reserve floor           250k kept unspent by the market's affordability gate
+    spendable on fees            3.0M
+
+  Wage ceiling                    35M a constraint, not a second pot
+    committed wages               30M 24 player(s) under contract
+    headroom left                4.6M
+
+  No monthly finance tick has fired yet this season.

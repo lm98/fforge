@@ -1,25 +1,48 @@
 //! The squad list: everyone on the books, grouped by natural role, strongest
-//! first, with the best-role alternative flagged where it differs.
+//! first — with what each one earns, when his deal runs out, and what he is
+//! worth. Followed by the depth summary the market's hard stabilizers are
+//! judged against.
 //!
 //! **Colour axis: ability relative to the squad** (R15). Top quartile reads
-//! `Good`, the middle two read `Ok`, the bottom quartile recedes to `Muted` —
-//! "who is a first choice here, who is fringe", answered at a glance.
+//! `Good`, the middle two `Ok`, the bottom quartile recedes to `Muted` — "who
+//! is a first choice here, who is fringe", answered at a glance. Relative to
+//! *this* squad, so a mid-table side's best player still reads as its best.
 //!
-//! Nothing about that is colour-only: the CA column carries the exact number
-//! and the list is already ordered by it inside each role, so a `NO_COLOR` run
-//! shows the same fact one step slower.
+//! **The depth block uses `Bad` and nothing else, and that is not a second
+//! axis.** The two colour sets are disjoint by construction: the player list
+//! never emits red, the depth block never emits anything else. A red on this
+//! screen therefore has exactly one meaning — a `club_ai` hard stabilizer is
+//! breached (`TRANSFER_MODEL.md` §11: `≥ 2` GK, squad size inside
+//! `[squad_min, squad_max]`) — which is precisely the "role uncovered" alarm
+//! R15 reserves red for. R15's failure mode is one visual encoding meaning two
+//! things; disjoint sets cannot produce it.
+//!
+//! Nothing here is colour-only. Ability is in the `CA` column and in the
+//! ordering; contract urgency is in the `Contract` column and its `!`/`!!`
+//! glyph; a stabilizer breach is in the depth block's `need` column and its
+//! `!` glyph.
 
-use crate::render::headline_ca;
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
-use fforge_core::Session;
-use fforge_domain::ROLE_WEIGHTS;
+use crate::render::{headline_ca, money};
+use fforge_core::{
+    DevKnobs, MarketContext, SQUAD_TEMPLATE, Session, UtilityKnobs, ValueKnobs, value_all,
+};
+use fforge_domain::{GameDate, Money, ROLE_WEIGHTS, Role, date::DAYS_PER_YEAR};
+use std::fmt::Write as _;
 
 pub fn render(session: &Session, p: Palette) -> String {
     let s = &session.state;
     let world = &s.world;
     let mut players: Vec<_> = world.club_players(s.player_club).collect();
     players.sort_by_key(|p| (p.natural_role, std::cmp::Reverse(headline_ca(p))));
+
+    // The same omniscient §2.6 valuation every club prices against — see
+    // `VALUATION_NOTE`.
+    let vk = ValueKnobs::default();
+    let dev = DevKnobs::default();
+    let ctx = MarketContext::from_world(world, &vk, &s.recent_ratings);
+    let valuations = value_all(world, s.date, &ctx, &vk, &dev);
 
     let bands = Bands::of(players.iter().map(|p| headline_ca(p)));
 
@@ -28,9 +51,12 @@ pub fn render(session: &Session, p: Palette) -> String {
         Col::left("Name", 20),
         Col::right("Age", 3),
         Col::right("CA", 3),
+        Col::right("Wage", 8),
+        Col::right("Contract", 11),
+        Col::right("Value*", 8),
         Col::left("Best role", 0),
     ]);
-    for player in players {
+    for player in &players {
         let (best, best_ca) = fforge_domain::best_role(&player.attributes, &ROLE_WEIGHTS);
         let alt = if best != player.natural_role {
             format!("{} ({})", best.short().trim(), best_ca)
@@ -38,23 +64,132 @@ pub fn render(session: &Session, p: Palette) -> String {
             String::new()
         };
         let ca = headline_ca(player);
+        let (wage, contract) = match &player.contract {
+            Some(c) => (money(c.wage), contract_cell(c.expires, s.date)),
+            // A player on the books with no contract is a free agent the club
+            // has not signed — rare, but the fold permits it, so say so rather
+            // than printing a blank.
+            None => ("—".to_string(), "unsigned !!".to_string()),
+        };
         t.row_all(
             vec![
                 Cell::new(player.natural_role.short()),
                 Cell::new(player.name.clone()),
                 Cell::new(player.age(s.date).to_string()),
                 Cell::new(ca.to_string()),
+                Cell::new(wage),
+                Cell::new(contract),
+                Cell::new(money(
+                    valuations.get(&player.id).copied().unwrap_or(Money(0)),
+                )),
                 Cell::new(alt),
             ],
             bands.sem(ca),
         );
     }
-    format!("\n{}", t.render(p))
+
+    let mut out = format!("\n{}", t.render(p));
+    let _ = writeln!(out, "{}", p.paint(VALUATION_NOTE, Sem::Muted));
+    out.push_str(&depth_block(session, p));
+    out
+}
+
+/// Valuations here are the **omniscient ground truth** (`TRANSFER_MODEL.md`
+/// §2.6): every club in v1 prices off the same central `value()`, and there is
+/// no scouting fog-of-war until Phase 5. Labelled rather than left implicit, so
+/// the column does not quietly become a promise the fogged game has to break.
+const VALUATION_NOTE: &str =
+    " * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).";
+
+/// Years left on a deal, with an urgency glyph. The glyph — not a colour — is
+/// what carries urgency on this screen, because the row's colour is already
+/// spoken for by the ability axis. A monospace column of `!!` is if anything a
+/// louder prompt than a hue, and it survives `NO_COLOR` intact.
+fn contract_cell(expires: GameDate, today: GameDate) -> String {
+    let years = (expires.days - today.days) as f64 / DAYS_PER_YEAR as f64;
+    if years <= 0.0 {
+        "expired !!".to_string()
+    } else if years < 0.5 {
+        // Inside the last half-season: `TRANSFER_MODEL.md` §2.4's contract
+        // multiplier is biting hard, so he is visibly losing value too.
+        format!("{years:.1}y !!")
+    } else if years < 1.0 {
+        format!("{years:.1}y !")
+    } else {
+        format!("{years:.1}y")
+    }
+}
+
+/// Depth against `worldgen::SQUAD_TEMPLATE`, plus the two hard stabilizers
+/// `club_ai` enforces on every AI club and a human can otherwise breach in
+/// silence (`TRANSFER_MODEL.md` §11).
+fn depth_block(session: &Session, p: Palette) -> String {
+    let s = &session.state;
+    let knobs = UtilityKnobs::default();
+    let squad: Vec<_> = s.world.club_players(s.player_club).collect();
+
+    let mut out = String::new();
+    let _ = writeln!(out, "\n Squad depth by natural role:");
+    let mut t = Table::new(vec![
+        Col::left("Role", 5),
+        Col::right("Have", 4),
+        Col::right("Template", 8),
+        Col::left("", 0),
+    ]);
+    for &(role, template) in SQUAD_TEMPLATE.iter() {
+        let have = squad.iter().filter(|pl| pl.natural_role == role).count();
+        let floor = hard_floor(role, &knobs);
+        let breached = floor.is_some_and(|f| have < f);
+        let note = match (floor.filter(|_| breached), have.cmp(&template)) {
+            (Some(f), _) => format!("! below the hard minimum of {f}"),
+            (None, std::cmp::Ordering::Less) => format!("{} short of template", template - have),
+            (None, std::cmp::Ordering::Greater) => format!("{} over template", have - template),
+            (None, std::cmp::Ordering::Equal) => String::new(),
+        };
+        let cells = vec![
+            Cell::new(role.short()),
+            Cell::new(have.to_string()),
+            Cell::new(template.to_string()),
+            Cell::new(note),
+        ];
+        if breached {
+            t.row_all(cells, Sem::Bad);
+        } else {
+            t.row(cells);
+        }
+    }
+    out.push_str(&t.render(p));
+
+    let size = squad.len();
+    let bounds = format!(
+        " Squad size {size} (the market's hard bounds are {}–{})",
+        knobs.squad_min, knobs.squad_max
+    );
+    let out_of_bounds = size < knobs.squad_min || size > knobs.squad_max;
+    let _ = writeln!(
+        out,
+        "{}",
+        if out_of_bounds {
+            p.paint(&format!("{bounds} !"), Sem::Bad)
+        } else {
+            bounds
+        }
+    );
+    out
+}
+
+/// The hard per-role minimum, where one exists — today only goalkeepers
+/// (`club_ai`'s `min_goalkeepers`). Read from `UtilityKnobs` rather than
+/// re-stated, so the CLI cannot drift from what the market enforces.
+fn hard_floor(role: Role, knobs: &UtilityKnobs) -> Option<usize> {
+    match role {
+        Role::Gk => Some(knobs.min_goalkeepers),
+        _ => None,
+    }
 }
 
 /// The squad's own CA quartiles — "relative to the squad" means relative to
-/// *this* squad, so a mid-table side's best player still reads as its best
-/// player.
+/// *this* squad, so a mid-table side's best player still reads as its best.
 struct Bands {
     q1: u8,
     q3: u8,
@@ -109,5 +244,15 @@ mod tests {
     fn an_empty_squad_does_not_panic() {
         let bands = Bands::of(std::iter::empty());
         assert_eq!(bands.sem(70), Sem::Ok);
+    }
+
+    #[test]
+    fn contract_urgency_escalates_and_is_glyph_carried() {
+        let today = GameDate::from_year_day(2026, 200);
+        let years = |y: f64| today.add_days((y * DAYS_PER_YEAR as f64) as i64);
+        assert_eq!(contract_cell(years(3.0), today), "3.0y");
+        assert_eq!(contract_cell(years(0.8), today), "0.8y !");
+        assert_eq!(contract_cell(years(0.2), today), "0.2y !!");
+        assert_eq!(contract_cell(today, today), "expired !!");
     }
 }

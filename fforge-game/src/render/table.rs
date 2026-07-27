@@ -129,6 +129,13 @@ impl Table {
         self
     }
 
+    /// Suppress the header row — for a label/value block, where the columns
+    /// are structure rather than a table with headings.
+    pub fn headerless(mut self) -> Table {
+        self.header = false;
+        self
+    }
+
     /// Append a row. Extra cells beyond the declared columns are appended
     /// unpadded, which is what a trailing flag column wants.
     pub fn row(&mut self, cells: Vec<Cell>) {
