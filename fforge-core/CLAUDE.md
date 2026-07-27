@@ -59,7 +59,7 @@ live game loop (`commands.rs` calling `check_conditions` after every command,
 `fforge-game` rendering the inbox) is explicitly out of scope here — that is
 B2.5/Batch 4's job; this task is the module and its own test suite only.
 
-Phase 2e has begun with `MATCH_MODEL.md` §11's sequencing step 1 — the §12 boundary
+Phase 2e began with `MATCH_MODEL.md` §11's sequencing step 1 — the §12 boundary
 extension, plumbing only. `MatchOutcome` and `Event::MatchPlayed` now carry resolved
 per-player consequences for all three consumers at once (`injuries: Vec<InjuryOutcome>`
 — the days out, never a severity to re-roll; `cards: Vec<CardOutcome>` — the card
@@ -71,10 +71,10 @@ field; never shortened by a later shorter layoff), cards → `GameState::season_
 own event, per §12's derived-suspension rule), ratings → `GameState::recent_ratings` (a
 `RATING_FORM_WINDOW`-capped form window). `GameState::recent_appearances` is the §13
 rolling appearance window (pruned to `CONDITION_WINDOW_DAYS` as the date advances) —
-distinct from `appearances_since_tick`, which stays monthly and tick-reset. The engine
-emits all three vectors empty (`boundary_consequences_stay_empty_until_the_2e_models_land`
-pins this), so no RNG draw and no calibration reading moved; the §14/§15/§18 models that
-fill them are still design-gated.
+distinct from `appearances_since_tick`, which stays monthly and tick-reset. At that step the
+engine emitted all three vectors empty, so no RNG draw and no calibration reading moved; the
+§14/§15/§18 models that fill them landed afterwards as T10/T11/T13, and **all three are
+populated today** — nothing on this boundary is a placeholder any more.
 
 The batch-3 handoff has since carried Phase 2e further: `natural_fitness` on `Character`
 (T3, domain + worldgen only), true minutes on `MatchPlayed` and minutes-share development
@@ -86,8 +86,8 @@ both `TACTICS_MODEL.md` §4 identity tests green and every pooled calibration gu
 unchanged. T7 (`ai_pick_tactics`/`AiTacticKnobs`, the `run_head_to_head` triangle harness)
 landed but found `TACTICS_MODEL.md` §5's triangle does not close, even after two targeted
 zone-profiling fixes (`TACTICS_MODEL.md` §5's finding, §9 item 6) — `ai_pick_lineup_vs`
-gates the policy behind `match_engine::AI_TACTICS_ENABLED` (currently `false`), so every
-AI-controlled match still runs `Tactics::neutral()` in practice, and T8-T13 could proceed
+gated the policy behind `match_engine::AI_TACTICS_ENABLED` (`false` at the time), so every
+AI-controlled match ran `Tactics::neutral()` in practice, and T8-T13 could proceed
 against T5's stable baseline.
 
 **T7-R has since resolved §9 item 6** (`TACTICS_MODEL.md` §5's "T7-R finding"). T7's stop
@@ -129,6 +129,26 @@ league aggregates (24 seeds, `TACTICS_MODEL.md` §8): goals/match 2.84 → **2.5
 161/161 green with the flag on, all four pooled guards and both golden-baseline tests included
 (the latter automatic — §4's invariant makes `Tactics::neutral()` bit-identical either way).
 
+**T14 closed Phase 2e: both remaining harnesses re-banked, no re-fit needed.** With AI tactics live,
+`career_arc` (8 seeds × 16 seasons) and `market::calibrate` (24 seeds × 15 seasons) were both re-run at
+their banked pooling and every metric landed inside its own per-seed spread — development integrates a
+monthly rate law over years and the market prices off CA, so neither is sensitive to a per-match
+tactical effect, even though the causal path to both is real (tactics → fatigue → cards → suspensions →
+who plays; tactics → results → ratings/revenue → `MarketContext.form`). Readings are in
+`DEVELOPMENT_MODEL.md` §6 and `TRANSFER_MODEL.md` §9.
+
+T14's doc-reconciliation pass also corrected one **live doc-vs-code divergence** worth knowing:
+`MATCH_MODEL.md` §11's RNG rule said all 2e randomness must come from the *single* per-fixture stream,
+"never from a second stream". The implementation uses four (`FIXTURE_STREAM_NS`, `CONSISTENCY_NS`,
+`INJURY_NS`, `FOUL_NS`) and is correct to — one shared stream would make every feature's identity
+setting non-local (turning off `injury_rate` would shift every later draw), which would have made the
+bit-for-bit identity tests anchoring the whole rollout impossible to write past the first landing. §11
+now records the separate-stream rule and why. Three model-vs-target gaps were also filed rather than
+fixed, since a re-bank pass records readings and does not get to invent mechanisms: Mental plateau
+onset reads ~26.4 against an "early 30s" target (with the veteran mental slope flat at +0.02 against
+~+0.3 — the same fact twice), wonderkid flop rate reads 0.00 against ~4%, and transfer volume reads
+1.805/club/window against §11's ~2-5 band, unmoved by two successive re-banks.
+
 T8 (Consistency, `MATCH_MODEL.md` §17) landed: `match_engine::resolve::build_xi` draws one
 per-match multiplier per player (`Knobs::consistency_sigma_max`, its own `CONSISTENCY_NS`
 RNG stream, identity `0.0`) and applies it to every attribute uniformly for the match;
@@ -164,8 +184,8 @@ overload scaled by `(1 − condition)` and age; pre-rolled once per player at ki
 `fire_due_ambient_injuries` as the possession loop's clock reaches it — a documented
 simplification of a per-minute hazard, since expected count is what §14's targets care about).
 Severity is a skewed categorical draw (`roll_injury`), resolved into `InjuryOutcome.days_out` —
-`MatchOutcome.injuries` is populated for the first time (`cards`/`ratings` still empty pending
-§15/§18). An injured player continues at reduced effectiveness for the rest of the match
+`MatchOutcome.injuries` is populated for the first time (`cards`/`ratings` followed at
+T11/§15 and T13/§18). An injured player continues at reduced effectiveness for the rest of the match
 (`impairment_mult`, identity `1.0`, production `0.6`) — no substitution yet, T12's job.
 `GameState::available` is the new derived view `ai_pick_lineup_available` (a squad-filtering
 sibling of `ai_pick_lineup`, `ai_pick_lineup_vs` gained a `today: GameDate` parameter to use
@@ -182,7 +202,7 @@ actor's own `Def` zone, on its own `FOUL_NS` stream (`play_match` gained `foul_r
 `Knobs::foul_rate` identity `0.0`). A fired foul is a non-mirroring turnover — the beat returns
 `(poss, zone)` unchanged rather than the take-on/pass's own outcome — and a severity draw sets
 `Card::{Yellow, SecondYellow, Red}` onto the new `MatchOutcome.cards` (populated for the first
-time; `ratings` still empty pending §18). A red sets `XiPlayer.sent_off_from_minute`;
+time; `ratings` followed at T13/§18). A red sets `XiPlayer.sent_off_from_minute`;
 `sample_by_presence` and `team_means` (both gained a `minute` parameter and now filter
 `on_pitch`) shrink the XI from there on, with `team_means` recomputing per-tick only once a
 side has actually lost a player (a cheap fast path reuses the once-per-match reading

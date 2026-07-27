@@ -330,24 +330,50 @@ real contests behind the same seam without reworking fouls.
 5. character activation (§17), ratings (§18) last — ratings are a pure derivation over a stream
    the earlier steps enrich.
 
-**RNG discipline for every added draw:** all new randomness comes from the *same* per-fixture
-stream (`derive_stream(seed, FIXTURE_STREAM_NS | fixture.id)`), drawn inline where the
-triggering event resolves — never from a second stream, never conditionally skipped in a way
-that depends on impure state. New-draw counts may depend on match events (a foul draw happens
-because a take-on resolved), which is fine: determinism is per-(inputs, seed), not
-per-draw-count.
+**RNG discipline for every added draw — corrected divergence (T14).** This section originally
+required that all new randomness come from the *same* per-fixture stream
+(`derive_stream(seed, FIXTURE_STREAM_NS | fixture.id)`), "never from a second stream". **The
+implementation deliberately does the opposite, and the implementation is right.** Each 2e feature
+that draws got its own namespace — `CONSISTENCY_NS` (§17), `INJURY_NS` (§14), `FOUL_NS` (§15) —
+alongside the original fixture stream.
+
+The reason the original rule fails: a single shared stream makes every feature's identity setting
+*non-local*. With one stream, setting `injury_rate = 0.0` still consumes draws (or, worse, stops
+consuming them), shifting every subsequent draw for fouls, consistency, and the possession loop
+itself — so no feature could be turned off without perturbing the others, and the bit-for-bit
+identity tests that anchor this whole rollout (§4's neutral-tactics invariant, T5's golden
+baseline) would have been impossible to write past the first landing. Separate streams make each
+identity setting *exactly* inert: `injury_rate = 0.0` draws from `INJURY_NS` and discards, leaving
+all other streams' sequences untouched. That is what let T8–T13 each measure a clean single-feature
+delta against a stable reference.
+
+What the original rule was actually protecting — determinism per `(inputs, seed)` — is fully
+preserved, since every stream is still seed-derived via `rng::derive_stream` and no stream is ever
+seeded from entropy or wall-clock. The surviving rules: draws happen inline where the triggering
+event resolves; new-draw counts may depend on match events (a foul draw happens because a take-on
+resolved); no stream may be conditionally skipped in a way that depends on impure state.
+
+**Sequencing actually taken**, which differs from the order drafted above (§12 boundary → tactics →
+consistency → condition → injuries → fouls/cards → substitutions → ratings). Fouls and injuries
+swapped with consistency/condition because condition feeds substitutions and injuries feed both;
+ratings stayed last as drafted, being a pure derivation over the stream everything else enriches.
+The drafted order was a reasonable guess; the taken order is the record.
 
 ## 12. The extended `MatchOutcome` / `MatchPlayed` boundary (R6)
 
-*Status: landed (sequencing step 1) for all three fields; `injuries` (§14, T10) and `cards`
-(§15, T11) are now populated by their real models, `ratings` still emits empty pending §18.
-`cond_drain` joins the struct when §13 lands, behind the same serde-default seam. `minutes`
-landed early, ahead of §16 (batch handoff T4/§2.8): every starter recorded a flat 90, every
-non-starter absent from the vec, until T11 made a sent-off player's minutes stop at his
-dismissal — degenerate and inert (all four pooled calibration guards read unchanged) until
-T10/T11/T12 make partial minutes possible; the playing-time input to development (below)
-needed the field and its minutes-share redefinition in place well before substitutions do, so
-landing it separately cost nothing and de-risked the larger §16 change.*
+*Status: **complete (T14 reconciliation).** All four fields are populated by their real models —
+`injuries` (§14, T10), `cards` (§15, T11), `ratings` (§18, T13), and `minutes`, which now reflects
+substitutions, dismissals, and entry minutes (§16, T12). Nothing on this boundary emits a
+placeholder any more.*
+
+*Two divergences from this section as first drafted, both deliberate and recorded where they were
+decided rather than silently applied: `cond_drain` was **never added** — §13's condition model
+derives condition from `GameState::recent_appearances` instead of draining a per-match counter, so
+the field had no work to do (see §13's status note); and `minutes` landed early, ahead of §16
+(batch handoff T4/§2.8), recording a flat 90 per starter while it was still inert, because the
+playing-time input to development needed the field and its minutes-share redefinition in place well
+before substitutions did. Landing it separately cost nothing (all four pooled calibration guards
+read unchanged at the time) and de-risked the larger §16 change.*
 
 2e produces per-player consequences that outlive the match. The §7 rule (record outcomes; the
 fold consumes without re-running engines) dictates the boundary: **every consequence that
@@ -787,6 +813,28 @@ chased — `consistency_sigma_max` is a plausibility pick explicitly meant to be
 target (this section's own §8 impact note below), and T8's scope fence was "do not re-tune
 knobs in this task." T14's re-banking pass inherits this as a concrete, measured number to
 weigh when it proposes a knob table.
+
+**T14 resolution: no re-fit. The mean shift was absorbed, not compounded.** The re-banking pass
+inherited this as an open knob decision and is closing it *without* moving
+`consistency_sigma_max`, because the number the fence was protecting has since been overtaken by
+two larger changes landing on the same aggregate. Pooled `bin/calibrate` goals/match now reads:
+
+| Configuration | goals/match |
+|---|---|
+| T6/T7 baseline (no Consistency, tactics neutral) | 2.64 |
+| + Consistency at `sigma_max = 0.25` (the T8 finding) | 2.89 |
+| + the rest of 2e — condition, injuries, fouls/cards, subs, ratings | 2.84 |
+| **+ AI tactics live** (`TACTICS_MODEL.md` §7, current) | **2.59** |
+
+Consistency's +9.5% is real and correctly diagnosed above, but it is not sitting on top of the
+final number — the tactics rollout moved goals/match *down* by more than Consistency moved it up
+(`TACTICS_MODEL.md` §8's re-bank: `Defensive` sides genuinely suppress the game once Mentality
+carries a real risk term). The engine lands at 2.59, comfortably inside
+`aggregates_are_in_a_believable_ballpark`'s band and closer to a plausible top-flight rate than
+the 2.89 that prompted the concern. Re-tuning `sigma_max` now would be fitting a knob to a
+symptom that no longer exists, and would cost the per-player match-to-match spread the knob is
+actually *for*. Left at `0.25`; the diagnosis above stays on record because the nonlinearity that
+produced it is a permanent property of the contest model, not a one-off.
 
 **Guard interaction (T8 finding).** `favourite_discrimination_regression_guard`'s pool was
 widened 8 → 24 seeds: Consistency's added per-match variance made the guard's sparsest
