@@ -1,15 +1,24 @@
 //! Presentation helpers shared by every screen and flow.
 //!
-//! Two kinds of thing live here, and nothing else:
-//!
+//! - [`sem`] — the `Sem` semantic vocabulary and the *only* mapping from it to
+//!   a colour. Nothing outside that module names a colour.
+//! - [`table`] — column layout. Pads before it paints, which is the only
+//!   ordering that survives colour.
 //! - **Formatting** — turning already-resolved values into the exact strings
 //!   the screens emit (`ordinal`, `result_line`).
 //! - **Small derived readings** the screens quote (`headline_ca`,
 //!   `club_avg_ca`, `table_position`). These are pure functions of state; they
 //!   sit here rather than in `screens/` because flows quote them too.
 //!
-//! The `Sem` colour vocabulary and the table/alignment helpers join this
-//! module at U2. Nothing in here prints.
+//! Nothing in here prints.
+
+// U2 lands the vocabulary and the helpers; U3 is where the screens adopt them.
+// Landing both together would make the snapshot diffs unreadable at exactly
+// the moment they matter most.
+#![allow(dead_code)]
+
+pub mod sem;
+pub mod table;
 
 use fforge_core::{Session, league_table};
 use fforge_domain::{ClubId, Player, ROLE_WEIGHTS, World, current_ability};
