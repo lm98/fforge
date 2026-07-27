@@ -1,0 +1,5 @@
+
+League-wide telemetry (the calibration harness embryo):
+  matches played : 50
+  goals per match: 2.82
+  home/draw/away : 50% / 24% / 26%

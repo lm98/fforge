@@ -1,0 +1,4 @@
+
+League-wide telemetry (the calibration harness embryo):
+  matches played : 0
+  goals per match: 0.00
