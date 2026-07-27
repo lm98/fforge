@@ -19,7 +19,9 @@
 //! the core's own test suite leans on.
 
 use crate::render::sem::Palette;
-use crate::screens::{finances, fixtures, header, inbox, season_end, squad, stats, table};
+use crate::screens::{
+    availability, finances, fixtures, header, inbox, season_end, squad, stats, table,
+};
 use fforge_core::news::NewsObserver;
 use fforge_core::{Command, EventObserver, SeasonTelemetry, Session, WorldGenConfig, new_game};
 use fforge_domain::ClubId;
@@ -153,6 +155,17 @@ fn inbox_screen_snapshot_when_empty() {
     );
 }
 
+/// Availability after enough matchdays for real injuries and cards to have
+/// accumulated — the empty-status branch is not the interesting one.
+#[test]
+fn availability_screen_snapshot() {
+    let (session, _) = fixture(12);
+    assert_snapshot(
+        "availability",
+        &availability::render(&session, Palette::PLAIN),
+    );
+}
+
 #[test]
 fn table_screen_snapshot() {
     let (session, _) = fixture(5);
@@ -205,13 +218,20 @@ fn season_end_snapshot() {
     );
 }
 
-/// Every screen, rendered both ways, for the two whole-suite invariants below.
+/// Every screen, rendered both ways, for the whole-suite invariants below.
+///
+/// **The fixture depth is load-bearing.** `the_screens_with_an_axis_actually_colour`
+/// needs a session where each screen's axis has something to *say*: a squad
+/// with nobody injured, suspended, or tired is correctly all `Sem::Ok` on the
+/// availability screen, and `Ok` costs no ink by design. Twelve matchdays is
+/// deep enough for real cards and layoffs to have accumulated.
 fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
-    let (session, telemetry) = fixture(5);
-    let news = news_fixture(5);
+    let (session, telemetry) = fixture(12);
+    let news = news_fixture(12);
     let (finished, finished_telemetry) = finished_season();
     vec![
         ("squad", squad::render(&session, p)),
+        ("availability", availability::render(&session, p)),
         ("inbox", inbox::render(&session, &news, 4, p)),
         ("finances", finances::render(&session, p)),
         ("table", table::render(&session, p)),

@@ -113,7 +113,9 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
         print!("{}", menu(unread, p));
         match prompt_menu(
             "> ",
-            &["", "s", "l", "t", "x", "$", "m", "i", "r", "k", "w", "q"],
+            &[
+                "", "s", "l", "f", "t", "x", "$", "m", "i", "r", "k", "w", "q",
+            ],
         )
         .as_str()
         {
@@ -122,6 +124,7 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
             "" => advance_flow(&mut session, &mut o, p),
             "s" => print!("{}", screens::squad::render(&session, p)),
             "l" => set_lineup_flow(&mut session, &mut o, p),
+            "f" => print!("{}", screens::availability::render(&session, p)),
             "t" => print!("{}", screens::table::render(&session, p)),
             "x" => print!("{}", screens::fixtures::render(&session, p)),
             "$" => print!("{}", screens::finances::render(&session, p)),
@@ -160,7 +163,7 @@ fn menu(unread: usize, p: Palette) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "  {}  [s] Squad   [l] Lineup & tactics",
+        "  {}  [s] Squad   [l] Lineup & tactics   [f] Fitness & availability",
         p.paint("SQUAD", Sem::Muted)
     );
     let _ = writeln!(
