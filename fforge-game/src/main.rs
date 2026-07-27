@@ -20,12 +20,14 @@ mod render;
 mod screens;
 
 use flows::advance::advance_flow;
+use flows::friendly::watch_friendly_flow;
 use flows::lineup::set_lineup_flow;
 use flows::new_game::{load_flow, new_game_flow};
 use flows::save::do_save;
 use flows::transfers::transfer_flow;
-use input::prompt_choice;
-use render::sem::Palette;
+use input::{prompt_choice, prompt_menu};
+use render::sem::{Palette, Sem};
+use std::fmt::Write as _;
 
 use fforge_core::{EventObserver, SeasonTelemetry, Session, news::NewsObserver};
 
@@ -108,33 +110,73 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
             return;
         }
         print!("{}", screens::header::render(&session, unread, p));
-        println!(
-            "[1] Squad  [2] Table  [3] Fixtures  [4] Lineup & tactics  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Transfers  [$] Finances  [i] Inbox  [0] Quit without saving"
-        );
-        match prompt_choice(
+        print!("{}", menu(unread, p));
+        match prompt_menu(
             "> ",
-            &["1", "2", "3", "4", "5", "6", "7", "8", "9", "$", "i", "0"],
+            &["", "s", "l", "t", "x", "$", "m", "i", "r", "k", "w", "q"],
         )
         .as_str()
         {
-            "1" => print!("{}", screens::squad::render(&session, p)),
-            "2" => print!("{}", screens::table::render(&session, p)),
-            "3" => print!("{}", screens::fixtures::render(&session, p)),
-            "4" => set_lineup_flow(&mut session, &mut o, p),
-            "5" => advance_flow(&mut session, &mut o, p),
-            "6" => print!("{}", screens::stats::render(&o.telemetry)),
-            "7" => do_save(&session),
-            "8" => {
-                do_save(&session);
-                return;
-            }
-            "9" => transfer_flow(&mut session, &mut o, p),
+            // `Advance` is the only entry a player hits *every* turn, so it is
+            // the default action rather than one of ten equals (R14).
+            "" => advance_flow(&mut session, &mut o, p),
+            "s" => print!("{}", screens::squad::render(&session, p)),
+            "l" => set_lineup_flow(&mut session, &mut o, p),
+            "t" => print!("{}", screens::table::render(&session, p)),
+            "x" => print!("{}", screens::fixtures::render(&session, p)),
             "$" => print!("{}", screens::finances::render(&session, p)),
+            "m" => transfer_flow(&mut session, &mut o, p),
             "i" => {
                 print!("{}", screens::inbox::render(&session, &o.news, unread, p));
                 inbox_seen = screens::inbox::len(&session, &o.news);
             }
-            _ => return,
+            "r" => print!("{}", screens::stats::render(&o.telemetry)),
+            "k" => watch_friendly_flow(&session, p),
+            "w" => do_save(&session),
+            _ => {
+                if prompt_choice("Save before quitting? [y/n] ", &["y", "n"]) == "y" {
+                    do_save(&session);
+                }
+                return;
+            }
         }
     }
+}
+
+/// R14's grouped menu.
+///
+/// **Presentational grouping only — the keyspace stays flat.** No sub-menus:
+/// they would add a navigation step to every action to save one line of screen,
+/// and every action here stays exactly one keystroke from the main screen.
+///
+/// Mnemonic letters rather than numbers, because a numbered menu renumbers every
+/// time an entry lands and `[s]` for squad does not.
+fn menu(unread: usize, p: Palette) -> String {
+    let inbox = if unread > 0 {
+        format!("[i] Inbox ({unread})")
+    } else {
+        "[i] Inbox".to_string()
+    };
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "  {}  [s] Squad   [l] Lineup & tactics",
+        p.paint("SQUAD", Sem::Muted)
+    );
+    let _ = writeln!(
+        out,
+        "  {}   [t] Table   [x] Fixtures   [$] Finances   [m] Transfers",
+        p.paint("CLUB", Sem::Muted)
+    );
+    let _ = writeln!(
+        out,
+        "  {}   {inbox}   [r] Reports   [k] Friendly (tactics sandbox)",
+        p.paint("DESK", Sem::Muted)
+    );
+    let _ = writeln!(
+        out,
+        "  ── {} ──          [w] Save   [q] Quit",
+        p.paint("[enter] Advance matchday", Sem::Emphasis)
+    );
+    out
 }

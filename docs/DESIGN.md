@@ -402,4 +402,7 @@ within a window — settled simultaneous, deferred-acceptance (Gale–Shapley-fl
   nudge (Phase 5; a calibration/taste problem, not architectural).
 - **UI toolkit:** egui (the current lean) vs Tauri + web — held open until the management screens
   have been felt in practice (§8). Not blocking: Phase 0 interfaces are language- and
-  toolkit-agnostic.
+  toolkit-agnostic. **The evidence this was waiting on is now written down:**
+  `docs/UI_TOOLKIT_EVIDENCE.md`, produced by Batch 4 (R18). It records what the terminal
+  handled well, where it fought the task, and the one measurement still missing (the
+  substitution rule builder, G3). Still a gather, not a decision — Phase 6 decides.

@@ -32,6 +32,19 @@ pub fn prompt_choice(prompt: &str, allowed: &[&str]) -> String {
     }
 }
 
+/// Like [`prompt_choice`], but for the main menu, where a bare `enter` (the
+/// empty string) is a real choice and echoing the whole option list back is
+/// noise — the menu is already on screen right above the prompt.
+pub fn prompt_menu(prompt: &str, allowed: &[&str]) -> String {
+    loop {
+        let input = read_line(prompt);
+        if allowed.contains(&input.as_str()) {
+            return input;
+        }
+        println!("Not a menu key. Press enter to advance the matchday.");
+    }
+}
+
 /// Loops until the player types a number in `lo..=hi`; `q` aborts (`None`).
 pub fn prompt_number(prompt: &str, lo: usize, hi: usize) -> Option<usize> {
     loop {
