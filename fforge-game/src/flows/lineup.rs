@@ -1,14 +1,21 @@
-//! Formation + XI selection, submitted as `Command::SubmitLineup`.
+//! The team sheet: formation, XI, and tactics, submitted together as one
+//! `Command::SubmitLineup`.
+//!
+//! Tactics ride the same `Lineup` decision value as the XI
+//! (`TACTICS_MODEL.md` §6), so they are one flow, not two menu entries — see
+//! `flows::tactics` for the picker itself.
 
 use crate::Observers;
+use crate::flows::tactics;
 use crate::input::{prompt_choice, prompt_number, read_line};
 use crate::render::headline_ca;
+use crate::render::sem::Palette;
 use fforge_core::{Command, Session, match_engine};
 use fforge_domain::{
     FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI, current_ability,
 };
 
-pub fn set_lineup_flow(session: &mut Session, o: &mut Observers) {
+pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     let s = &session.state;
     let world = s.world.clone();
     let squad = world.club(s.player_club).players.clone();
@@ -76,23 +83,32 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers) {
         }
     }
 
+    // The assistant's read on this fixture seeds the picker, so a player who
+    // just hits [d] fields a real shape rather than four `Balanced` shrugs.
+    let suggested = tactics::assistant_pick(session);
+    let start = suggested
+        .or(session.state.last_lineup.as_ref().map(|l| l.tactics))
+        .unwrap_or_else(Tactics::neutral);
+    let Some(chosen_tactics) = tactics::pick(start, suggested, p) else {
+        return;
+    };
+
     let mut players = [PlayerId(0); XI];
     players.copy_from_slice(&chosen);
     let lineup = Lineup {
         formation: (fi - 1) as u8,
         players,
-        // No tactics UI yet — the human's team sheet plays neutral until a
-        // later batch adds the picker.
-        tactics: Tactics::neutral(),
-        // No bench/substitution UI yet either (MATCH_MODEL.md §16, T12) —
-        // the human's team sheet plays unsubstituted until a later batch
-        // adds the picker.
+        tactics: chosen_tactics,
+        // No bench/substitution UI yet (MATCH_MODEL.md §16, T12) — the human's
+        // team sheet plays unsubstituted until Batch 4's G3 adds the rule
+        // builder.
         bench: Vec::new(),
         sub_plan: Vec::new(),
     };
     println!(
-        "\nTeam sheet ({}), strength {:.1}:",
+        "\nTeam sheet ({}, {}), strength {:.1}:",
         formation.name,
+        tactics::summary(chosen_tactics),
         match_engine::lineup_strength(&world, &lineup)
     );
     for (i, &pid) in lineup.players.iter().enumerate() {

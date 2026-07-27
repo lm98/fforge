@@ -109,7 +109,7 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
         }
         print!("{}", screens::header::render(&session, unread, p));
         println!(
-            "[1] Squad  [2] Table  [3] Fixtures  [4] Set lineup  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Transfers  [$] Finances  [i] Inbox  [0] Quit without saving"
+            "[1] Squad  [2] Table  [3] Fixtures  [4] Lineup & tactics  [5] Advance matchday\n[6] League stats  [7] Save  [8] Save & quit  [9] Transfers  [$] Finances  [i] Inbox  [0] Quit without saving"
         );
         match prompt_choice(
             "> ",
@@ -120,7 +120,7 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
             "1" => print!("{}", screens::squad::render(&session, p)),
             "2" => print!("{}", screens::table::render(&session, p)),
             "3" => print!("{}", screens::fixtures::render(&session, p)),
-            "4" => set_lineup_flow(&mut session, &mut o),
+            "4" => set_lineup_flow(&mut session, &mut o, p),
             "5" => advance_flow(&mut session, &mut o, p),
             "6" => print!("{}", screens::stats::render(&o.telemetry)),
             "7" => do_save(&session),
