@@ -22,7 +22,7 @@ mod zone;
 pub use calibrate::{
     DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, PROFILE_SHIFT,
     ProfileRow, SQUAD_PROFILES, SquadProfile, StreamTelemetry, apply_squad_profile, elo_expected,
-    probe_tactics, run_head_to_head, run_squad_conditional_probe,
+    probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
 pub use knobs::Knobs;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
@@ -265,20 +265,23 @@ fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
 /// baseline bit-for-bit — letting each 2e feature measure a clean
 /// single-feature delta against a stable reference.
 ///
-/// **The blocker moved (T7-R).** The original one — §5's triangle not closing
-/// — is resolved: `TACTICS_MODEL.md` §9 item 6 is settled in favour of
-/// squad-conditional non-dominance, and Tempo/Pressing are re-fitted so no
-/// tactic dominates. Flipping this to `true` is *mechanically* safe today:
-/// the full suite passes 161/161 with it on, all four pooled calibration
-/// guards and the golden baseline included.
+/// **Now `true` (T7-R2).** Both blockers are cleared. `TACTICS_MODEL.md` §9
+/// item 6 resolved in favour of squad-conditional non-dominance (Tempo and
+/// Pressing re-fitted so no tactic dominates); §9 item 7 then resolved the
+/// Mentality axis, which the first re-fit had exposed as the remaining
+/// dominant instruction — `Attacking` beat `Balanced` 0.540/0.460 because
+/// the axis had two advance-class gains and no advance-class risk term at
+/// all. It now has one, and every forced matchup on the axis reads within
+/// ±0.3pt of even while §8's goal-expectation predictions land in band for
+/// the first time.
 ///
-/// What holds it now is §9 item 7: `ai_pick_tactics` picks Mentality from the
-/// strength gap, and `Mentality::Attacking` still beats `Balanced` 0.530 /
-/// 0.470 — the same advance-class/logit-class scale mismatch T7-R diagnosed
-/// for Tempo, uncorrected on this axis. Flipping now would put a dominant
-/// instruction into every AI match and move pooled goals/match 2.84 → 3.19.
-/// Fit Mentality first, then flip, then take §8's re-bank pass.
-pub const AI_TACTICS_ENABLED: bool = false;
+/// With no instruction dominating, an AI side picking tactics is finally a
+/// decision rather than a free upgrade, so the policy is live: every
+/// AI-controlled match now runs `ai_pick_tactics`'s choice.
+/// `Tactics::neutral()` remains bit-identical to the T5 golden baseline by
+/// the §4 invariant, so the identity tests are unaffected by the flip — only
+/// the pooled league aggregates move, and those are re-banked in §8.
+pub const AI_TACTICS_ENABLED: bool = true;
 
 /// An AI-controlled side's lineup *and* tactics for a real fixture
 /// (`TACTICS_MODEL.md` §7): `ai_pick_lineup_available`'s XI (`today` gates

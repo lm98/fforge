@@ -27,15 +27,14 @@ are drafted as sections in the note that already pins that model.
   table edits). Both §4 tests land green: `resolve_tactics_neutral_is_the_exact_identity` and
   `neutral_tactics_reproduce_phase_2a_bit_for_bit` (replaying the T5 golden table). All four
   pooled calibration guards re-ran unchanged.
-- **§7 landed but gated off (batch-3 T7 + T7 addendum).** `ai_pick_tactics`/`AiTacticKnobs`
+- **§7 landed and now live (batch-3 T7 → T7-R → T7-R2).** `ai_pick_tactics`/`AiTacticKnobs`
   and the head-to-head harness (`calibrate::run_head_to_head`, `bin/calibrate --head-to-head`)
-  are implemented and tested, but `match_engine::AI_TACTICS_ENABLED = false` keeps every
-  AI-controlled match at `Tactics::neutral()`. **T7-R has since resolved §9 item 6** (§5's
-  triangle is retired; non-dominance is squad-conditional, and Tempo/Pressing are re-fitted so
-  no tactic dominates), and every pooled guard passes with the flag flipped — but the flag
-  stays `false` on a *different* blocker: `Mentality::Attacking` is still dominant (§9 item 7),
-  and `ai_pick_tactics` sets Mentality from the strength gap, so flipping now would put that
-  dominance into every AI match. Fit Mentality, then flip. No scratchpad was used to settle the structure — the
+  are implemented and tested, and `match_engine::AI_TACTICS_ENABLED` is now **`true`** — every
+  AI-controlled side picks real tactics. It took two fits to get there: **§9 item 6** (§5's
+  cyclic triangle retired, non-dominance re-founded as squad-conditional, Tempo and Pressing
+  re-fitted) and **§9 item 7** (Mentality, which item 6's fit exposed as the last dominant
+  instruction — it had two advance-class gains and no advance-class risk term). §8 records the
+  re-banked league aggregates. No scratchpad was used to settle the structure — the
   `TRANSFER_MODEL.md` §1.1 reasoning applies verbatim: the *structure* is settled by this note
   (every tactic effect is a deformation of an already-calibrated probability), and the numbers
   are knob-table entries the existing Rust harness (`match_engine::calibrate`, `bin/calibrate`)
@@ -177,8 +176,8 @@ and are therefore omitted.
 
 | Instruction, level | Effect (per side) |
 |---|---|
-| Mentality `Attacking` | `advance_mult` ×1.20, `penetrate_mult` ×1.20, `atk_bias` +0.08, `def_bias_by_zone` −0.08 in every zone (men committed forward defend everything worse) |
-| Mentality `Defensive` | mirror: ×0.83, ×0.83, −0.08, +0.08 |
+| Mentality `Attacking` | `advance_mult` ×1.20, `penetrate_mult` ×1.20, `atk_bias` +0.08, `def_bias_by_zone` −0.08 in every zone (men committed forward defend everything worse), **plus the T7-R2 commitment term: opponent's `p_mid_advance` ×1.25 and `p_attc_penetrate` ×1.25** — the space in behind a side that has gone |
+| Mentality `Defensive` | mirror: ×0.83, ×0.83, −0.08, +0.08, **opponent's `p_mid_advance` ×0.79 and `p_attc_penetrate` ×0.79** (T7-R2 — a settled side denies the space `Attacking` sells; fitted independently, not as `1/1.25`) |
 | Tempo `Direct` | `advance_mult` **×1.13** (T7-R fit, §5 — was ×1.30), `w_longshot` ×1.5, `w_takeon` ×1.1, `b_pass_delta` **own `Def` −0.25, `Mid`/`AttC`/`AttW` −0.10** (T7 addendum §5/Fix B, resolved below — was a uniform −0.15) |
 | Tempo `Patient` | `advance_mult` **×0.88** (T7-R fit, §5 — was ×0.80), `w_longshot` ×0.6, `b_pass_delta` +0.10 uniform (unchanged) |
 | Width `Wide` | `p_wide_mult` ×1.35, `w_cross` ×1.2 |
@@ -470,25 +469,21 @@ inputs are recorded.
 
 ## 7. The AI tactics policy — and the Phase-5 seam it becomes
 
-**Status: landed but gated off by default (T7 addendum §7; blocker updated by T7-R).**
-`ai_pick_tactics` and `AiTacticKnobs` are implemented and tested;
-`match_engine::AI_TACTICS_ENABLED` (currently `false`) gates whether `ai_pick_lineup_vs`
-actually applies the policy's choice or leaves every AI-controlled lineup at
-`Tactics::neutral()`. This is not a rollback — it is the mechanism that lets the rest of
-Phase 2e proceed against T5's stable golden baseline, rather than each feature measuring its
-own delta against a still-moving tactics baseline. By §4's invariant, `Tactics::neutral()` is
-bit-identical to T5's baseline regardless, so nothing that ran with the flag off needs to be
-redone; only re-measured if it cares about the movement.
+**Status: live (T7-R2).** `match_engine::AI_TACTICS_ENABLED` is now `true`, so
+`ai_pick_lineup_vs` applies this policy's choice on every AI-controlled side of every fixture.
 
-**T7-R updated why it is still off.** §5's triangle finding — the original blocker — is
-resolved (§9 item 6). The flag is now mechanically safe to flip: with `true`, the full suite
-passes 161/161, including all four pooled calibration guards and the golden baseline. What
-holds it is §9 item 7: this policy sets **Mentality** from the strength gap, and `Attacking`
-still beats `Balanced` 0.530 / 0.470, so flipping today would inject a known-dominant
-instruction into every AI match and move pooled goals/match 2.84 → 3.19 (+12.3%) on the back
-of it. The policy's *other* three axes are in good shape — notably "Pressing from the legs",
-which T7-R's measurement retroactively vindicates as the correct shape for the one genuinely
-squad-conditional mechanism the engine has.
+It was gated off from T7 until now, and the reason is worth keeping: the gate let the rest of
+Phase 2e measure clean single-feature deltas against T5's stable golden baseline instead of
+against a still-moving tactics baseline. It came off in two steps — §9 item 6 (the triangle;
+Tempo and Pressing re-fitted so no tactic dominates) and then §9 item 7 (Mentality, which the
+first re-fit exposed as the last dominant instruction). Both are resolved. By §4's invariant
+`Tactics::neutral()` stays bit-identical to T5's baseline regardless of this flag, so nothing
+measured with it off needs redoing; §8 records the league aggregates that moved when it went on.
+
+Note in passing that "Pressing from the legs" — this policy's rule, written before anyone
+measured it — turned out to be the correct shape for the one genuinely squad-conditional
+mechanism the engine has (§9 item 6). That is luck rather than foresight, but it does mean the
+policy's attribute-driven axes are pointing at something real.
 
 **v1: `ai_pick_tactics(world, club, opponent, is_home) -> Tactics`** — deterministic,
 RNG-free, the tactics sibling of `ai_pick_lineup` and described the same way: *the Phase-1-
@@ -584,6 +579,34 @@ are roughly zero-mean across a league, but the full harness re-runs and, if need
 a tactics feature that breaks the favourite-discrimination slope is mis-designed, not
 mis-fitted.
 
+**[re-banked, T7-R2 — the enabling pass.]** `AI_TACTICS_ENABLED` is now `true`. Pooled league
+aggregates, 24 seeds, `bin/calibrate`:
+
+| Aggregate | Tactics off (T5 baseline) | **Tactics live** | Note |
+|---|---|---|---|
+| goals/match | 2.84 | **2.59** | −8.8%; still inside the ballpark guard's `1.2–4.0` sanity band |
+| H / D / A | 43.0 / 25.7 / 31.3 | 42.7 / 26.8 / 30.6 | slightly more draws, as more sides play `Defensive` |
+| shots/match | 25.24 | 23.64 | |
+| shots on target | 33.9% | 33.8% | flat |
+| conversion | 11.2% | 11.0% | flat |
+| headed goal share | 20.7% | 23.4% | Width instructions now live — more crosses, more headers |
+| wide-origin share | 27.2% | 30.3% | same cause |
+| home possession | 54.8% | 54.8% | unchanged |
+| fouls / yellows / reds | 20.2 / 2.20 / 0.039 | 20.5 / 2.23 / 0.039 | all in band |
+
+**No re-fit was required** — the `b_beat`-style pass this section reserved was not needed. All
+161 tests pass with the flag on, including `favourite_discrimination_regression_guard`,
+`aggregates_are_in_a_believable_ballpark`, `career_arcs_are_in_a_believable_ballpark`,
+`market_is_in_a_believable_ballpark`, and both golden-baseline tests (the last of those being
+automatic: §4's invariant makes `Tactics::neutral()` bit-identical regardless of this flag).
+
+The direction of the goals shift is worth recording because it inverted mid-investigation: with
+Mentality still unfitted, enabling the policy moved goals/match *up* to 3.19 (+12.3%), driven by
+`Attacking`'s then-dominant advance multipliers. With §9 item 7's concession term in place the
+same flip reads 2.59 — `Defensive` sides now genuinely suppress the game rather than merely
+handicapping themselves. That is the intended behaviour of a risk axis, and it is why the flip
+was held until Mentality was fitted rather than taken when it first became mechanically safe.
+
 ## 9. Open sub-questions
 
 Deliberately unresolved, to settle during implementation or B3.9 calibration:
@@ -644,19 +667,44 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
    `match_engine::AI_TACTICS_ENABLED` stays `false`, but **no longer on account of this item** —
    see item 7.
 
-7. **[open, T7-R] `Mentality` is the remaining dominant instruction — and gates the AI policy.**
-   With Tempo and Pressing balanced, `Attacking` beats `Balanced` 0.530 / 0.470 and the §5
-   counter posture `Defensive+Direct` loses to `Attacking` 0.432 / 0.568. Diagnosis is already
-   in hand and is §3's lever-class mismatch in its purest form: Mentality's gains are two
-   advance-class multipliers (`advance_mult` ×1.20, `penetrate_mult` ×1.20) while its only cost
-   is a logit-class `def_bias_by_zone` −0.08 — a *risk* axis carrying no advance-class risk.
-   Either shrink the two gain multipliers or give the axis a real advance-class concession
-   (the opponent's `p_attc_penetrate`/`p_mid_advance` against a committed side), then re-measure
-   `Attacking`-vs-`Balanced` to ≈0.500 and re-check §8's "match goals ±0.2–0.4" rows.
+7. **[RESOLVED, T7-R2] `Mentality` had no risk term; it has one now.** Balancing Tempo and
+   Pressing (item 6) exposed Mentality as the remaining dominant instruction: pooled over 6
+   worlds × 3000 seeds, `Attacking` beat `Balanced` **0.540 / 0.460** and the §5 counter posture
+   `Defensive+Direct` *lost* to `Attacking` **0.431 / 0.569**.
 
-   **This is what `AI_TACTICS_ENABLED` now waits on.** Every existing pooled guard passes with
-   the flag flipped to `true` (verified, T7-R: 161/161 including all four calibration guards and
-   the golden baseline), so the flip is *mechanically* safe today — but `ai_pick_tactics` sets
-   Mentality from the strength gap, so enabling it now would put a known-dominant instruction
-   into every AI match and shift pooled goals/match from 2.84 to 3.19 (+12.3%) on the strength
-   of that dominance. Fit Mentality first, then flip, then take §8's re-bank pass.
+   **Diagnosis — §3's lever-class mismatch in its purest form.** Mentality's gains were two
+   advance-class multipliers (`advance_mult` ×1.20, `penetrate_mult` ×1.20); its only cost was
+   a logit-class `def_bias_by_zone` −0.08, ~4× weaker. §5 had assigned the compensating role to
+   *turnover mirroring* — but mirroring sends a ball lost high to a **deep** opponent restart,
+   which protects the committed side rather than punishing it. The risk half of the risk axis
+   was simply never modelled.
+
+   **Fix — an advance-class concession, not a shrunken gain.** The gains were deliberately left
+   alone: they are what drives §8's goal-expectation rows, and shrinking them would have bought
+   points-neutrality by gutting the axis's purpose. Instead `Attacking` now concedes the
+   opponent `p_mid_advance` ×1.25 and `p_attc_penetrate` ×1.25, and `Defensive` denies them at
+   ×0.79 — the same shape `Pressing::High`'s beaten-press and `Pressing::Deep`'s compact-block
+   terms already use, so no new deformation type enters §3.
+
+   **Result** (8 worlds × 3000 seeds × 2 legs). Note the harness's own leg-asymmetry offset,
+   ~+0.0037, visible in the both-identical control rows that ought to read exactly 0.500:
+
+   | Matchup | Before | After | Goals/match (vs both-`Balanced` 0.917) |
+   |---|---|---|---|
+   | `Attacking` v `Balanced` | 0.540 | **0.5046** | 1.213 → **+0.296** ✓ §8 band |
+   | `Defensive` v `Balanced` | 0.470 | **0.5067** | 0.679 → **−0.238** ✓ §8 band |
+   | `Defensive+Direct` v `Attacking` | 0.431 | **0.5022** | — |
+   | both `Attacking` *(control, should be 0.500)* | 0.506 | 0.5040 | 1.613 |
+   | both `Defensive` *(control, should be 0.500)* | 0.506 | 0.5034 | 0.508 |
+
+   Every matchup is within ±0.3pt of even once the offset is subtracted, and §8's "match goals
+   ±0.2–0.4" predictions **land in band for the first time** — they previously read +0.16 /
+   −0.13, under-powered. The fix improved the pre-registered shape targets rather than trading
+   against them, which is the outcome that makes it a correction rather than a compromise.
+
+   `Defensive+Direct` v `Attacking` moves from badly wrong-signed to even. §5 predicted the
+   counter side would actively *profit*; it does not — it merely stops losing. That part of §5
+   remains unconfirmed, and is left standing as such rather than fitted toward.
+
+   **`AI_TACTICS_ENABLED` is now `true`** (see §7). With no instruction dominating, an AI side
+   choosing tactics is a decision rather than a free upgrade.

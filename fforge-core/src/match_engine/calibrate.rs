@@ -515,6 +515,21 @@ pub fn run_head_to_head(
     tactics_b: Tactics,
     seeds: &[u64],
 ) -> f64 {
+    run_head_to_head_detailed(world, club, tactics_a, tactics_b, seeds).0
+}
+
+/// `run_head_to_head`, also returning **combined goals per match** across both
+/// sides. Mentality (`TACTICS_MODEL.md` §5) is the *risk* axis: the property
+/// it is supposed to move is goal expectation, not expected points, so a
+/// points-only harness cannot tell a correctly-balanced risk axis from a dead
+/// one. Returns `(tactics_a's expected-points share, goals per match)`.
+pub fn run_head_to_head_detailed(
+    world: &World,
+    club: ClubId,
+    tactics_a: Tactics,
+    tactics_b: Tactics,
+    seeds: &[u64],
+) -> (f64, f64) {
     let mut lineup_a = ai_pick_lineup(world, club);
     lineup_a.tactics = tactics_a;
     let mut lineup_b = ai_pick_lineup(world, club);
@@ -525,6 +540,7 @@ pub fn run_head_to_head(
     // harness measuring the tactics triangle, not injuries.
     let today = GameDate { days: 0 };
     let mut total_points_a = 0.0;
+    let mut total_goals = 0u32;
     let mut matches = 0u32;
     for &seed in seeds {
         let mut rng_a_home = derive_stream(seed, HEAD_TO_HEAD_NS);
@@ -544,6 +560,7 @@ pub fn run_head_to_head(
             today,
         );
         total_points_a += match_expected_points(out_a_home.home_goals, out_a_home.away_goals);
+        total_goals += out_a_home.home_goals as u32 + out_a_home.away_goals as u32;
         matches += 1;
 
         let mut rng_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | 1);
@@ -564,10 +581,14 @@ pub fn run_head_to_head(
         );
         // a is away in this leg: a's points share = 1 - home (b)'s.
         total_points_a += 1.0 - match_expected_points(out_b_home.home_goals, out_b_home.away_goals);
+        total_goals += out_b_home.home_goals as u32 + out_b_home.away_goals as u32;
         matches += 1;
     }
 
-    total_points_a / matches as f64
+    (
+        total_points_a / matches as f64,
+        total_goals as f64 / matches as f64,
+    )
 }
 
 /// How far a `SquadProfile` shifts each attribute in its boost/cut clusters,
@@ -907,6 +928,93 @@ mod tests {
     ///    is forced by the engine's own algebra, not fitted, which is why it
     ///    is the assertion worth pinning.
     ///
+    /// The T7-R2 regression guard for `TACTICS_MODEL.md` §9 item 7: Mentality
+    /// is a **risk** axis, so it must move goals without moving expected
+    /// points. Both halves are asserted, because each alone is satisfiable by
+    /// a broken axis — a Mentality that did nothing at all would pass the
+    /// points check, and the pre-T7-R2 one (which beat `Balanced` 0.540/0.460)
+    /// passed the goals check while being a straight upgrade.
+    ///
+    /// The points band is read against the harness's own control row rather
+    /// than against 0.500: `run_head_to_head`'s two legs use sibling-but-not-
+    /// equivalent RNG streams, so even a perfectly symmetric matchup reads
+    /// ~+0.004 high. Measuring `Attacking`-vs-`Balanced` against
+    /// `Attacking`-vs-`Attacking` cancels that offset instead of budgeting
+    /// for it.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    #[test]
+    fn mentality_is_a_risk_axis_not_a_better_setting() {
+        use crate::worldgen::{WorldGenConfig, generate};
+        use fforge_domain::Mentality;
+
+        let cfg = WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let seeds: Vec<u64> = (0..1200).collect();
+        let attacking = Tactics {
+            mentality: Mentality::Attacking,
+            ..Tactics::neutral()
+        };
+        let defensive = Tactics {
+            mentality: Mentality::Defensive,
+            ..Tactics::neutral()
+        };
+        let balanced = Tactics::neutral();
+
+        let mut atk_pts = Vec::new();
+        let mut def_pts = Vec::new();
+        let mut control_pts = Vec::new();
+        let mut atk_goals = Vec::new();
+        let mut def_goals = Vec::new();
+        let mut balanced_goals = Vec::new();
+        for w in 0..4u64 {
+            let (world, _s, _d) = generate(w * 7 + 7, &cfg);
+            let club = world.competition.clubs[0];
+            let (p, g) = run_head_to_head_detailed(&world, club, attacking, balanced, &seeds);
+            atk_pts.push(p);
+            atk_goals.push(g);
+            let (p, g) = run_head_to_head_detailed(&world, club, defensive, balanced, &seeds);
+            def_pts.push(p);
+            def_goals.push(g);
+            // Control: an exactly symmetric matchup, whose true value is
+            // 0.500 by construction. Whatever it actually reads is the
+            // harness's leg asymmetry, and it is subtracted below.
+            let (p, g) = run_head_to_head_detailed(&world, club, balanced, balanced, &seeds);
+            control_pts.push(p);
+            balanced_goals.push(g);
+        }
+        let avg = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+        let offset = avg(&control_pts) - 0.5;
+
+        for (name, pts) in [("Attacking", &atk_pts), ("Defensive", &def_pts)] {
+            let corrected = avg(pts) - offset;
+            assert!(
+                (corrected - 0.5).abs() < 0.02,
+                "{name} reads {corrected:.4} against Balanced (offset-corrected; raw \
+                 {:.4}, harness offset {offset:+.4}) — Mentality is the risk axis, so a \
+                 setting worth more than ±2pts of expected points is a better setting, \
+                 not a riskier one (TACTICS_MODEL.md §5, §9 item 7)",
+                avg(pts)
+            );
+        }
+
+        // And it must actually do its job: open the game up / shut it down.
+        let base = avg(&balanced_goals);
+        let atk_delta = avg(&atk_goals) - base;
+        let def_delta = avg(&def_goals) - base;
+        assert!(
+            atk_delta > 0.1,
+            "Attacking moves goals/match by {atk_delta:+.3} (base {base:.3}); §8 predicts \
+             +0.2-0.4, and an axis that costs nothing and does nothing is not a tradeoff"
+        );
+        assert!(
+            def_delta < -0.1,
+            "Defensive moves goals/match by {def_delta:+.3} (base {base:.3}); §8 predicts \
+             -0.2-0.4"
+        );
+    }
+
     /// Deliberately **not** asserted: which tactic is argmax per profile. The
     /// pooled reading rotates (technical → `Patient` in 7/8 worlds, physical →
     /// `High press` in 7/8), but on `control` and `grinder` the three tactics

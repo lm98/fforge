@@ -58,13 +58,18 @@ pub(super) struct SideEffects {
     /// side, actor or defender alike (an exertion cost of the press, not a
     /// contest-specific term).
     pub(super) fatigue_mult: f64,
-    /// Pressing `High`'s beaten-press term: when this side defends, the
-    /// *opponent's* `p_mid_advance` gets this multiplier — the space behind
-    /// a committed press once an opponent escapes it.
+    /// **Conceded space.** When this side defends, the *opponent's*
+    /// `p_mid_advance` gets this multiplier. Two tenants: Pressing `High`'s
+    /// beaten-press term (the space behind a committed press once an opponent
+    /// escapes it) and, since T7-R2, Mentality's own commitment term — men
+    /// upfield are men not between the ball and the goal. They stack, which
+    /// is the intended reading: a high-pressing `Attacking` side concedes on
+    /// both counts.
     pub(super) opp_mid_advance_mult: f64,
-    /// Pressing `Deep`'s compact-block term: when this side defends, the
-    /// *opponent's* `p_attc_penetrate` gets this multiplier — no space
-    /// behind a settled block.
+    /// **Conceded penetration.** When this side defends, the *opponent's*
+    /// `p_attc_penetrate` gets this multiplier — Pressing `Deep`'s
+    /// compact-block term (no space behind a settled block) and, since
+    /// T7-R2, Mentality's, on the same logic as the field above.
     pub(super) opp_penetrate_mult: f64,
 }
 
@@ -104,6 +109,19 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
             for b in &mut e.def_bias_by_zone {
                 *b -= 0.08;
             }
+            // T7-R2 (§9 item 7): the space a committed side concedes. Before
+            // this, Mentality's gains were two advance-class multipliers and
+            // its only cost was the logit-class `def_bias` above — ~4× weaker
+            // (§3's lever-class note), so `Attacking` was not a risk setting
+            // at all, just a better one (it beat `Balanced` 0.540/0.460).
+            // §5's stated mechanism for the opponent's compensation was
+            // turnover mirroring, but mirroring sends a ball lost high to a
+            // *deep* opponent restart — which protects the attacking side
+            // rather than punishing it, leaving the risk half of the risk
+            // axis unmodelled. This is that half, in the same shape
+            // `Pressing::High`'s beaten-press term already uses.
+            e.opp_mid_advance_mult *= 1.25;
+            e.opp_penetrate_mult *= 1.25;
         }
         Mentality::Defensive => {
             e.advance_mult *= 0.83;
@@ -112,6 +130,15 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
             for b in &mut e.def_bias_by_zone {
                 *b += 0.08;
             }
+            // The mirror: a settled side denies the space `Attacking` sells,
+            // the same shape `Pressing::Deep`'s compact-block term uses.
+            // Not the reciprocal of Attacking's 1.25 — each side of the axis
+            // is fitted against `Balanced` on its own, since what it is
+            // paying for (Defensive surrenders its own penetration, which is
+            // the scarce `p_attc_penetrate = 0.08` gateway) is not the
+            // mirror-image quantity of what Attacking is buying.
+            e.opp_mid_advance_mult *= 0.79;
+            e.opp_penetrate_mult *= 0.79;
         }
         Mentality::Balanced => {}
     }
