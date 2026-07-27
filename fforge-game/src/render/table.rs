@@ -67,8 +67,14 @@ impl Cell {
         }
     }
 
-    /// Attach a semantic. Remember R15: whatever this colour says must also be
-    /// said by a glyph, a column, or the row ordering.
+    /// Attach a semantic to *one* cell, where [`Table::row_all`]'s whole-row
+    /// stamp is too coarse. Remember R15: whatever this colour says must also
+    /// be said by a glyph, a column, or the row ordering.
+    ///
+    /// Only the tests reach it today; U4's finances screen — where the axis
+    /// lands on individual figures rather than whole rows — is its first
+    /// production consumer.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with(mut self, sem: Sem) -> Cell {
         self.sem = sem;
         self
@@ -87,11 +93,20 @@ impl From<String> for Cell {
     }
 }
 
+/// A row: its cells, plus an optional whole-row semantic. A uniform row is
+/// painted as one span rather than cell-by-cell — same pixels, a fraction of
+/// the escapes, and far easier to read in a `cat -v`.
+#[derive(Debug, Clone)]
+struct Row {
+    cells: Vec<Cell>,
+    uniform: Option<Sem>,
+}
+
 /// A column-aligned block: a header row followed by data rows.
 #[derive(Debug, Clone)]
 pub struct Table {
     cols: Vec<Col>,
-    rows: Vec<Vec<Cell>>,
+    rows: Vec<Row>,
     /// Printed verbatim at the start of every line, header included — the
     /// single leading space most of these screens already indent by.
     indent: String,
@@ -114,37 +129,36 @@ impl Table {
         self
     }
 
-    pub fn headerless(mut self) -> Table {
-        self.header = false;
-        self
-    }
-
     /// Append a row. Extra cells beyond the declared columns are appended
     /// unpadded, which is what a trailing flag column wants.
     pub fn row(&mut self, cells: Vec<Cell>) {
-        self.rows.push(cells);
+        self.rows.push(Row {
+            cells,
+            uniform: None,
+        });
     }
 
-    /// Append a row whose cells all carry `sem` — the "this whole line is
-    /// yours" case.
+    /// Append a row whose whole line carries `sem` — the "this row is yours"
+    /// case.
     pub fn row_all(&mut self, cells: Vec<Cell>, sem: Sem) {
-        self.rows
-            .push(cells.into_iter().map(|c| c.with(sem)).collect());
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.rows.push(Row {
+            cells,
+            uniform: Some(sem),
+        });
     }
 
     /// Render to a newline-terminated block.
     pub fn render(&self, p: Palette) -> String {
         let mut out = String::new();
         if self.header {
-            let header: Vec<Cell> = self
-                .cols
-                .iter()
-                .map(|c| Cell::new(c.label.clone()))
-                .collect();
+            let header = Row {
+                cells: self
+                    .cols
+                    .iter()
+                    .map(|c| Cell::new(c.label.clone()))
+                    .collect(),
+                uniform: None,
+            };
             let _ = writeln!(out, "{}", self.line(&header, p));
         }
         for row in &self.rows {
@@ -153,9 +167,10 @@ impl Table {
         out
     }
 
-    fn line(&self, cells: &[Cell], p: Palette) -> String {
+    fn line(&self, row: &Row, p: Palette) -> String {
         // Pad *then* paint — see the module docs.
-        let mut padded: Vec<String> = cells
+        let mut padded: Vec<String> = row
+            .cells
             .iter()
             .enumerate()
             .map(|(i, cell)| match self.cols.get(i) {
@@ -175,15 +190,19 @@ impl Table {
             let trimmed = last.trim_end().to_string();
             *last = trimmed;
         }
-        let parts: Vec<String> = padded
-            .iter()
-            .zip(cells)
-            .map(|(text, cell)| p.paint(text, cell.sem))
-            .collect();
-        if parts.is_empty() {
+        if padded.is_empty() {
             return self.indent.trim_end().to_string();
         }
-        format!("{}{}", self.indent, parts.join(" "))
+        let body = match row.uniform {
+            Some(sem) => p.paint(&padded.join(" "), sem),
+            None => padded
+                .iter()
+                .zip(&row.cells)
+                .map(|(text, cell)| p.paint(text, cell.sem))
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        format!("{}{}", self.indent, body)
     }
 }
 

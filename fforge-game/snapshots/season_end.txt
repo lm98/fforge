@@ -1,7 +1,7 @@
 
 ================ SEASON OVER ================
 
-     Club                        W   D   L   GF   GA   GD  Pts
+      Club                        W   D   L   GF   GA   GD  Pts
    1. Dinamo Fioressa        38  27   8   3  150    7 +143   89
    2. Virtus Castonte        38  26  10   2  126    5 +121   88
    3. Virtus Montaro         38  26  10   2  114    3 +111   88

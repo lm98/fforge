@@ -1,26 +1,26 @@
 
- Pos Name                 Age  CA  Best role
- GK  Sergio Carvalho       23  74  
- GK  Kofi Rossi            22  69  
- GK  Kenji Conti           33  64  
- CB  Giorgio Sato          24  70  
- CB  Anders Conti          24  64  
- CB  Milan Vitale          29  63  
- CB  Owen Duarte           25  61  
- FB  Marco Kovac           23  73  
- FB  Kofi Mori             30  67  
- FB  Josip Moretti         25  66  CB (66)
- FB  Dario Tanaka          17  55  DM (56)
- DM  Callum Colombo        25  70  
- DM  Sergio Colombo        31  68  
- CM  Petar Serra           25  69  DM (69)
- CM  Anders Kane           23  68  FB (68)
- CM  Ivan Pereira          21  59  DM (59)
- AM  Giorgio Horvat        32  71  
- AM  Pedro Tanaka          28  62  
- W   Sota Rossi            31  81  
- W   Nicola Tanaka         25  66  
- W   Giorgio Serra         23  58  AM (58)
- ST  Ibrahim Carvalho      25  76  
- ST  João Moretti          20  73  
- ST  Sota Barbieri         22  64  
+ Pos Name                 Age  CA Best role
+ GK  Sergio Carvalho       23  74
+ GK  Kofi Rossi            22  69
+ GK  Kenji Conti           33  64
+ CB  Giorgio Sato          24  70
+ CB  Anders Conti          24  64
+ CB  Milan Vitale          29  63
+ CB  Owen Duarte           25  61
+ FB  Marco Kovac           23  73
+ FB  Kofi Mori             30  67
+ FB  Josip Moretti         25  66 CB (66)
+ FB  Dario Tanaka          17  55 DM (56)
+ DM  Callum Colombo        25  70
+ DM  Sergio Colombo        31  68
+ CM  Petar Serra           25  69 DM (69)
+ CM  Anders Kane           23  68 FB (68)
+ CM  Ivan Pereira          21  59 DM (59)
+ AM  Giorgio Horvat        32  71
+ AM  Pedro Tanaka          28  62
+ W   Sota Rossi            31  81
+ W   Nicola Tanaka         25  66
+ W   Giorgio Serra         23  58 AM (58)
+ ST  Ibrahim Carvalho      25  76
+ ST  João Moretti          20  73
+ ST  Sota Barbieri         22  64

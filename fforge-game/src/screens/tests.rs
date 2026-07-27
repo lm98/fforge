@@ -18,6 +18,7 @@
 //! and every result are reproducible: that is the same determinism guarantee
 //! the core's own test suite leans on.
 
+use crate::render::sem::Palette;
 use crate::screens::{fixtures, header, season_end, squad, stats, table};
 use fforge_core::{Command, SeasonTelemetry, Session, WorldGenConfig, new_game};
 use fforge_domain::ClubId;
@@ -91,19 +92,19 @@ fn assert_snapshot(name: &str, actual: &str) {
 #[test]
 fn squad_screen_snapshot() {
     let (session, _) = fixture(0);
-    assert_snapshot("squad", &squad::render(&session));
+    assert_snapshot("squad", &squad::render(&session, Palette::PLAIN));
 }
 
 #[test]
 fn table_screen_snapshot() {
     let (session, _) = fixture(5);
-    assert_snapshot("table", &table::render(&session));
+    assert_snapshot("table", &table::render(&session, Palette::PLAIN));
 }
 
 #[test]
 fn fixtures_screen_snapshot() {
     let (session, _) = fixture(5);
-    assert_snapshot("fixtures", &fixtures::render(&session));
+    assert_snapshot("fixtures", &fixtures::render(&session, Palette::PLAIN));
 }
 
 /// Matchday 1 has no previous matchday, so the results half is absent — a
@@ -111,7 +112,10 @@ fn fixtures_screen_snapshot() {
 #[test]
 fn fixtures_screen_snapshot_first_matchday() {
     let (session, _) = fixture(0);
-    assert_snapshot("fixtures_matchday_1", &fixtures::render(&session));
+    assert_snapshot(
+        "fixtures_matchday_1",
+        &fixtures::render(&session, Palette::PLAIN),
+    );
 }
 
 #[test]
@@ -131,39 +135,96 @@ fn stats_screen_snapshot_before_any_match() {
 #[test]
 fn header_snapshot() {
     let (session, _) = fixture(5);
-    assert_snapshot("header", &header::render(&session));
+    assert_snapshot("header", &header::render(&session, Palette::PLAIN));
 }
 
 #[test]
 fn season_end_snapshot() {
     let (session, telemetry) = finished_season();
-    assert_snapshot("season_end", &season_end::render(&session, &telemetry));
+    assert_snapshot(
+        "season_end",
+        &season_end::render(&session, &telemetry, Palette::PLAIN),
+    );
+}
+
+/// Every screen, rendered both ways, for the two whole-suite invariants below.
+fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
+    let (session, telemetry) = fixture(5);
+    let (finished, finished_telemetry) = finished_season();
+    vec![
+        ("squad", squad::render(&session, p)),
+        ("table", table::render(&session, p)),
+        ("fixtures", fixtures::render(&session, p)),
+        ("stats", stats::render(&telemetry)),
+        ("header", header::render(&session, p)),
+        (
+            "season_end",
+            season_end::render(&finished, &finished_telemetry, p),
+        ),
+    ]
 }
 
 /// **The test that protects every piped consumer, CI included** (R16).
 ///
-/// With colour disabled — which is every screen's state today, and will stay
-/// the state under `NO_COLOR`/`--no-color`/non-tty once U2 lands the `Sem`
-/// vocabulary — no screen may emit an ANSI escape.
+/// With colour disabled — the state under `NO_COLOR`, `--no-color`, or a
+/// non-tty stdout — no screen may emit an ANSI escape.
 #[test]
 fn no_ansi_escapes_when_colour_is_disabled() {
-    let (session, telemetry) = fixture(5);
-    let (finished, finished_telemetry) = finished_season();
-    let rendered = [
-        ("squad", squad::render(&session)),
-        ("table", table::render(&session)),
-        ("fixtures", fixtures::render(&session)),
-        ("stats", stats::render(&telemetry)),
-        ("header", header::render(&session)),
-        (
-            "season_end",
-            season_end::render(&finished, &finished_telemetry),
-        ),
-    ];
-    for (name, output) in rendered {
+    for (name, output) in every_screen(Palette::PLAIN) {
         assert!(
             !output.contains('\u{1b}'),
             "screen `{name}` emitted an ANSI escape with colour disabled"
         );
     }
+}
+
+/// The other half of R15's bargain: **colour must be purely additive.** Strip
+/// the escapes from a coloured render and you must be back at the plain one,
+/// byte for byte — no extra glyph, no different column, no re-ordering that
+/// only the coloured path gets. That is what makes the plain snapshots a
+/// complete record of what a screen says.
+#[test]
+fn colour_changes_nothing_but_colour() {
+    let plain = every_screen(Palette::PLAIN);
+    let coloured = every_screen(Palette::COLOURED);
+    for ((name, plain), (_, coloured)) in plain.into_iter().zip(coloured) {
+        assert_eq!(
+            strip_ansi(&coloured),
+            plain,
+            "screen `{name}` renders different *content* with colour on"
+        );
+    }
+}
+
+/// The screens R15 assigns an axis to must actually use it — a screen that
+/// silently stopped colouring would otherwise pass every other test here.
+#[test]
+fn the_screens_with_an_axis_actually_colour() {
+    for (name, output) in every_screen(Palette::COLOURED) {
+        // `stats` is the documented exception: raw readings, no axis.
+        if name == "stats" {
+            continue;
+        }
+        assert!(
+            output.contains('\u{1b}'),
+            "screen `{name}` has a colour axis but emitted no colour"
+        );
+    }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

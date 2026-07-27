@@ -1,4 +1,10 @@
 //! League-wide telemetry — the calibration harness's readings, surfaced.
+//!
+//! **Colour axis: none, deliberately.** These are raw readings with no good/bad
+//! direction a player could act on — a goals-per-match of 2.4 is neither good
+//! nor bad, it is just what the league did. Colouring it would be decoration,
+//! which is exactly what R15's vocabulary exists to prevent, so this screen
+//! takes no `Palette` at all rather than taking one and ignoring it.
 
 use fforge_core::SeasonTelemetry;
 use std::fmt::Write as _;

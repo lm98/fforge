@@ -12,16 +12,12 @@
 //!
 //! Nothing in here prints.
 
-// U2 lands the vocabulary and the helpers; U3 is where the screens adopt them.
-// Landing both together would make the snapshot diffs unreadable at exactly
-// the moment they matter most.
-#![allow(dead_code)]
-
 pub mod sem;
 pub mod table;
 
 use fforge_core::{Session, league_table};
 use fforge_domain::{ClubId, Player, ROLE_WEIGHTS, World, current_ability};
+use sem::{Palette, Sem};
 
 /// A player's headline CA: his ability *in his own natural role*, which is the
 /// number every squad list quotes.
@@ -50,7 +46,10 @@ pub fn table_position(session: &Session, club: ClubId) -> usize {
         .unwrap_or(0)
 }
 
-/// One result line, marked with `>` when the human's club is involved.
+/// One result line. Your own club's results are marked with `>` **and**
+/// coloured `Mine`; the marker is the non-colour carrier, so a piped run loses
+/// nothing (R15).
+///
 /// Returned without a trailing newline; the caller decides.
 pub fn result_line(
     world: &World,
@@ -59,19 +58,21 @@ pub fn result_line(
     away: ClubId,
     hg: u8,
     ag: u8,
+    p: Palette,
 ) -> String {
-    let marker = if home == mine || away == mine {
-        ">"
-    } else {
-        " "
-    };
-    format!(
+    let is_mine = home == mine || away == mine;
+    let marker = if is_mine { ">" } else { " " };
+    // Laid out whole, then painted whole — no padding happens after the paint,
+    // which is the rule `render::table` exists to enforce elsewhere.
+    let line = format!(
         "{marker} {:<22} {:>2} - {:<2} {}",
         world.club(home).name,
         hg,
         ag,
         world.club(away).name
-    )
+    );
+    let line = line.trim_end();
+    p.paint(line, if is_mine { Sem::Mine } else { Sem::Ok })
 }
 
 /// `1` → `1st`, `2` → `2nd`, ... including the 11th/12th/13th exceptions.

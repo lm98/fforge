@@ -93,11 +93,14 @@ pub struct Palette {
 
 impl Palette {
     /// Colour off. The state under `NO_COLOR`, `--no-color`, or a piped
-    /// stdout — and the state every snapshot test renders in.
+    /// stdout — and the state every snapshot test renders in. Production
+    /// always goes through [`Palette::from_environment`], so these two
+    /// constructors are reached only from tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const PLAIN: Palette = Palette { enabled: false };
 
-    /// Colour on. `main` only reaches this via [`Palette::from_environment`];
-    /// tests construct it directly.
+    /// Colour on. See [`Palette::PLAIN`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const COLOURED: Palette = Palette { enabled: true };
 
     /// Resolve the policy from the process environment — the one impure
@@ -119,10 +122,6 @@ impl Palette {
                 std::io::stdout().is_terminal(),
             ),
         }
-    }
-
-    pub fn is_enabled(self) -> bool {
-        self.enabled
     }
 
     /// Apply `sem` to already-laid-out text.

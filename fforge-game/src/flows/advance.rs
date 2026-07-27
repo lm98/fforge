@@ -3,11 +3,12 @@
 //! the advance closed.
 
 use crate::flows::match_view::print_humble_text_view;
+use crate::render::sem::Palette;
 use crate::render::{ordinal, result_line, table_position};
 use fforge_core::{Command, Event, SeasonTelemetry, Session, player_match_preview};
 use fforge_domain::{ClubId, World};
 
-pub fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
+pub fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry, p: Palette) {
     let md = session.state.current_matchday;
     // Computed from the pre-advance state, using the same lineup selection
     // and seed-derived RNG stream `AdvanceMatchday` is about to use, so it
@@ -56,7 +57,8 @@ pub fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
                     f.home,
                     f.away,
                     *home_goals,
-                    *away_goals
+                    *away_goals,
+                    p
                 )
             );
         }

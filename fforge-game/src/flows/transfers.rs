@@ -1,8 +1,20 @@
 //! The transfer-market menu (`TRANSFER_MODEL.md` §10's pre-commitment model):
 //! build a local draft plan, browse targets and your own squad against a
 //! frozen valuation snapshot, then submit the whole plan in one shot.
+//!
+//! **Colour axis: affordability against this club's cash and wage headroom**
+//! (R15). Both halves matter and they fail independently — a bargain you cannot
+//! pay the wages on is just as dead as one you cannot pay the fee on, and
+//! `market::filter_affordable` drops either at resolve time without saying so.
+//! That is why the axis is affordability rather than quality: quality is
+//! already the sort order.
+//!
+//! The `Fit` column is the non-colour carrier and names the *blocking* half
+//! (`ok`, `fee`, `wage`, `both`), which colour alone could not say anyway.
 
 use crate::input::{prompt_choice, prompt_money, prompt_number, read_line};
+use crate::render::sem::{Palette, Sem};
+use crate::render::table::{Cell, Col, Table};
 use fforge_core::{
     ClubObservation, Command, DevKnobs, MarketContext, SeasonTelemetry, Session, TransferDecision,
     UtilityKnobs, ValueKnobs,
@@ -25,6 +37,80 @@ pub struct TransferContext {
     pub knobs: UtilityKnobs,
 }
 
+impl TransferContext {
+    /// Cash above the reserve floor — what `market::filter_affordable` will
+    /// actually let a bid spend, not the headline balance.
+    fn spendable(&self) -> i64 {
+        self.obs.balance.0 - self.knobs.cash_reserve_floor.0
+    }
+
+    fn wage_room(&self) -> i64 {
+        self.obs.wage_budget.0 - self.obs.committed_wages.0
+    }
+
+    /// Which half of the affordability gate, if either, blocks this signing.
+    fn afford(&self, fee: Money, wage: Money) -> Afford {
+        Afford {
+            fee_ok: fee.0 <= self.spendable(),
+            wage_ok: wage.0 <= self.wage_room(),
+        }
+    }
+}
+
+/// The two independent halves of `market::filter_affordable`'s gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Afford {
+    fee_ok: bool,
+    wage_ok: bool,
+}
+
+impl Afford {
+    /// The non-colour carrier: names the blocking half outright.
+    fn label(self) -> &'static str {
+        match (self.fee_ok, self.wage_ok) {
+            (true, true) => "ok",
+            (false, true) => "fee",
+            (true, false) => "wage",
+            (false, false) => "both",
+        }
+    }
+
+    fn sem(self) -> Sem {
+        match (self.fee_ok, self.wage_ok) {
+            (true, true) => Sem::Good,
+            // One half short is a plan away from possible: sell someone, or
+            // bid under the ask.
+            (false, true) | (true, false) => Sem::Warn,
+            // Out of reach on both counts — recedes rather than alarms. A
+            // player you cannot afford is not an emergency.
+            (false, false) => Sem::Muted,
+        }
+    }
+}
+
+/// This wage as a share of the club's whole committed wage bill — the "where
+/// is the money actually going" reading of the affordability axis, for the
+/// screen that lists players you could sell.
+///
+/// No `Sem::Bad` here on purpose: an expensive player is not an alarm, and R15
+/// keeps red for things that are (a breached budget, a suspension). The `Wage`
+/// column carries the number itself, so colour is redundant by construction.
+fn wage_burden_sem(wage: Money, committed: Money) -> Sem {
+    if committed.0 <= 0 {
+        return Sem::Ok;
+    }
+    let share = wage.0 as f64 / committed.0 as f64;
+    // A 24-man squad averages ~4% each, so 15% is one player eating the space
+    // of nearly four, and under 6% is unremarkable.
+    if share >= 0.15 {
+        Sem::Warn
+    } else if share >= 0.06 {
+        Sem::Ok
+    } else {
+        Sem::Muted
+    }
+}
+
 pub fn build_transfer_context(session: &Session) -> TransferContext {
     let s = &session.state;
     let dev = DevKnobs::default();
@@ -42,15 +128,15 @@ pub fn build_transfer_context(session: &Session) -> TransferContext {
 
 /// Nothing is recorded until [4] Submit — browsing and editing the draft touch
 /// no `Session` state.
-pub fn transfer_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
+pub fn transfer_flow(session: &mut Session, telemetry: &mut SeasonTelemetry, p: Palette) {
     let mut ctx = build_transfer_context(session);
     let mut draft: Vec<TransferDecision> = session.state.pending_transfer_decisions.clone();
     loop {
-        print_transfer_header(session, &ctx, &draft);
+        print_transfer_header(session, &ctx, &draft, p);
         println!("[1] Browse targets  [2] My squad  [3] Shortlist  [4] Submit  [0] Back");
         match prompt_choice("> ", &["1", "2", "3", "4", "0"]).as_str() {
-            "1" => browse_targets_screen(&session.state.world, &ctx, &mut draft),
-            "2" => squad_transfer_screen(&session.state.world, &ctx, &mut draft),
+            "1" => browse_targets_screen(&session.state.world, &ctx, &mut draft, p),
+            "2" => squad_transfer_screen(&session.state.world, &ctx, &mut draft, p),
             "3" => shortlist_screen(&session.state.world, &mut draft),
             "4" => {
                 submit_draft(session, telemetry, &draft);
@@ -61,20 +147,40 @@ pub fn transfer_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
     }
 }
 
-fn print_transfer_header(session: &Session, ctx: &TransferContext, draft: &[TransferDecision]) {
+fn print_transfer_header(
+    session: &Session,
+    ctx: &TransferContext,
+    draft: &[TransferDecision],
+    p: Palette,
+) {
     let s = &session.state;
     let club = s.world.club(s.player_club);
-    let spendable = ctx.obs.balance.0 - ctx.knobs.cash_reserve_floor.0;
-    let wage_room = ctx.obs.wage_budget.0 - ctx.obs.committed_wages.0;
+    let spendable = ctx.spendable();
+    let wage_room = ctx.wage_room();
     println!("\n=== Transfer market — {} · {} ===", club.name, s.date);
+    // The two headroom figures are the axis itself, so they carry its extreme:
+    // a negative one means every row below is `both`-blocked until you sell.
+    let headroom_sem = |room: i64| if room > 0 { Sem::Ok } else { Sem::Bad };
     println!(
-        "  Cash {} (spendable {}, reserve floor {})   Wage headroom {} (budget {} - committed {})",
-        ctx.obs.balance,
-        Money(spendable),
-        ctx.knobs.cash_reserve_floor,
-        Money(wage_room),
-        ctx.obs.wage_budget,
-        ctx.obs.committed_wages
+        "  {}   {}",
+        p.paint(
+            &format!(
+                "Cash {} (spendable {}, reserve floor {})",
+                ctx.obs.balance,
+                Money(spendable),
+                ctx.knobs.cash_reserve_floor
+            ),
+            headroom_sem(spendable)
+        ),
+        p.paint(
+            &format!(
+                "Wage headroom {} (budget {} - committed {})",
+                Money(wage_room),
+                ctx.obs.wage_budget,
+                ctx.obs.committed_wages
+            ),
+            headroom_sem(wage_room)
+        )
     );
     let status = if *draft == s.pending_transfer_decisions {
         if draft.is_empty() {
@@ -98,7 +204,12 @@ fn print_transfer_header(session: &Session, ctx: &TransferContext, draft: &[Tran
 /// books, priced against `ctx`'s frozen valuation snapshot (§2.7), filterable
 /// by role. Picking one appends (or replaces) a `Bid` in `draft` at a
 /// reservation price the player chooses.
-fn browse_targets_screen(world: &World, ctx: &TransferContext, draft: &mut Vec<TransferDecision>) {
+fn browse_targets_screen(
+    world: &World,
+    ctx: &TransferContext,
+    draft: &mut Vec<TransferDecision>,
+    palette: Palette,
+) {
     let mut role_filter: Option<Role> = None;
     loop {
         let mut candidates: Vec<&Candidate> = ctx
@@ -113,11 +224,18 @@ fn browse_targets_screen(world: &World, ctx: &TransferContext, draft: &mut Vec<T
             "\nFilter: {}",
             role_filter.map(|r| r.name()).unwrap_or("All roles")
         );
-        println!(
-            " {:<3} {:<20} {:<4} {:<20} {:>12} {:>12} {:>10}",
-            "#", "Name", "Pos", "Club", "Value", "Ask price", "Wage"
-        );
         let shown: Vec<&Candidate> = candidates.iter().take(40).copied().collect();
+        let mut t = Table::new(vec![
+            Col::left("#", 3),
+            Col::left("Name", 20),
+            Col::left("Pos", 4),
+            Col::left("Club", 20),
+            Col::right("Value", 12),
+            Col::right("Ask price", 12),
+            Col::right("Wage", 10),
+            Col::left("Fit", 4),
+            Col::left("", 0),
+        ]);
         for (i, c) in shown.iter().enumerate() {
             let p = world.player(c.player);
             let owner = match c.club {
@@ -127,18 +245,23 @@ fn browse_targets_screen(world: &World, ctx: &TransferContext, draft: &mut Vec<T
             let shortlisted = draft
                 .iter()
                 .any(|d| matches!(d, TransferDecision::Bid { player, .. } if *player == c.player));
-            println!(
-                " {:<3} {:<20} {:<4} {:<20} {:>12} {:>12} {:>10} {}",
-                i + 1,
-                p.name,
-                c.role.short(),
-                owner,
-                c.value,
-                c.asking_price,
-                c.wage,
-                if shortlisted { "(shortlisted)" } else { "" }
+            let afford = ctx.afford(c.asking_price, c.wage);
+            t.row_all(
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(p.name.clone()),
+                    Cell::new(c.role.short()),
+                    Cell::new(owner),
+                    Cell::new(c.value.to_string()),
+                    Cell::new(c.asking_price.to_string()),
+                    Cell::new(c.wage.to_string()),
+                    Cell::new(afford.label()),
+                    Cell::new(if shortlisted { "(shortlisted)" } else { "" }),
+                ],
+                afford.sem(),
             );
         }
+        print!("{}", t.render(palette));
         if candidates.len() > shown.len() {
             println!(
                 "  ...and {} more; narrow with a role filter.",
@@ -199,15 +322,27 @@ fn add_bid(world: &World, c: &Candidate, draft: &mut Vec<TransferDecision>) {
 /// player — the numbers resolve-time validation checks (`market::filter_affordable`'s
 /// wage-headroom/squad-bounds gate). Picking one toggles a `List` decision
 /// for that player in `draft`.
-fn squad_transfer_screen(world: &World, ctx: &TransferContext, draft: &mut Vec<TransferDecision>) {
+fn squad_transfer_screen(
+    world: &World,
+    ctx: &TransferContext,
+    draft: &mut Vec<TransferDecision>,
+    palette: Palette,
+) {
     loop {
         let mut squad: Vec<&SquadMember> = ctx.obs.squad.iter().collect();
         squad.sort_by_key(|m| (m.natural_role, std::cmp::Reverse(m.current_ca)));
 
-        println!(
-            "\n {:<3} {:<20} {:<4} {:>3} {:>4} {:>10} {:>9} {:>12}",
-            "#", "Name", "Pos", "CA", "Proj", "Wage", "Contract", "Ask price"
-        );
+        let mut t = Table::new(vec![
+            Col::left("#", 3),
+            Col::left("Name", 20),
+            Col::left("Pos", 4),
+            Col::right("CA", 3),
+            Col::right("Proj", 4),
+            Col::right("Wage", 10),
+            Col::right("Contract", 9),
+            Col::right("Ask price", 12),
+            Col::left("", 0),
+        ]);
         for (i, m) in squad.iter().enumerate() {
             let p = world.player(m.player);
             let value = ctx.valuations.get(&m.player).copied().unwrap_or(Money(0));
@@ -215,19 +350,25 @@ fn squad_transfer_screen(world: &World, ctx: &TransferContext, draft: &mut Vec<T
             let listed = draft
                 .iter()
                 .any(|d| matches!(d, TransferDecision::List { player } if *player == m.player));
-            println!(
-                " {:<3} {:<20} {:<4} {:>3} {:>4} {:>10} {:>8.1}y {:>12} {}",
-                i + 1,
-                p.name,
-                m.natural_role.short(),
-                m.current_ca,
-                m.projected_ca,
-                m.wage,
-                m.years_left_on_contract,
-                ask,
-                if listed { "(listed)" } else { "" }
+            t.row_all(
+                vec![
+                    Cell::new((i + 1).to_string()),
+                    Cell::new(p.name.clone()),
+                    Cell::new(m.natural_role.short()),
+                    Cell::new(m.current_ca.to_string()),
+                    Cell::new(m.projected_ca.to_string()),
+                    Cell::new(m.wage.to_string()),
+                    Cell::new(format!("{:.1}y", m.years_left_on_contract)),
+                    Cell::new(ask.to_string()),
+                    Cell::new(if listed { "(listed)" } else { "" }),
+                ],
+                // The same affordability axis, read from the selling side:
+                // where the wage bill is actually going, and therefore which
+                // sale would buy back the most headroom.
+                wage_burden_sem(m.wage, ctx.obs.committed_wages),
             );
         }
+        print!("{}", t.render(palette));
         println!("  [#] toggle list-for-sale   [q] back");
         let input = read_line("> ");
         match input.trim() {

@@ -1,5 +1,5 @@
 
-     Club                        W   D   L   GF   GA   GD  Pts
+      Club                        W   D   L   GF   GA   GD  Pts
    1. Dinamo Fioressa         5   5   0   0   34    0  +34   15
 >  2. FC Nerana               5   4   1   0   11    1  +10   13
    3. Real Valdessa           5   4   0   1    5    1   +4   12

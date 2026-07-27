@@ -1,15 +1,15 @@
 
 Matchday 6 fixtures:
   Real Valdessa          vs FC Nerana              <— your match
-  Real Bellemona         vs Dinamo Bellora        
-  Olimpia Veraverde      vs Dinamo Valdetto       
-  Atlético Rivemona      vs Union Montonte        
-  Real Pralora           vs Virtus Montaro        
-  Real Valdisola         vs FC Portaverde         
-  Olimpia Osturnia       vs Virtus Castonte       
-  Inter Ostetto          vs US Bellessa           
-  Sporting Campetto      vs AC Veronte            
-  Dinamo Fioressa        vs FC Fiorisola          
+  Real Bellemona         vs Dinamo Bellora
+  Olimpia Veraverde      vs Dinamo Valdetto
+  Atlético Rivemona      vs Union Montonte
+  Real Pralora           vs Virtus Montaro
+  Real Valdisola         vs FC Portaverde
+  Olimpia Osturnia       vs Virtus Castonte
+  Inter Ostetto          vs US Bellessa
+  Sporting Campetto      vs AC Veronte
+  Dinamo Fioressa        vs FC Fiorisola
 
 Matchday 5 results:
 > FC Nerana               5 - 0  Real Bellemona
