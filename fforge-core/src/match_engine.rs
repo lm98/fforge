@@ -20,8 +20,9 @@ mod tactics;
 mod zone;
 
 pub use calibrate::{
-    DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, StreamTelemetry,
-    elo_expected, run_head_to_head,
+    DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, PROFILE_SHIFT,
+    ProfileRow, SQUAD_PROFILES, SquadProfile, StreamTelemetry, apply_squad_profile, elo_expected,
+    probe_tactics, run_head_to_head, run_squad_conditional_probe,
 };
 pub use knobs::Knobs;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
@@ -258,16 +259,25 @@ fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
     best.expect("at least one formation").1
 }
 
-/// T7 addendum §7: the AI tactics policy is gated off by default until T7's
-/// triangle finding resolves. `ai_pick_lineup_vs` (below) reads this, so
-/// every real AI-controlled match runs `Tactics::neutral()` — which by the
-/// §4 invariant reproduces the T5 golden baseline bit-for-bit — rather than
-/// against a still-open §3 effect table. T8-T13 can therefore each measure
-/// a clean single-feature delta against a stable reference in parallel; T7
-/// itself only has to resolve before T14 re-banks the harnesses. Flip this
-/// to `true` (and re-enable `favourite_discrimination_regression_guard`'s
-/// and `bin/calibrate`'s AI-tactics wiring alongside it) once the triangle
-/// closes or §6's design conversation resolves it another way.
+/// The AI tactics policy is gated off by default. `ai_pick_lineup_vs` (below)
+/// reads this, so every real AI-controlled match runs `Tactics::neutral()` —
+/// which by the `TACTICS_MODEL.md` §4 invariant reproduces the T5 golden
+/// baseline bit-for-bit — letting each 2e feature measure a clean
+/// single-feature delta against a stable reference.
+///
+/// **The blocker moved (T7-R).** The original one — §5's triangle not closing
+/// — is resolved: `TACTICS_MODEL.md` §9 item 6 is settled in favour of
+/// squad-conditional non-dominance, and Tempo/Pressing are re-fitted so no
+/// tactic dominates. Flipping this to `true` is *mechanically* safe today:
+/// the full suite passes 161/161 with it on, all four pooled calibration
+/// guards and the golden baseline included.
+///
+/// What holds it now is §9 item 7: `ai_pick_tactics` picks Mentality from the
+/// strength gap, and `Mentality::Attacking` still beats `Balanced` 0.530 /
+/// 0.470 — the same advance-class/logit-class scale mismatch T7-R diagnosed
+/// for Tempo, uncorrected on this axis. Flipping now would put a dominant
+/// instruction into every AI match and move pooled goals/match 2.84 → 3.19.
+/// Fit Mentality first, then flip, then take §8's re-bank pass.
 pub const AI_TACTICS_ENABLED: bool = false;
 
 /// An AI-controlled side's lineup *and* tactics for a real fixture

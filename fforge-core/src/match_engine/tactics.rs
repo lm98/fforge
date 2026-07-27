@@ -118,7 +118,18 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
 
     match t.tempo {
         Tempo::Direct => {
-            e.advance_mult *= 1.30;
+            // T7-R fit: 1.30 → 1.13. `advance_mult` is an *advance-class*
+            // lever — a multiplier on a raw transition probability — and at
+            // `p_mid_advance = 0.20` a ×1.30 buys +6.0pp of forward progress
+            // per Mid beat, against the −1.7pp the paired `b_pass_delta`
+            // −0.10 costs at `b_pass = 1.35` (p ≈ 0.794, dp = p(1−p)·Δb).
+            // The two levers were plausibility-picked independently (§9 item
+            // 1) and never reconciled, so Direct bought progress at roughly a
+            // quarter of its intended price and won 32/32 profile×world cells
+            // of the T7-R probe. Fitted so Tempo is net-neutral against
+            // `neutral()` on a control squad, leaving the *shape* effects
+            // below (long-shot mix, take-on rate) to carry Direct's identity.
+            e.advance_mult *= 1.13;
             e.w_longshot_mult *= 1.5;
             e.w_takeon_mult *= 1.1;
             // T7 addendum §5/Fix B: zone-profiled, not uniform. Direct's
@@ -132,7 +143,15 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
             e.b_pass_delta_by_zone[Zone::AttW.index()] -= 0.10;
         }
         Tempo::Patient => {
-            e.advance_mult *= 0.80;
+            // T7-R fit: 0.80 → 0.88, the mirror of Direct's correction and
+            // for the same reason — ×0.80 *surrendered* 4.0pp of forward
+            // progress per Mid beat to buy back only +1.6pp of pass
+            // retention, making Patient strictly worse than doing nothing on
+            // every squad shape measured. Not reciprocal to Direct's 1.13 by
+            // construction: each side of the axis is fitted against
+            // `neutral()` on its own, since the two levers' costs are not
+            // symmetric functions of the same probability.
+            e.advance_mult *= 0.88;
             e.w_longshot_mult *= 0.6;
             for b in &mut e.b_pass_delta_by_zone {
                 *b += 0.10;
@@ -169,8 +188,28 @@ fn resolve_side_effects(t: Tactics) -> SideEffects {
             // differentiating.
             e.def_bias_by_zone[Zone::Def.index()] += 0.25;
             e.def_bias_by_zone[Zone::Mid.index()] += 0.10;
+            // Deliberately *not* re-fitted by T7-R: this is the term that
+            // makes Pressing squad-conditional at all. `contest::fatigue_mult`
+            // scales its drop by `(1 - stamina)`, so a ×1.30 exertion cost is
+            // strictly cheaper for a high-Stamina squad while the
+            // `def_bias_by_zone` benefit above is attribute-independent — the
+            // measured +1.90pt physical-minus-technical press gradient (§5's
+            // T7-R finding, ~11σ over 8 worlds) is this term's doing.
+            // Flattening it to balance the press would have deleted the very
+            // effect §9 item 6 was asking about.
             e.fatigue_mult *= 1.30;
-            e.opp_mid_advance_mult *= 1.15;
+            // T7-R fit: 1.15 → 1.02. The beaten-press term is the *same*
+            // advance-class lever as Tempo's, mis-scaled the same way: ×1.15
+            // handed the opponent +3.0pp of Mid advance per beat, which at
+            // the slope measured for Direct (~0.078 of expected-points share
+            // per unit of advance multiplier) cost the pressing side ~1.2pts
+            // on its own — more than the whole `def_bias_by_zone` benefit
+            // T7's Fix A was doubling in an attempt to find. That is why Fix
+            // A moved nothing: it was topping up a logit-class benefit
+            // against an advance-class cost four times its size. Shrunk, not
+            // removed — the space behind a committed press is a real
+            // mechanism (§5), it was simply priced on the wrong scale.
+            e.opp_mid_advance_mult *= 1.02;
         }
         Pressing::Deep => {
             e.def_bias_by_zone[Zone::Def.index()] -= 0.10;
@@ -226,13 +265,30 @@ mod tests {
     #[test]
     fn mentality_and_tempo_advance_mult_stack() {
         // §3: independent levers on the same probability multiply together.
-        let t = Tactics {
+        // Asserted against the two single-instruction resolutions rather than
+        // against literal magnitudes, so the T7-R re-fit (and any later one)
+        // moves the numbers without touching this invariant — the property
+        // under test is *stacking*, not the values being stacked.
+        let attacking = Tactics {
+            mentality: Mentality::Attacking,
+            ..Tactics::neutral()
+        };
+        let direct = Tactics {
+            tempo: Tempo::Direct,
+            ..Tactics::neutral()
+        };
+        let both = Tactics {
             mentality: Mentality::Attacking,
             tempo: Tempo::Direct,
             ..Tactics::neutral()
         };
-        let [e, _] = resolve_tactics(t, Tactics::neutral());
-        assert!((e.advance_mult - 1.20 * 1.30).abs() < 1e-12);
+        let [a, _] = resolve_tactics(attacking, Tactics::neutral());
+        let [d, _] = resolve_tactics(direct, Tactics::neutral());
+        let [ad, _] = resolve_tactics(both, Tactics::neutral());
+        assert!((ad.advance_mult - a.advance_mult * d.advance_mult).abs() < 1e-12);
+        // And both levers really are engaged — a stacking test against two
+        // identity multipliers would pass vacuously.
+        assert!(a.advance_mult > 1.0 && d.advance_mult > 1.0);
     }
 
     #[test]

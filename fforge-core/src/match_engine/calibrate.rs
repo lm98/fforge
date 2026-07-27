@@ -16,7 +16,7 @@ use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::zone::{NUM_ZONES, Zone};
 use super::{CONSISTENCY_NS, FOUL_NS, INJURY_NS, Knobs, ai_pick_lineup, play_match};
 use crate::rng::derive_stream;
-use fforge_domain::{ClubId, GameDate, Tactics, World};
+use fforge_domain::{Attribute, ClubId, GameDate, Pressing, Tactics, Tempo, World};
 use std::collections::BTreeMap;
 
 fn side_idx(s: Side) -> usize {
@@ -570,12 +570,409 @@ pub fn run_head_to_head(
     total_points_a / matches as f64
 }
 
+/// How far a `SquadProfile` shifts each attribute in its boost/cut clusters,
+/// in raw rating points. Big enough to be a genuinely different kind of
+/// footballer (a ~1.5σ move against worldgen's spread) without saturating
+/// against the 0..=100 bounds for most of the population.
+pub const PROFILE_SHIFT: i16 = 12;
+
+/// A named squad-attribute *shape* (`TACTICS_MODEL.md` §9 item 6's proposed
+/// check): every player in the club gets `boost` raised and `cut` lowered by
+/// `PROFILE_SHIFT`, so the squad's mean attribute level is preserved and only
+/// its shape changes. Level-preservation matters because the whole question
+/// is whether *shape* conditions a tactic's value — a profile that was simply
+/// better would move every cell in the same direction and answer nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct SquadProfile {
+    pub name: &'static str,
+    pub boost: &'static [Attribute],
+    pub cut: &'static [Attribute],
+}
+
+/// The `control` profile: the untransformed worldgen squad. Its row is the
+/// baseline every other profile's row is read against.
+pub const PROFILE_CONTROL: SquadProfile = SquadProfile {
+    name: "control",
+    boost: &[],
+    cut: &[],
+};
+
+/// High-`PASS_ATK` (§9 item 6's first named profile): the technical squad
+/// that should, if the intuitive story holds, prefer `Patient` — it is being
+/// asked to keep the ball, and keeping the ball is what it is good at.
+pub const PROFILE_TECHNICAL: SquadProfile = SquadProfile {
+    name: "technical",
+    boost: &[
+        Attribute::Passing,
+        Attribute::Vision,
+        Attribute::BallControl,
+        Attribute::Composure,
+        Attribute::Decisions,
+    ],
+    cut: &[
+        Attribute::Speed,
+        Attribute::Stamina,
+        Attribute::Strength,
+        Attribute::Jumping,
+        Attribute::Agility,
+    ],
+};
+
+/// High-physical (§9 item 6's second): the exact mirror of `technical`. Its
+/// raised `Stamina` is the mechanically load-bearing half — `contest::fatigue_mult`
+/// scales its drop by `(1 - stamina)`, so this profile pays strictly less for
+/// `Pressing::High`'s `fatigue_mult` than `technical` does, while the press's
+/// `def_bias_by_zone` benefit is attribute-independent.
+pub const PROFILE_PHYSICAL: SquadProfile = SquadProfile {
+    name: "physical",
+    boost: PROFILE_TECHNICAL.cut,
+    cut: PROFILE_TECHNICAL.boost,
+};
+
+/// High-work-rate (§9 item 6's third), and deliberately *not* just a second
+/// physical profile: `fatigue_mult`'s drop scales by `(1 + fatigue_wr·work_rate)`,
+/// so raising Work Rate makes the press cost *more*, the opposite sign to
+/// `physical`'s Stamina — while Work Rate simultaneously carries weight 2.0 in
+/// `PASS_DEF`, which the press's whole benefit runs through. If the press's
+/// value is squad-conditional at all, these two profiles are where it must
+/// separate, and they pull in opposite directions by construction.
+pub const PROFILE_GRINDER: SquadProfile = SquadProfile {
+    name: "grinder",
+    boost: &[
+        Attribute::WorkRate,
+        Attribute::Aggression,
+        Attribute::Tackling,
+        Attribute::Marking,
+        Attribute::DefPositioning,
+    ],
+    cut: &[
+        Attribute::Passing,
+        Attribute::Vision,
+        Attribute::Dribbling,
+        Attribute::Finishing,
+        Attribute::Crossing,
+    ],
+};
+
+/// The four profiles the probe sweeps, `control` first.
+pub const SQUAD_PROFILES: [SquadProfile; 4] = [
+    PROFILE_CONTROL,
+    PROFILE_TECHNICAL,
+    PROFILE_PHYSICAL,
+    PROFILE_GRINDER,
+];
+
+/// Apply `profile` to every player on `club`, returning a modified copy of
+/// `world`. Saturating at the 0..=100 rating bounds, so a squad already at an
+/// extreme simply shifts less rather than wrapping.
+pub fn apply_squad_profile(world: &World, club: ClubId, profile: &SquadProfile) -> World {
+    let mut out = world.clone();
+    let squad = out.clubs[&club].players.clone();
+    for pid in squad {
+        let attrs = &mut out
+            .players
+            .get_mut(&pid)
+            .expect("squad player exists")
+            .attributes;
+        for &a in profile.boost {
+            let v = (attrs.get(a) as i16 + PROFILE_SHIFT).clamp(0, 100) as u8;
+            attrs.set(a, v);
+        }
+        for &a in profile.cut {
+            let v = (attrs.get(a) as i16 - PROFILE_SHIFT).clamp(0, 100) as u8;
+            attrs.set(a, v);
+        }
+    }
+    out
+}
+
+/// One profile's row of the squad-conditional probe: each tactic's pooled
+/// expected-points share **against `Tactics::neutral()`**, plus the three §5
+/// triangle edges measured on this same squad.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileRow {
+    pub profile: &'static str,
+    /// `(tactic label, expected-points share vs `neutral()`)`, in
+    /// `PROBE_TACTICS` order. `> 0.5` means the tactic beats neutral on this
+    /// squad.
+    pub vs_neutral: Vec<(&'static str, f64)>,
+    /// The §5 triangle on this squad: `High vs Patient`, `Direct vs High`,
+    /// `Patient vs Direct` — each the first-named side's share.
+    pub triangle: [f64; 3],
+}
+
+impl ProfileRow {
+    /// The tactic this squad most prefers — the argmax of `vs_neutral`.
+    /// Squad-conditional non-dominance is exactly the claim that this rotates
+    /// across profiles.
+    pub fn best_tactic(&self) -> &'static str {
+        self.vs_neutral
+            .iter()
+            .fold(("", f64::NEG_INFINITY), |acc, &(n, v)| {
+                if v > acc.1 { (n, v) } else { acc }
+            })
+            .0
+    }
+
+    /// Whether the §5 triangle is cyclic **on this squad** — every edge won
+    /// by its first-named side, the shape §5 predicted.
+    pub fn triangle_is_cyclic(&self) -> bool {
+        self.triangle.iter().all(|&e| e > 0.5)
+    }
+}
+
+/// The three single-instruction tactics the probe sweeps — §5's own triangle
+/// corners, each varied one instruction off `neutral()` so a cell reads as
+/// that instruction's own value rather than a combination's.
+pub fn probe_tactics() -> [(&'static str, Tactics); 3] {
+    [
+        (
+            "High press",
+            Tactics {
+                pressing: Pressing::High,
+                ..Tactics::neutral()
+            },
+        ),
+        (
+            "Patient",
+            Tactics {
+                tempo: Tempo::Patient,
+                ..Tactics::neutral()
+            },
+        ),
+        (
+            "Direct",
+            Tactics {
+                tempo: Tempo::Direct,
+                ..Tactics::neutral()
+            },
+        ),
+    ]
+}
+
+/// `TACTICS_MODEL.md` §9 item 6's probe, for **one** world: hold tactics
+/// fixed and vary the *squad*, asking whether different squad shapes favour
+/// different tactics with no tactic best for every shape — the
+/// "squad-conditional non-dominance" framing the T7 addendum proposed as an
+/// alternative to §5's unconfirmed opponent-relative cycle.
+///
+/// Every cell reuses `run_head_to_head`, so each is still an equal-strength
+/// read: the *same* profiled squad is fielded on both sides and both legs are
+/// played, cancelling `home_bias`. What varies across rows is only the shape
+/// of the squad both sides field.
+///
+/// **A single world is not a reading** — one worldgen draw fixes one squad's
+/// idiosyncratic attribute spread, and the T7-R measurement found the
+/// argmax's *level* moves enough between worlds to flip it while the
+/// underlying gradient holds. Pool with `run_squad_conditional_probe` instead;
+/// this is its per-world inner loop, exposed for tests that want one world.
+pub fn run_squad_conditional_probe_one_world(
+    world: &World,
+    club: ClubId,
+    seeds: &[u64],
+    profiles: &[SquadProfile],
+) -> Vec<ProfileRow> {
+    let tactics = probe_tactics();
+    profiles
+        .iter()
+        .map(|profile| {
+            let w = apply_squad_profile(world, club, profile);
+            let vs_neutral = tactics
+                .iter()
+                .map(|&(name, t)| {
+                    (
+                        name,
+                        run_head_to_head(&w, club, t, Tactics::neutral(), seeds),
+                    )
+                })
+                .collect();
+            let (high, patient, direct) = (tactics[0].1, tactics[1].1, tactics[2].1);
+            let triangle = [
+                run_head_to_head(&w, club, high, patient, seeds),
+                run_head_to_head(&w, club, direct, high, seeds),
+                run_head_to_head(&w, club, patient, direct, seeds),
+            ];
+            ProfileRow {
+                profile: profile.name,
+                vs_neutral,
+                triangle,
+            }
+        })
+        .collect()
+}
+
+/// One profile's row pooled across worlds, carrying the per-world spread the
+/// pooled mean hides — the same "per-seed spread, not just the pooled mean"
+/// discipline `run_market_calibration` and `career_arc` already report, applied
+/// to the axis T7-R found actually moves between worlds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PooledProfileRow {
+    pub profile: &'static str,
+    /// `(tactic label, mean share vs `neutral()`, sd across worlds)`.
+    pub vs_neutral: Vec<(&'static str, f64, f64)>,
+    /// Per-world argmax tactic — the pooled row's `best_tactic` is a summary,
+    /// but *how often the argmax changes world to world* is the thing §9 item
+    /// 6 is actually asking about.
+    pub per_world_best: Vec<&'static str>,
+    pub triangle: [f64; 3],
+}
+
+impl PooledProfileRow {
+    pub fn best_tactic(&self) -> &'static str {
+        self.vs_neutral
+            .iter()
+            .fold(("", f64::NEG_INFINITY), |acc, &(n, v, _)| {
+                if v > acc.1 { (n, v) } else { acc }
+            })
+            .0
+    }
+}
+
+fn mean_sd(xs: &[f64]) -> (f64, f64) {
+    let m = xs.iter().sum::<f64>() / xs.len() as f64;
+    if xs.len() < 2 {
+        return (m, 0.0);
+    }
+    let var = xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (xs.len() - 1) as f64;
+    (m, var.sqrt())
+}
+
+/// §9 item 6's probe pooled over many `(world, club)` draws — the reading the
+/// resolution of that item rests on. Per-world cells are averaged, and the
+/// per-world argmax is retained per profile so a rotation that only holds on
+/// one lucky worldgen draw cannot be mistaken for the real thing.
+pub fn run_squad_conditional_probe(
+    worlds: &[(World, ClubId)],
+    seeds: &[u64],
+    profiles: &[SquadProfile],
+) -> Vec<PooledProfileRow> {
+    let per_world: Vec<Vec<ProfileRow>> = worlds
+        .iter()
+        .map(|(w, c)| run_squad_conditional_probe_one_world(w, *c, seeds, profiles))
+        .collect();
+
+    profiles
+        .iter()
+        .enumerate()
+        .map(|(pi, profile)| {
+            let n_tactics = per_world[0][pi].vs_neutral.len();
+            let vs_neutral = (0..n_tactics)
+                .map(|ti| {
+                    let name = per_world[0][pi].vs_neutral[ti].0;
+                    let vals: Vec<f64> = per_world.iter().map(|r| r[pi].vs_neutral[ti].1).collect();
+                    let (m, sd) = mean_sd(&vals);
+                    (name, m, sd)
+                })
+                .collect();
+            let per_world_best = per_world.iter().map(|r| r[pi].best_tactic()).collect();
+            let triangle = std::array::from_fn(|ei| {
+                let vals: Vec<f64> = per_world.iter().map(|r| r[pi].triangle[ei]).collect();
+                mean_sd(&vals).0
+            });
+            PooledProfileRow {
+                profile: profile.name,
+                vs_neutral,
+                per_world_best,
+                triangle,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::match_engine::Zone;
     use crate::match_engine::stream::MatchEvent;
     use fforge_domain::PlayerId;
+
+    /// The T7-R regression guard for `TACTICS_MODEL.md` §9 item 6's
+    /// resolution: tactical non-dominance in fforge is **squad-conditional**,
+    /// and the channel carrying it is Pressing.
+    ///
+    /// Two properties, both wide-band in the house style
+    /// (`favourite_discrimination_regression_guard`'s sibling, not a
+    /// reproduction test):
+    ///
+    /// 1. **No tactic dominates** (`DESIGN.md` §4.1): on a control squad every
+    ///    single-instruction tactic sits within ±0.025 expected-points share
+    ///    of `neutral()`. This is the property the pre-T7-R magnitudes failed —
+    ///    `Tempo::Direct` won 32 of 32 profile×world cells at `advance_mult`
+    ///    ×1.30, because an advance-class multiplier moves ~4× more absolute
+    ///    probability than the logit-class `b_pass_delta` meant to price it.
+    /// 2. **The press's value rises with squad Stamina.** `contest::fatigue_mult`
+    ///    scales its drop by `(1 - stamina)`, so `Pressing::High`'s ×1.30
+    ///    exertion cost is strictly cheaper for a high-Stamina squad while its
+    ///    `def_bias_by_zone` benefit is attribute-independent — the sign here
+    ///    is forced by the engine's own algebra, not fitted, which is why it
+    ///    is the assertion worth pinning.
+    ///
+    /// Deliberately **not** asserted: which tactic is argmax per profile. The
+    /// pooled reading rotates (technical → `Patient` in 7/8 worlds, physical →
+    /// `High press` in 7/8), but on `control` and `grinder` the three tactics
+    /// are a genuine tie inside seed noise, so pinning an argmax there would
+    /// buy flakiness rather than coverage. The harness prints the rotation;
+    /// the guard pins the two facts that survive the world draw.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    #[test]
+    fn tactics_are_squad_conditionally_non_dominant() {
+        use crate::worldgen::{WorldGenConfig, generate};
+
+        let cfg = WorldGenConfig {
+            num_clubs: 2,
+            ..Default::default()
+        };
+        let worlds: Vec<(World, ClubId)> = (0..6u64)
+            .map(|w| {
+                let (world, _s, _d) = generate(w * 7 + 7, &cfg);
+                let club = world.competition.clubs[0];
+                (world, club)
+            })
+            .collect();
+        let seeds: Vec<u64> = (0..1000).collect();
+        let rows = run_squad_conditional_probe(&worlds, &seeds, &SQUAD_PROFILES);
+
+        let cell = |profile: &str, tactic: &str| -> f64 {
+            rows.iter()
+                .find(|r| r.profile == profile)
+                .expect("profile row")
+                .vs_neutral
+                .iter()
+                .find(|c| c.0 == tactic)
+                .expect("tactic cell")
+                .1
+        };
+
+        // 1. No tactic dominates on a neutral-shaped squad.
+        for &(name, share, _) in &rows
+            .iter()
+            .find(|r| r.profile == "control")
+            .expect("control row")
+            .vs_neutral
+        {
+            assert!(
+                (share - 0.5).abs() < 0.025,
+                "{name} reads {share:.4} against neutral() on a control squad — a \
+                 single instruction worth more than ±2.5pts of expected points is a \
+                 dominating tactic (DESIGN.md §4.1), not a tradeoff"
+            );
+        }
+
+        // 2. The press is worth more to a high-Stamina squad than a
+        //    low-Stamina one. Measured +0.0194 pooled over 8 worlds x 3000
+        //    seeds; the band is set well below that so seed noise at this
+        //    test's lighter pooling cannot trip it, while a *sign* flip —
+        //    which would mean `fatigue_mult`'s stamina term had stopped
+        //    reaching the press — fails loudly.
+        let gradient = cell("physical", "High press") - cell("technical", "High press");
+        assert!(
+            gradient > 0.005,
+            "press gradient (physical - technical) is {gradient:+.4}, expected \
+             clearly positive (~+0.019 at full pooling): Pressing::High's fatigue \
+             cost scales with (1 - stamina), so a high-Stamina squad must profit \
+             from it more than a technical one"
+        );
+    }
 
     /// T7 addendum §2/T7a: the press-wiring verification. Confirms
     /// `Pressing::High`'s `def_bias_by_zone` lands where `TACTICS_MODEL.md`

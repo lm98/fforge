@@ -15,8 +15,9 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, StreamTelemetry, ai_pick_lineup_vs,
-    lineup_strength, play_match, run_head_to_head,
+    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, PROFILE_SHIFT, SQUAD_PROFILES,
+    StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, probe_tactics,
+    run_head_to_head, run_squad_conditional_probe,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
@@ -202,6 +203,18 @@ fn print_report(report: &CalibReport) {
     }
 }
 
+fn parse_u64_arg(args: &[String], flag: &str, default: u64) -> u64 {
+    for i in 0..args.len() {
+        if args[i] == flag
+            && let Some(v) = args.get(i + 1)
+            && let Ok(n) = v.parse::<u64>()
+        {
+            return n;
+        }
+    }
+    default
+}
+
 fn parse_seeds_arg(args: impl Iterator<Item = String>) -> u64 {
     const DEFAULT_SEEDS: u64 = 8;
     let args: Vec<String> = args.collect();
@@ -289,8 +302,119 @@ fn run_head_to_head_report(num_seeds: u64) {
     );
 }
 
+/// `TACTICS_MODEL.md` §9 item 6's probe: the same forced-tactics head-to-head
+/// as above, but swept across *squad shapes* rather than only across tactic
+/// pairs. The question it answers: is non-dominance cyclic (§5's original
+/// claim, unconfirmed) or squad-conditional (the T7 addendum's alternative)?
+/// Squad-conditional non-dominance holds iff the best tactic **rotates**
+/// across profiles — no single tactic best for every squad shape.
+fn run_squad_conditional_report(num_seeds: u64, num_worlds: u64) {
+    let cfg = WorldGenConfig {
+        num_clubs: 2,
+        ..Default::default()
+    };
+    let worlds: Vec<_> = (0..num_worlds)
+        .map(|w| {
+            let (world, _schedule, _start) = worldgen::generate(w * 7 + 7, &cfg);
+            let club = world.competition.clubs[0];
+            (world, club)
+        })
+        .collect();
+    let seeds: Vec<u64> = (0..num_seeds).collect();
+
+    println!(
+        "=== Squad-conditional probe ({num_worlds} worlds x {num_seeds} seeds x2 per cell, shift ±{PROFILE_SHIFT}) ==="
+    );
+    println!("TACTICS_MODEL.md §9 item 6. Each cell: that tactic's expected-points share against");
+    println!(
+        "Tactics::neutral(), both sides fielding the same profiled squad (equal strength, both"
+    );
+    println!("legs), pooled across worlds — sd is the spread *across worlds*, the axis a");
+    println!("single-world read hides.");
+    println!();
+
+    let rows = run_squad_conditional_probe(&worlds, &seeds, &SQUAD_PROFILES);
+    let labels: Vec<&str> = probe_tactics().iter().map(|&(n, _)| n).collect();
+
+    println!("--- vs neutral (>0.500 = the tactic helps this squad) ---");
+    print!("{:<12}", "profile");
+    for l in &labels {
+        print!("{l:>20}");
+    }
+    println!("{:>14}", "pooled best");
+    for row in &rows {
+        print!("{:<12}", row.profile);
+        for &(_, v, sd) in &row.vs_neutral {
+            print!("{:>20}", format!("{v:.4} ±{sd:.4}"));
+        }
+        println!("{:>14}", row.best_tactic());
+    }
+
+    println!();
+    println!("--- per-world argmax (rotation is only real if it survives the world draw) ---");
+    for row in &rows {
+        println!("{:<12} {}", row.profile, row.per_world_best.join(", "));
+    }
+
+    println!();
+    println!("--- the §5 triangle, per squad (>0.500 = first-named side wins the edge) ---");
+    println!(
+        "{:<12}{:>18}{:>18}{:>18}{:>10}",
+        "profile", "High v Patient", "Direct v High", "Patient v Direct", "cyclic?"
+    );
+    for row in &rows {
+        println!(
+            "{:<12}{:>18.4}{:>18.4}{:>18.4}{:>10}",
+            row.profile,
+            row.triangle[0],
+            row.triangle[1],
+            row.triangle[2],
+            if row.triangle.iter().all(|&e| e > 0.5) {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+    }
+
+    println!();
+    let bests: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.best_tactic()).collect();
+    println!(
+        "Distinct pooled best-tactics across {} profiles: {} ({})",
+        rows.len(),
+        bests.len(),
+        bests.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+
+    // The gradient §9 item 6 actually turns on, stated directly: Pressing's
+    // value is mechanically increasing in squad Stamina (`contest::fatigue_mult`
+    // scales its drop by `(1 - stamina)`, while `def_bias_by_zone` is
+    // attribute-independent), so `physical` minus `technical` on the press
+    // column is the one cell-difference the model *predicts the sign of*.
+    let press_of = |name: &str| -> (f64, f64) {
+        let r = rows
+            .iter()
+            .find(|r| r.profile == name)
+            .expect("profile row");
+        let c = r.vs_neutral.iter().find(|c| c.0 == "High press").unwrap();
+        (c.1, c.2)
+    };
+    let (phys, phys_sd) = press_of("physical");
+    let (tech, tech_sd) = press_of("technical");
+    println!(
+        "Press gradient (physical - technical): {:+.4}  (world sds {phys_sd:.4} / {tech_sd:.4})",
+        phys - tech
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--squad-conditional") {
+        let num_worlds = parse_u64_arg(&args, "--worlds", 8);
+        let num_seeds = parse_seeds_arg(args.into_iter());
+        run_squad_conditional_report(num_seeds.max(50), num_worlds.max(1));
+        return;
+    }
     if args.iter().any(|a| a == "--head-to-head") {
         let num_seeds = parse_seeds_arg(args.into_iter());
         run_head_to_head_report(num_seeds.max(50));
