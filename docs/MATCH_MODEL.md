@@ -339,10 +339,15 @@ per-draw-count.
 
 ## 12. The extended `MatchOutcome` / `MatchPlayed` boundary (R6)
 
-*Status: landed (sequencing step 1) for the three consumers below that have models drafted
-— `injuries`, `cards`, `ratings` — with the engine emitting all of them empty; `minutes`
-and `cond_drain` join the struct when §16/§13 land, behind the same serde-default seam.
-Calibration readings verified unchanged.*
+*Status: landed (sequencing step 1) for all three fields; `injuries` (§14, T10) and `cards`
+(§15, T11) are now populated by their real models, `ratings` still emits empty pending §18.
+`cond_drain` joins the struct when §13 lands, behind the same serde-default seam. `minutes`
+landed early, ahead of §16 (batch handoff T4/§2.8): every starter recorded a flat 90, every
+non-starter absent from the vec, until T11 made a sent-off player's minutes stop at his
+dismissal — degenerate and inert (all four pooled calibration guards read unchanged) until
+T10/T11/T12 make partial minutes possible; the playing-time input to development (below)
+needed the field and its minutes-share redefinition in place well before substitutions do, so
+landing it separately cost nothing and de-risked the larger §16 change.*
 
 2e produces per-player consequences that outlive the match. The §7 rule (record outcomes; the
 fold consumes without re-running engines) dictates the boundary: **every consequence that
@@ -399,6 +404,52 @@ mean rating §18).
 
 ## 13. Condition & between-match recovery (R5) — and the Natural Fitness split (R8)
 
+**Status: landed (batch-3 T9).** Implementation lives in the new `fforge_core::condition`
+module: `ConditionKnobs` (plausibility-picked, sibling of `DevKnobs`/`ValueKnobs`) and a pure
+`condition(recent, as_of, natural_fitness, age_years, k) -> f64` — each recorded appearance in
+the caller-supplied `recent` slice leaves a decaying load debt (`drain_per_match`, cleared at
+`recovery_per_day`, which scales up with Natural Fitness and down with age past
+`age_anchor`); condition is `(1.0 − Σ debts).clamp(condition_floor, 1.0)`, and an empty
+`recent` always reads exactly `1.0`. `GameState::condition(pid)` is the one call site that
+turns the already-existing `recent_appearances` rolling window (§12's boundary extension,
+landed ahead of this task) plus `Character.natural_fitness` and `Player::age` into a value —
+no new fold state, no new event, per §2.3's "derived, never stored" rule.
+
+**The identity mechanism differs from Consistency's.** Condition is `GameState`-derived, and
+`match_engine` has no `GameState` — so unlike `Knobs::consistency_sigma_max` (an in-engine
+knob), condition arrives from *outside* `play_match` as a plain `conditions: &BTreeMap<PlayerId,
+f64>` parameter, threaded through `build_xi` into a new `XiPlayer.condition` field (not baked
+into `attrs` like Consistency — it scales only `fatigue_mult`'s starting point, not every
+attribute). A player absent from the map — including the whole map being empty — defaults to
+`1.0`, which *is* the identity setting (§2.1): callers with no real `GameState` (every test,
+`bin/calibrate`, the pooled harnesses) simply never populate the map. `fatigue_mult` gained a
+`condition: f64` parameter; its new starting point at minute 0 is `condition` exactly (was
+always `1.0`), fading further from there exactly as before — "a player at 85% begins the match
+already part-fatigued," §13's own framing, realized as a single multiplication.
+
+**Scope decision: `bin/calibrate` and the four pooled calibration guards stay at the identity
+setting.** None of them tracks a `GameState` across a simulated season (they drive
+worldgen → AI-lineup → `play_match` directly, one fixture at a time, discarding state between
+matches — `bin/calibrate`'s own module doc comment), so there is no accumulated
+`recent_appearances` window for them to read; wiring one in would be new season-tracking
+machinery outside T9's scope, not a data-flow change. This means `bin/calibrate`'s pooled
+readings are unaffected by this task by construction (verified: `cargo run --release --bin
+calibrate -- --seeds 8` reads unchanged goals/match, and all four pooled guards
+— `favourite_discrimination_regression_guard`, `career_arcs_are_in_a_believable_ballpark`,
+`market_is_in_a_believable_ballpark`, `aggregates_are_in_a_believable_ballpark` — pass with no
+threshold change). The real per-player effect is exercised end-to-end through
+`commands::advance_matchday`/`player_match_preview` (both build a real `conditions` map via
+`GameState::condition`) and asserted directly (`condition`'s own unit tests; `fatigue_mult`'s
+extended bounds test; `build_xi_attaches_condition_from_the_caller_supplied_map`;
+`a_tired_home_side_scores_visibly_fewer_expected_goals_than_a_fresh_one`, pooled over 300
+seeds). A season-long pooled reading of condition's aggregate bite is left to a future harness
+extension, not fabricated here.
+
+**Aging blend (§2.4/R8) also landed, in `development`, not `match_engine`.** See
+`DEVELOPMENT_MODEL.md`'s updated §3/§6 for the `Lmax_Phys` blend formula, the `aging_prof_weight`
+knob (`w`, identity `1.0`, production `0.5`), and the `career_arc` check confirming no reading
+moved outside its already-banked band at the production default.
+
 **Condition** is a persistent per-player `0..=100` state, distinct from §4's *in-match*
 fatigue: fatigue is the within-90' drop; condition is what you start the day with.
 
@@ -441,11 +492,37 @@ low 90s, and High-press squads accumulating a deficit. Its strategic payoff arri
 fixture congestion (cups, continental midweeks — future), and the law is deliberately simple
 until then. This is scoped-in *now* anyway because injuries and substitutions both consume it.
 
-**§8 impact:** pooled aggregates ≈ unchanged in a weekly calendar (predicted gpm drift
-< ±0.05); new telemetry rows: mean pre-match condition (expected ≥ ~95 in-season) and the
-post-75' contest-success dip by pressing level (which §13's anchor deepens slightly).
+**§8 impact:** predicted pooled aggregates ≈ unchanged in a weekly calendar (gpm drift < ±0.05)
+— confirmed exactly (not just "within noise") for `bin/calibrate` and all four pooled guards,
+per the status note above, because that harness never accumulates the season-long
+`recent_appearances` window condition reads; the real per-match bite is confirmed instead by
+`a_tired_home_side_scores_visibly_fewer_expected_goals_than_a_fresh_one`'s pooled 300-seed
+comparison. New telemetry rows (mean pre-match condition, the post-75' contest-success dip by
+pressing level) are deferred to a season-tracking harness extension, not fabricated against a
+harness that cannot see them.
 
 ## 14. The injury model
+
+**Status: landed (batch-3 T10).** Implementation lives in `match_engine::resolve`: the contact
+channel rolls inline at each failed take-on and each headed shot's aerial duel
+(`maybe_contact_injury`); the ambient channel is pre-rolled once per player at kickoff in
+`build_xi` (one Bernoulli trial approximating a per-minute hazard integrated over 90', with a
+uniformly-drawn onset minute) and fired by `fire_due_ambient_injuries` as the possession loop's
+clock reaches it — a deliberate simplification recorded as such at the call site, since the
+target metrics below care about expected *count*, not the intra-match timing of a non-eventful
+injury. Both channels draw from their own `INJURY_NS` stream (`play_match` gained an
+`injury_rng: &mut Rng` parameter, identity `injury_rate: 0.0`); severity is drawn only when the
+check itself fires — the same conditional-on-outcome shape `take_shot`'s on-target/beat-keeper
+rolls already use, not a violation of the unconditional-fixed-order rule (reserved for whole-
+population draws like Consistency's, not per-event narrative branches). `GameState::available`
+(`MATCH_MODEL.md` §12) is the derived view `ai_pick_lineup_available`, `validate_lineup`
+(a new `CommandError::PlayerUnavailable`), and `effective_player_lineup`'s staleness check all
+read — squad depth finally bites, exactly as §2.5 named it.
+
+**Mid-match handling today vs. eventually.** T10's scope fence is explicit: an injured player
+*continues at reduced effectiveness for the remainder* (`impairment_mult`, identity `1.0`,
+production `0.6`) — no substitution mechanism yet. The forced substitution described below is
+T12's; until it lands, an injured player simply plays on impaired rather than being replaced.
 
 Contest #9 of `ATTRIBUTE_SCHEMA.md` §6, finally consuming **Injury-proneness** (its no-orphan
 promise). Two hazard channels, both drawn from the fixture stream at match time:
@@ -472,18 +549,61 @@ short — presence sampling already tolerates a shrunken XI (§16).
 **Targets:** ~1.5–2.5 match-missing injuries per club per season; a visible in-match injury
 every ~4–6 matches; severe cases rare but real (a handful per league season).
 
-**§8 impact:** gpm ≈ unchanged (< ±0.05 — injuries redistribute minutes, they don't change
-contest math); new §8 rows: injuries/club/season and mean matches missed. Second-order:
-squad-depth quality starts mattering in season aggregates, which the market harness
-(`TRANSFER_MODEL.md` §11) should see as slightly increased demand for depth — flagged there.
+**T10 finding — the first magnitude pick read high, one re-scale landed in band.**
+`state::a_pooled_seasons_injury_count_lands_in_the_documented_band` drives real full seasons
+through `commands::advance_matchday`, pooled over 6 seeds, and counts only "match-missing"
+injuries (`days_out >= 7` — a `Knock`, 0–3 days, always heals inside the weekly calendar and
+never actually costs an appearance, so it does not count toward this target). The starting
+pick (`injury_base_contact: 0.006`, `injury_ambient_base: 0.0025`, both plausibility-picked
+from `bin/calibrate`'s own per-match shot/take-on counts) read **3.88** match-missing
+injuries/club/season — above the 1.5–2.5 band. Scaling both bases down by ~0.515 (to `0.0031`
+/ `0.0013`) landed at **2.14**, inside it. A single-knob-family magnitude re-scale, the same
+class of correction `career_arc`'s `K_DEC` re-fit was — not yet a full B3.9 fit against every
+sub-target (the visible-injury-every-4–6-matches and severe-rarity reads are unverified; a
+future task's job).
+
+**§8 impact:** predicted gpm ≈ unchanged (< ±0.05 — injuries redistribute minutes, they don't
+change contest math) — not directly re-verified here (`bin/calibrate` has no season-length
+calendar to accumulate injuries across, so its per-fixture pooled reading only exercises
+single-match injury draws, the same scope `favourite_discrimination_regression_guard` already
+covers and still passes with the mechanism live). New telemetry rows (injuries/club/season,
+mean matches missed) exist today only via the pooled test above, not yet in `bin/calibrate`'s
+own report. Second-order: squad-depth quality starts mattering in season aggregates, which the
+market harness (`TRANSFER_MODEL.md` §11) should see as slightly increased demand for depth —
+flagged there, not yet measured.
 
 ## 15. Fouls, cards, and derived suspensions — resolving the discipline question
+
+**Status: landed (batch-3 T11).** Implementation lives in `match_engine::resolve`: the foul
+check rolls after every `TakeOn` resolution (either outcome) and after a failed `Pass` outside
+the actor's own `Def` zone (`maybe_foul`), on its own `FOUL_NS` stream (`play_match` gained a
+`foul_rng: &mut Rng` parameter, identity `foul_rate: 0.0`) — an unconditional check draw, then
+a conditional severity draw only if it fires, the same shape `roll_injury` (§14) already uses.
+A fired foul is a **non-mirroring turnover**: the beat returns `(poss, zone)` unchanged instead
+of the take-on/pass's own outcome, so the fouled side keeps the ball right where it happened. A
+red (straight or second yellow) sets `XiPlayer.sent_off_from_minute`; `sample_by_presence` and
+`team_means` (renamed to take a `minute` and filter `on_pitch`) drop that player from every
+subsequent tick's sampling, giving the "renormalize over ten" behaviour with no change to the
+presence tables themselves — `team_means` now recomputes per tick once a side has actually
+gone down a player (a cheap fast path reuses the once-per-match reading otherwise, so the
+identity setting's per-tick cost is unchanged). `current_gk` resolves the red-carded-keeper
+edge case: formation slot 0 if still on the pitch, else the lowest-indexed on-pitch outfielder,
+attributes and all. `GameState::is_suspended`/`suspended_players` (§12) derive bans straight
+from `season_cards`, joining `available()` alongside the injury check; `ai_pick_lineup_vs`/
+`ai_pick_lineup_available` gained a `suspended: &BTreeSet<PlayerId>` parameter so AI-controlled
+sides respect suspensions too, not just the human's own `validate_lineup`/
+`effective_player_lineup`. A sent-off player's recorded `MatchPlayed` minutes now stop at his
+dismissal minute rather than running to a flat 90 — T11's own slice of §2.8's "T10/T11/T12 make
+partial minutes possible," ahead of T12's substitutions.
 
 **The foul contest** attaches to the contests that model a challenge: after a take-on
 resolves (either way), and after a *failed* pass in the defender's pressed zones, a foul draw
 fires: `p_foul = σ(base_foul + a·(Aggression − 50)/50 − c·(Composure/Decisions blend − 50)/50
 + press_term + fatigue_term)` — the schema §6 #8 signature (↑ Aggression, ↓ Composure,
-Decisions), plus the two modulators 2e adds (a High press fouls more; tired legs foul more).
+Decisions), plus the two modulators 2e adds (a High press fouls more, via the defending side's
+own `SideEffects::fatigue_mult`; tired legs foul more, via `1 - fatigue_mult`). "The defender's
+pressed zones" resolved as every zone but the actor's own `Def` third: a lost ball there reads
+as a clean interception during build-up, not a physical challenge worth a foul check.
 
 **Restart (v1):** the fouled side retains possession in the zone — a free kick abstracted to
 "possession kept", per §11's set-piece deferral. No shot from the foul yet.
@@ -492,68 +612,190 @@ Decisions), plus the two modulators 2e adds (a High press fouls more; tired legs
 straight `Red` (rare, ≈ 0.01), with the yellow odds pushed up by the same Aggression margin
 and by repeat fouling (a per-player in-match foul count — the referee's patience is state the
 engine already has for free). A second yellow is a red by bookkeeping, not a new draw.
+**Implementation refinement found during calibration:** a second yellow is *not* drawn from the
+same formula as the first, plus its repeat/aggression bumps — an early pass did exactly that,
+and one aggressive repeat fouler's compounding foul count reliably snowballed into an
+implausible per-match red rate (≈0.39/team/match, four times the target). `foul_second_yellow_base`
+is its own flat, deliberately low probability once a player already carries a yellow: a
+cautioned player draws more careful, and the second dismissal-worthy act is rarer per foul than
+the first, not more common — the repeat/aggression bumps stay first-yellow-only.
 
-**The discipline resolution (`ATTRIBUTE_SCHEMA.md` §9 item 3) — decision: Aggression alone in
-v1; no hidden discipline factor yet — with a named split tripwire.** The lean-and-add case:
-the schema merged Bravery into Aggression and flagged the possible split "if card rates won't
-calibrate from Aggression alone", and that is only knowable from the calibrated contest, which
-now exists to be built. The tripwire that would fire the split, stated in advance so B-series
-calibration checks a prediction (§8 discipline): per-player season card counts must show a
-believable heavy tail (a few 8+/season players, a mode near 1–3) *without* distorting duel
-calibration. The conflation risk is precise: Aggression is also a *performance* input to the
-duel contests, so if the only way to widen the card tail is cranking card-sensitivity to
-Aggression, aggressive players get taxed in a way their duel bonus doesn't repay, and picking
-them becomes strictly bad — that observation (card-tail flatness at acceptable duel balance,
-or duel distortion at acceptable card tail) is the evidence that a second, hidden,
-CA-irrelevant discipline factor is needed. Until it fires: one attribute, no new field.
+**The discipline resolution (`ATTRIBUTE_SCHEMA.md` §9 item 3) — verdict: Aggression alone
+sufficed, no hidden discipline factor needed.** The lean-and-add case: the schema merged
+Bravery into Aggression and flagged the possible split "if card rates won't calibrate from
+Aggression alone." T11's calibration (below) hit both the yellow band (~2-3/team/match) and
+the red band (well under 0.1/team/match) by tuning only the foul-contest's own knobs
+(`foul_base`, `foul_yellow_base`, `foul_red_base`, `foul_second_yellow_base`) — the duel
+contests' own weights (`TAKEON_DEF`, `PASS_DEF`, `AERIAL_DEF`, all still schema §6-verbatim)
+were never touched. No conflation ever showed up between "Aggression as a duel-performance
+input" and "Aggression as a card-risk input," so the split tripwire never fires: one attribute,
+no new field, `ATTRIBUTE_SCHEMA.md` §9 item 3 resolves closed.
 
 **Derived suspensions:** a red (straight or second yellow) → miss the next league match;
 5 accumulated yellows → 1-match ban, counter resets, season boundary clears it. All of it
 **derived in the fold from recorded cards** — §12's derived-suspension rule; cards are the
-truth, the ban is a view, `available()` enforces it.
+truth, the ban is a view, `available()` enforces it. `GameState::is_suspended` compares each
+qualifying booking's matchday against `current_matchday - 1` exactly, so a ban both applies and
+self-clears without ever storing a "served" flag — once the calendar moves past the one match a
+booking covers, the same read starts returning `false` again.
 
 **Playing short:** a sent-off player leaves the XI; presence sampling renormalizes over ten
 (the §6 tables need no change — totals just shrink), team means recompute, and the one edge
 case is pinned by test: a red-carded *keeper* forces either a sub (§16) or an outfielder in
-goal (slot re-roled `Gk`, his attributes making the punishment automatic). Target: a
-ten-man side concedes roughly +0.4–0.6 expected goals over the remainder.
+goal (slot re-roled `Gk`, his attributes making the punishment automatic). The `+0.4-0.6`
+expected-goals-conceded-over-the-remainder target below is unverified in v1 — it needs T12's
+substitutions to be a fair reading (right now a ten-man side never gets a tactical reshuffle in
+response, which would bias the reading pessimistic).
 
 **§8 impact:** gpm ≈ unchanged at the league level (fouls retain possession; reds are rare and
-symmetric); new §8 rows: fouls/game ~20–25, yellows/game ~3.5–4.5, reds/game ~0.15–0.25,
-suspension matches served/club/season. H/D/A and the favourite-discrimination guard must hold;
-red-card matches will fatten the scoreline tails slightly (watched, not banded, in v1).
+symmetric) — not independently re-verified here (`favourite_discrimination_regression_guard`
+passes with the mechanism live at production defaults, the same scope-of-check T10's own §8
+impact note relied on). New §8 rows, pooled over 16 seeds via `bin/calibrate`: fouls/game
+**20.2** (target ~20-25), yellows/team/match **2.20** (target ~2-3), reds/team/match **0.038**
+(target well under 0.1) — landed on the first knob pick that hit all three simultaneously,
+`foul_base: -2.5` (from an initial `-3.3`, which read only 9.5 fouls/game and 1.06 (later 1.07)
+yellows/team/match, both well short) alongside the second-yellow decoupling above. H/D/A and
+the favourite-discrimination guard hold at these knobs (`favourite_discrimination_regression_guard`,
+production `Knobs::default()`); red-card matches will fatten the scoreline tails slightly
+(watched, not banded, in v1). Suspension matches served/club/season: not yet read off a real
+pooled season — a `bin/calibrate` reporting gap, not a modelling one.
 
 ## 16. Substitutions (R7)
 
+**Status: landed (batch-3 T12).** Implementation lives in `match_engine::resolve`: `simulate`
+now owns `home`/`away` (and their bench counterparts) as mutable `Vec<XiPlayer>` rather than
+borrowing them, since a substitution replaces a slot's `XiPlayer` outright — `step`/
+`take_shot`/`sample_by_presence`/`team_means` still only ever see a borrowed `&[XiPlayer]` for
+one segment between decision points, so none of their signatures changed. Decision points
+(half-time, the fixed `SUB_CHECKPOINTS` `[60, 70, 80]`, or forced immediately when a tick's
+injury/card count grows for a given side) call `evaluate_decision_point`, which walks
+`Lineup.sub_plan`'s rules in order and fires an action once every one of its `SubCondition`
+clauses holds. `build_xi`'s per-player body was factored into `build_xi_player`, reused by a
+new `build_bench` — every dressed player, starter or bench, gets his Consistency multiplier and
+ambient-injury pre-roll at kickoff (§16's own "RNG discipline" requirement), so a substitute
+enters with already-resolved match-time attributes and evaluation itself draws nothing.
+`XiPlayer` gained `entered_at_minute` (`0.0` for a starter, the identity) so a substitute's
+`fatigue_mult` clock starts at his own entry rather than the match clock. A departed player's
+final minutes are captured into a side accumulator before his slot is overwritten (his own
+`XiPlayer` no longer exists in `home`/`away` to read them back from); `GameState::available` and
+the injury/suspension pipeline are otherwise untouched.
+
+**T12 finding — the substitution cap is 3, not 5.** This section was drafted at T2 against the
+real law's simplification; the batch-3 handoff's own T12 task spec pins **"three substitutions
+maximum"** explicitly, in both its deliverable and its test list. Implemented as
+`fforge_domain::MAX_SUBSTITUTIONS = 3` (bench size stays **7**, unaffected). Treated as the
+authoritative, more specific instruction superseding this section's original "5" — filed here
+as the correction, per the project's own "divergences get fixed as findings" convention, rather
+than silently building to the newer number without a record of the change.
+
+**Scope actually landed vs. this section's original draft:**
+- **The rule vocabulary is the general condition→action language `TACTICS_MODEL.md` §7/this
+  doc's own §2.7 described** (`SubCondition::{MinuteAtLeast, Score, PlayerConditionBelow,
+  PlayerInjured, ManDown}`, `SubAction::{Substitute, SetMentality, SetTempo, SetWidth,
+  SetPressing}`, `SubRule { conditions: Vec<SubCondition>, action }`, AND-combined) — not the
+  three named built-in rule *kinds* (forced/fatigue/chase-hold) this draft sketched. Those three
+  are expressible in the general language (e.g. a forced-cover rule is one `PlayerInjured(pid)`
+  condition per starter, naming a fixed bench replacement — never resolved by an in-match
+  "best fit" search, keeping evaluation genuinely draw-free) but **no policy that emits them
+  automatically exists yet.**
+- **No AI default plan or bench-selection policy landed.** `ai_pick_lineup`/`ai_pick_lineup_vs`
+  field every AI-controlled side with an empty bench and an empty `sub_plan` — the substitution
+  identity, so AI-vs-AI league play is entirely unaffected by this task (confirmed: every pooled
+  calibration guard reads unchanged). This mirrors `ai_pick_tactics`'s own seam
+  (`TACTICS_MODEL.md` §7) and is left for a follow-on task, not silently dropped — T12's own
+  deliverable and test list never actually required it (only that a *submitted* plan, human or
+  hand-built, is honoured). The human side has no bench/plan UI yet either (`fforge-game`
+  submits an empty bench/plan, same as its tactics picker), for the same reason
+  `TACTICS_MODEL.md`'s own tactics UI is deferred.
+- **No new persisted `MatchOutcome`/`MatchPlayed` field.** Unlike injuries/cards, a
+  substitution has no derived `GameState` consequence beyond minutes — there is no
+  "substitutions history" field anything downstream reads. `MatchEventKind::Substitution`
+  narrates it in the Trace-only stream (discarded after presentation, exactly like every other
+  beat); the one consequence that *does* outlive the match, minutes, already had a field
+  (`MatchPlayed.minutes`, landed early at T4) built for exactly this.
+
 **Law, simplified:** a bench of **7** (squad floor 18 = XI + 7, so every legal squad can fill
-it), **5 substitutions**, usable at fixed decision points — half-time, 60', 70', 80' — plus
-immediately on injury. Window-count bookkeeping (the real law's "3 windows") is not modeled in
+it), **three substitutions** (T12 finding above — not the real law's 5 this section originally
+drafted), usable at fixed decision points — half-time, 60', 70', 80' — plus immediately on
+injury or a red card. Window-count bookkeeping (the real law's "3 windows") is not modeled in
 v1: the four fixed points *are* the windows.
 
 - **The `Lineup` widens** (with `tactics`, `TACTICS_MODEL.md` §6): `bench: Vec<PlayerId>`
-  (≤ 7, validated like starters). Old logs deserialize to an empty bench — and an empty bench
-  means no decision point can act, which keeps pre-2e replays coherent.
+  (≤ 7, validated like starters — `commands::validate_lineup`) and `sub_plan: Vec<SubRule>`.
+  Old logs deserialize to an empty bench and plan — and both empty means no decision point can
+  ever act, which keeps pre-2e replays coherent.
 - **Decisions are pre-committed reactive plans**, never mid-match I/O — `play_match` is pure
-  (`TACTICS_MODEL.md` §7 pins the pattern). The human's plan rides the `Lineup`; the AI uses a
-  default plan. The v1 rule vocabulary is deliberately tiny: *forced* (injury → best same-role
-  bench player), *fatigue* (at a decision point, replace the most condition-drained outfielder
-  below a threshold, like-for-like by role), and one *chase/hold* rule (trailing at 70'+ →
-  attacking swap; leading → defensive swap), which is also where a plan may switch `Tactics`
-  levels — the in-match tactic-change seam, resolved here.
+  (`TACTICS_MODEL.md` §7 pins the pattern). The human's plan rides the `Lineup`; the AI plays
+  with an empty one in v1 (the "scope actually landed" note above) — a future default-plan
+  policy is `ai_pick_tactics`'s own sibling seam, not yet built.
 - **RNG discipline:** plan evaluation is deterministic and draw-free (conditions read the
-  score, the clock, and condition state; ties break by slot order). A substitution changes
-  *who* is sampled afterwards — outcomes diverge, the draw *mechanism* doesn't. No bench + no
-  plan ⇒ zero new draws, ⇒ the §11 regime-1 property degrades gracefully.
+  score, the clock, and already-resolved injury/card/condition state; a rule whose named player
+  is no longer eligible — already subbed or sent off, or no longer on the bench — is a silent
+  no-op, not a search for a substitute). A substitution changes *who* is sampled afterwards —
+  outcomes diverge, the draw *mechanism* doesn't. No bench + no plan ⇒ zero new draws ⇒ the §11
+  regime-1 property degrades gracefully, confirmed by `ai_pick_lineup`'s empty-bench/plan
+  default reproducing the T5 golden baseline bit-for-bit with no special-casing needed.
 - **Consequences:** `minutes` in `MatchPlayed` (§12) becomes real per-player minutes — the
   playing-time upgrade `DEVELOPMENT_MODEL.md` §3 reserved; condition drain (§13) scales with
   minutes actually played; a sub's fatigue clock starts at his entry minute (fresh legs are
   mechanically real via `fatigue_mult`'s minute argument being offset).
 
-**§8 impact:** subs/match ~4–5 (new row); late-match (75'+) goal share dips slightly (fresh
-defenders) but stays positive-skewed (chasing teams attack); gpm ≈ unchanged (± 0.05). The
-§13 condition telemetry is where substitution behavior is actually visible.
+**§8 impact:** **not measured against production league play** — every AI-controlled match
+still runs the substitution identity (empty bench/plan), so `bin/calibrate`'s pooled aggregates
+are unaffected by construction (confirmed: every pooled calibration guard reads unchanged with
+the mechanism live). The original subs/match ~4-5, late-match goal-share, and gpm predictions
+apply once a default AI plan exists to actually generate substitutions in league play — deferred
+alongside that policy. What *is* verified: a submitted plan resolves deterministically, honours
+the 3-substitution cap, reacts to forced triggers (injury, red card) ahead of the next fixed
+checkpoint, and produces the non-degenerate partial minutes `DEVELOPMENT_MODEL.md` §3 needed
+(`match_engine`'s own test suite, plus a `commands::step`-level integration test proving the
+minutes reach `GameState.appearances_since_tick`).
 
 ## 17. Character activation — Consistency & Concentration, and the schema §9 item 2 verdict
+
+**Status: Consistency landed (batch-3 T8); Concentration not yet implemented.** This section
+was written at T2 (design-note-first, before any 2e Rust) describing both halves of the
+schema §9 item 2 resolution as one design; only Consistency was ever assigned an
+implementation task (T8) in the batch-3 task list — Concentration's lapse mechanic has no
+task and is not wired into `fforge-core` (confirmed: no `Attribute::Concentration` reference
+anywhere in the crate). The "split holds" verdict below is therefore only half-tested; treat
+Concentration's half as still a pure design description pending its own task.
+
+Implementation lives in `match_engine::resolve::build_xi`:
+`Knobs::consistency_sigma_max`/`consistency_mult_min`/`consistency_mult_max`
+(`0.25`/`0.7`/`1.3`, plausibility-picked, identity `0.0` per §2.1) and its own RNG stream
+(`match_engine::CONSISTENCY_NS`, "CONS"), drawn once per player at XI-build time (22 draws,
+11 per side, unconditional, fixed slot order) and applied to *every* attribute uniformly for
+the match. `play_match`/`resolve::play_match` gained `consistency_rng: &mut Rng` and `k:
+&Knobs` parameters (the latter so the T5/T6 identity tests can pin
+`consistency_sigma_max: 0.0` independent of the production default, the `notebook_parity`
+precedent). Tests: the identity holds bit-for-bit (`build_xi_reproduces_raw_attributes_bit_
+for_bit_at_the_consistency_identity`, plus the T5/T6 golden/bit-identity tests re-passing with
+`consistency_sigma_max: 0.0` pinned); a low-Consistency player shows visibly (>2×) wider
+match-to-match spread than a high-Consistency player at equal starting CA
+(`low_consistency_shows_a_visibly_wider_match_to_match_spread_than_high_consistency`).
+
+**T8 finding — the mean shift was larger than "roughly unchanged."** At `sigma_max = 0.25`,
+pooled `bin/calibrate` goals/match moved from 2.64 (T6/T7 baseline, `AI_TACTICS_ENABLED =
+false`) to 2.89 at a matched 16-seed pool (+9.5%), not the "roughly unchanged (the multiplier
+is mean-1.0)" this section originally predicted. The per-match multiplier's *expectation* is
+exactly 1.0 by construction, but that does not imply the *engine's output* mean is preserved:
+contest probabilities are sigmoid functions of attribute differences, and a symmetric
+perturbation to a nonlinear function's input does not generally preserve its output's mean
+(the general shape of the effect Jensen's inequality describes). Recorded here rather than
+chased — `consistency_sigma_max` is a plausibility pick explicitly meant to be a B3.9 fit
+target (this section's own §8 impact note below), and T8's scope fence was "do not re-tune
+knobs in this task." T14's re-banking pass inherits this as a concrete, measured number to
+weigh when it proposes a knob table.
+
+**Guard interaction (T8 finding).** `favourite_discrimination_regression_guard`'s pool was
+widened 8 → 24 seeds: Consistency's added per-match variance made the guard's sparsest
+extreme-strength-gap bins (a handful of matches each at 8 seeds) trip the monotonicity
+tolerance — e.g. the `(gap −27, 6 matches) → (gap −25, 18 matches)` pair read `(0.083,
+0.000)`, an 0.083 dip past the 0.05 tolerance, at 8 seeds; the same bin pair at 24 seeds reads
+`(0.023, 0.008)`, an 0.015 dip comfortably inside it. This is test-pool sizing (statistical
+power at the harness's sparsest bins), not a knob re-tune — `consistency_sigma_max` and the
+tolerance itself are unchanged.
 
 The two attributes activate on *different axes*, which is the whole test of whether the split
 holds:
@@ -585,7 +827,27 @@ hidden Consistency (should correlate negatively), late-goal share vs defense Con
 
 ## 18. Match ratings (R9)
 
-**Definition: a per-player 1.0–10.0 rating, a pure RNG-free function of the player's recorded
+**Status: landed (batch-3 T13).** Implementation is a new `match_engine::ratings` module:
+`compute_ratings(stream, players, home_goals, away_goals)` is a pure fold over an
+already-resolved `MatchOutcome.stream`, called at the end of `simulate` once the stream is
+fully built (no RNG anywhere in it, so it can never touch a draw sequence). `players: &[RatedPlayer]`
+— `(pid, side, role, minutes)` for every starter, substitute, and departed player — is
+assembled from the final `home`/`away: Vec<XiPlayer>` plus T12's `departed` accumulator
+(extended to also carry `Role`, needed for the clean-sheet gate below). `MatchOutcome.ratings`
+is populated for the first time (previously always empty, §12's sequencing-step-1 placeholder).
+Two implementation notes worth recording alongside the delta table:
+- **The blame rule ("caused an opposition goal's turnover") is an approximation**, documented
+  as such at the call site: it credits whichever failed action (`Pass`/`TakeOn`/`Cross`/
+  `Clearance`) is *most recent* for the conceding side, not a full reconstruction of the exact
+  zone-by-zone possession chain that produced this particular goal. Cheap and directionally
+  right; a possession-chain-exact version is future work if the man-of-the-match spread ever
+  needs it.
+- **The doc/clamp mismatch below is resolved in favour of the clamp**: this section's original
+  prose said "1.0–10.0" while the very next sentence's clamp said `[3.0, 10.0]` — landed at
+  `[3.0, 10.0]`, correcting the prose to match (a real-world match rating essentially never
+  reads below 3, and the clamp value is the one every other section already cross-references).
+
+**Definition: a per-player 3.0–10.0 rating, a pure RNG-free function of the player's recorded
 stream events plus the team result**, computed once at match end and recorded (`ratings`,
 §12 — recorded because the stream is not persisted for AI matches, and news/form/morale need
 it replay-safe). Stored as tenths in a `u8` (68 = 6.8), clamped to `[3.0, 10.0]`.
@@ -611,14 +873,21 @@ The assist and blame rules are derivable purely from stream ordering (the stream
 chronological and side-tagged), so the rating needs no new engine hooks — it is a fold over
 `MatchOutcome.stream` performed while the stream is still in hand.
 
-**Ratings drive nothing mechanical in 2e.** They feed the news Trace (R2's `NewsObserver` gets
-man-of-the-match material) and become the input the deferred systems were designed around: the
-form multiplier valuation deliberately left out (`TRANSFER_MODEL.md` §2.5 — its "small,
-bounded, decaying" sketch is a decayed rating average), and Phase-5 morale — which, when it
-closes the loop, does so under `DESIGN.md` §7's bounded/event-triggered feedback rules. Not
-before.
+**Ratings now drive one mechanical consumer: form.** `TRANSFER_MODEL.md` §2.5's deferral is
+closed — `GameState.recent_ratings` (the rolling last-`RATING_FORM_WINDOW` window, already
+fold-maintained since the §12 boundary was grown) feeds `valuation::MarketContext::from_world`'s
+new `form` field, and `value()` multiplies a bounded `form_mult` in alongside `contract_mult`/
+`scarcity_mult`. A player absent from the window (never played, or the window emptied at a
+season boundary) reads `form_mult = 1.0` exactly — the identity, never a penalty. `ValueKnobs`
+gained `form_scale`/`form_bound` (§9's plausibility-picked-starting-point discipline): a full
+rating point above/below the 6.0 neutral moves value 5%, clamped to `±12%` — inside the ±10-15%
+§2.10 named. What's still deferred: the news Trace's man-of-the-match consumer (R2's
+`NewsObserver`) and Phase-5 morale, both still future work, unaffected by this task.
 
-**§8 impact: none** (a derivation moves no aggregate). New §8 rows: league mean rating ~6.4–6.6,
-winning-side mean ≈ +0.3 over losing-side, goalscorer mean > 7, and a sane man-of-the-match
-spread (forwards overrepresented but defenders present — if the weights can't produce a
-defender MOTM, the tackle/clean-sheet weights are wrong, not the world).
+**§8 impact: none for the match engine itself** (a derivation moves no engine aggregate — no
+new draw, no changed contest). The predicted rows (league mean rating ~6.4–6.6, winning-side
+mean ≈ +0.3 over losing-side, goalscorer mean > 7, a sane man-of-the-match spread) are
+`bin/calibrate`-reportable but not yet added as a printed row there — a reporting gap, not a
+modelling one, the same shape T11's suspension-matches-served gap was. The real, *new* §8-shaped
+impact is on the transfer market: `TRANSFER_MODEL.md` §9's fee distribution moves now that
+`resolve_window` prices against live form — re-read there.

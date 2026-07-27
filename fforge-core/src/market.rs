@@ -188,11 +188,15 @@ pub fn resolve_window(
     market_knobs: &MarketKnobs,
     human_club: Option<ClubId>,
     human_decisions: &[TransferDecision],
+    recent_ratings: &BTreeMap<PlayerId, Vec<u8>>,
 ) -> WindowOutcome {
     // Step 1 (§5): freeze the world snapshot and the valuation cache. Every
     // club's `Candidate.value` this whole window comes from this one map,
-    // computed once — §2.7's simultaneity guarantee.
-    let ctx = MarketContext::from_world(world, value_knobs);
+    // computed once — §2.7's simultaneity guarantee. `recent_ratings`
+    // (`MATCH_MODEL.md` §18, T13) feeds `MarketContext`'s form multiplier —
+    // `GameState.recent_ratings` verbatim from the real caller, empty (the
+    // identity) from any harness with no per-player rating history.
+    let ctx = MarketContext::from_world(world, value_knobs, recent_ratings);
     let valuations = value_all(world, today, &ctx, value_knobs, dev);
     let ai_policy = UtilityPolicy::new(*utility_knobs);
     let human_policy = RecordedPolicy::new(human_decisions.to_vec());
@@ -555,6 +559,7 @@ mod tests {
                 professionalism: 50,
                 consistency: 50,
                 injury_proneness: 50,
+                natural_fitness: 50,
                 leadership: 50,
             },
             development: DevProfile {
@@ -681,6 +686,7 @@ mod tests {
             &market_knobs,
             None,
             &[],
+            &BTreeMap::new(),
         );
 
         assert!(
@@ -724,6 +730,7 @@ mod tests {
             &MarketKnobs::default(),
             None,
             &[],
+            &BTreeMap::new(),
         );
         let b = resolve_window(
             &world,
@@ -736,6 +743,7 @@ mod tests {
             &MarketKnobs::default(),
             None,
             &[],
+            &BTreeMap::new(),
         );
         assert_eq!(
             a, b,
@@ -770,6 +778,7 @@ mod tests {
             &market_knobs,
             None,
             &[],
+            &BTreeMap::new(),
         );
         let world_b = two_bidder_world(1, 0); // ClubId(1) = high reputation
         let outcome_b = resolve_window(
@@ -783,6 +792,7 @@ mod tests {
             &market_knobs,
             None,
             &[],
+            &BTreeMap::new(),
         );
 
         assert_eq!(outcome_a.transfers.len(), 1);
@@ -817,6 +827,7 @@ mod tests {
             &MarketKnobs::default(),
             None,
             &[],
+            &BTreeMap::new(),
         );
         let mut seen = BTreeSet::new();
         for t in &outcome.transfers {
@@ -847,6 +858,7 @@ mod tests {
             &MarketKnobs::default(),
             None,
             &[],
+            &BTreeMap::new(),
         );
 
         let mut post = world.clone();
@@ -909,11 +921,12 @@ mod tests {
             &market_knobs,
             None,
             &[],
+            &BTreeMap::new(),
         );
 
         // Exactly what UtilityPolicy decides for ClubId(0) against the same
         // round-1 snapshot `resolve_window` itself starts from.
-        let ctx = MarketContext::from_world(&world, &vk);
+        let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
         let valuations = value_all(&world, TODAY, &ctx, &vk, &dev);
         let obs = observe(&world, ClubId(0), TODAY, &valuations, &dev, &uk);
         let ai_decisions = UtilityPolicy::new(uk).transfer_decisions(&obs);
@@ -929,6 +942,7 @@ mod tests {
             &market_knobs,
             Some(ClubId(0)),
             &ai_decisions,
+            &BTreeMap::new(),
         );
 
         assert_eq!(
@@ -962,6 +976,7 @@ mod tests {
             &MarketKnobs::default(),
             Some(human),
             &decisions,
+            &BTreeMap::new(),
         );
 
         assert!(
@@ -990,6 +1005,7 @@ mod tests {
             &MarketKnobs::default(),
             Some(human),
             &[],
+            &BTreeMap::new(),
         );
         assert!(
             outcome

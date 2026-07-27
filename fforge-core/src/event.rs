@@ -63,12 +63,14 @@ pub enum Event {
     /// The Phase-2e boundary extension (`MATCH_MODEL.md` §12) adds the
     /// resolved per-player consequences that outlive the match: `injuries`
     /// (the days out, never a severity to re-roll), `cards` (the card itself,
-    /// never a foul to re-resolve), and `ratings` (tenths; recorded because
-    /// the stream they derive from is not persisted for bulk AI matches).
-    /// Suspensions are deliberately *absent*: a ban is derived in the fold
-    /// from accumulated cards — recording both would create two sources of
-    /// truth that can disagree, the sync bug the CA-is-derived rule exists to
-    /// make impossible. All three default to empty so pre-2e logs (and logs
+    /// never a foul to re-resolve), `ratings` (tenths; recorded because
+    /// the stream they derive from is not persisted for bulk AI matches),
+    /// and `minutes` (true minutes played, substitutions included — T4 of
+    /// the batch handoff, §16/R7's playing-time input). Suspensions are
+    /// deliberately *absent*: a ban is derived in the fold from accumulated
+    /// cards — recording both would create two sources of truth that can
+    /// disagree, the sync bug the CA-is-derived rule exists to make
+    /// impossible. All four default to empty so pre-2e logs (and logs
     /// written before the corresponding models land) replay unchanged.
     MatchPlayed {
         fixture: FixtureId,
@@ -83,6 +85,8 @@ pub enum Event {
         cards: Vec<CardOutcome>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ratings: Vec<(PlayerId, u8)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        minutes: Vec<(PlayerId, u8)>,
     },
     /// The calendar advanced past a matchday.
     MatchdayAdvanced { matchday: u8, new_date: GameDate },

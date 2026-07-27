@@ -18,12 +18,27 @@ are drafted as sections in the note that already pins that model.
 
 ## 1. Purpose & status
 
-- **Status: drafted, pre-implementation.** No scratchpad this time, deliberately — the
+- **Status: §2–§4, §6 landed (batch-3 handoff T6) — the engine + neutral-everywhere rollout
+  step.** `Tactics`/`Mentality`/`Tempo`/`Width`/`Pressing` live in `fforge-domain::tactics`;
+  `Lineup.tactics` rides the existing `SubmitLineup`/`LineupSubmitted` seam unchanged, serde-
+  defaulted; `fforge-core::match_engine::tactics::{SideEffects, resolve_tactics}` implements
+  §3's per-side resolution and is wired into `resolve.rs`'s `select_action`/`step`/`take_shot`/
+  `simulate` (three deformation types only, no new contest types, no new zones, no presence-
+  table edits). Both §4 tests land green: `resolve_tactics_neutral_is_the_exact_identity` and
+  `neutral_tactics_reproduce_phase_2a_bit_for_bit` (replaying the T5 golden table). All four
+  pooled calibration guards re-ran unchanged.
+- **§7 landed and now live (batch-3 T7 → T7-R → T7-R2).** `ai_pick_tactics`/`AiTacticKnobs`
+  and the head-to-head harness (`calibrate::run_head_to_head`, `bin/calibrate --head-to-head`)
+  are implemented and tested, and `match_engine::AI_TACTICS_ENABLED` is now **`true`** — every
+  AI-controlled side picks real tactics. It took two fits to get there: **§9 item 6** (§5's
+  cyclic triangle retired, non-dominance re-founded as squad-conditional, Tempo and Pressing
+  re-fitted) and **§9 item 7** (Mentality, which item 6's fit exposed as the last dominant
+  instruction — it had two advance-class gains and no advance-class risk term). §8 records the
+  re-banked league aggregates. No scratchpad was used to settle the structure — the
   `TRANSFER_MODEL.md` §1.1 reasoning applies verbatim: the *structure* is settled by this note
   (every tactic effect is a deformation of an already-calibrated probability), and the numbers
   are knob-table entries the existing Rust harness (`match_engine::calibrate`, `bin/calibrate`)
-  will fit directly, exactly as it re-fit `b_beat`. A Python prototype would fit knobs against
-  the notebook's synthetic squads only to have the real harness re-fit them anyway.
+  will fit directly, exactly as it re-fit `b_beat`.
 - **In scope (this pass):** the instruction surface (§2), per-side resolution into effective
   knobs (§3), the neutral-tactics invariant (§4), the structural interaction model (§5), the
   event-log seam (§6), the v1 AI tactics policy and its Phase-5 seam (§7), and the calibration
@@ -161,18 +176,46 @@ and are therefore omitted.
 
 | Instruction, level | Effect (per side) |
 |---|---|
-| Mentality `Attacking` | `advance_mult` ×1.20, `penetrate_mult` ×1.20, `atk_bias` +0.08, `def_bias_by_zone` −0.08 in every zone (men committed forward defend everything worse) |
-| Mentality `Defensive` | mirror: ×0.83, ×0.83, −0.08, +0.08 |
-| Tempo `Direct` | `advance_mult` ×1.30, `w_longshot` ×1.5, `w_takeon` ×1.1, `b_pass_delta` −0.15 (forward balls fail more) |
-| Tempo `Patient` | `advance_mult` ×0.80, `w_longshot` ×0.6, `b_pass_delta` +0.10 |
+| Mentality `Attacking` | `advance_mult` ×1.20, `penetrate_mult` ×1.20, `atk_bias` +0.08, `def_bias_by_zone` −0.08 in every zone (men committed forward defend everything worse), **plus the T7-R2 commitment term: opponent's `p_mid_advance` ×1.25 and `p_attc_penetrate` ×1.25** — the space in behind a side that has gone |
+| Mentality `Defensive` | mirror: ×0.83, ×0.83, −0.08, +0.08, **opponent's `p_mid_advance` ×0.79 and `p_attc_penetrate` ×0.79** (T7-R2 — a settled side denies the space `Attacking` sells; fitted independently, not as `1/1.25`) |
+| Tempo `Direct` | `advance_mult` **×1.13** (T7-R fit, §5 — was ×1.30), `w_longshot` ×1.5, `w_takeon` ×1.1, `b_pass_delta` **own `Def` −0.25, `Mid`/`AttC`/`AttW` −0.10** (T7 addendum §5/Fix B, resolved below — was a uniform −0.15) |
+| Tempo `Patient` | `advance_mult` **×0.88** (T7-R fit, §5 — was ×0.80), `w_longshot` ×0.6, `b_pass_delta` +0.10 uniform (unchanged) |
 | Width `Wide` | `p_wide_mult` ×1.35, `w_cross` ×1.2 |
 | Width `Narrow` | `p_wide_mult` ×0.70, `w_cross` ×0.85 |
-| Pressing `High` | `def_bias_by_zone` +0.15 in opponent `Def`/`Mid`, 0 elsewhere; own `fatigue_mult` ×1.30; **beaten-press term:** opponent's successful `Mid` advance gets ×1.15 on `p_mid_advance` (the space behind a committed press) |
+| Pressing `High` | `def_bias_by_zone` **opponent `Def` +0.25, opponent `Mid` +0.10** (T7 addendum §4/Fix A, resolved below — was +0.15 flat), 0 elsewhere; own `fatigue_mult` ×1.30 (**deliberately not re-fitted** — this is the term that makes Pressing squad-conditional, §5's T7-R finding); **beaten-press term:** opponent's successful `Mid` advance gets **×1.02** (T7-R fit — was ×1.15) on `p_mid_advance` (the space behind a committed press) |
 | Pressing `Deep` | `def_bias_by_zone` −0.10 in opponent `Def`/`Mid` (sitting off), +0.10 in opponent `AttC`/`AttW`/`Box` (the compact block); opponent `p_attc_penetrate` ×0.85 (no space behind) |
 
 Where Mentality and Tempo both touch `advance_mult`, the multipliers stack (they are
 independent levers on the same probability, like `formation_p_wide` × `p_wide_mult`); all
 composed probabilities clamp to `[0, 1]` at the point of use, the `formation_p_wide` precedent.
+
+**The two lever classes, and why their magnitudes are not comparable (T7-R).** Every number
+in the table above is one of two kinds, and they move *very* different amounts of absolute
+probability for what looks like a similar-sized edit:
+
+- **Advance-class** — a multiplier on a raw transition probability (`advance_mult`,
+  `penetrate_mult`, `opp_mid_advance_mult`, `p_wide_mult`). At `p_mid_advance = 0.20`, a
+  ×1.30 *is* +6.0 percentage points, directly.
+- **Logit-class** — an additive term in a `contest_p` bias slot (`b_pass_delta_by_zone`,
+  `atk_bias`, `def_bias_by_zone`). These pass through a sigmoid already sitting near
+  saturation: at `b_pass = 1.35` (p ≈ 0.794), a ±0.10 moves `p(1−p)·Δb ≈ ∓1.7pp`.
+
+So an advance-class multiplier is roughly **3.5–4× more powerful** than a logit-class bias
+that reads as comparably sized on the page. Every §3 magnitude was plausibility-picked
+independently (§9 item 1) and the two classes were never reconciled against each other,
+which is why `Tempo::Direct` — whose *gain* was advance-class and whose paired *risk* was
+logit-class — bought forward progress at about a quarter of its intended price and dominated
+every squad shape measured. **When re-fitting an instruction, fit the advance-class lever
+first**; a logit-class term is the wrong instrument for closing a win-rate gap, and T7's two
+fixes failed precisely because both of them reached for one.
+
+**`b_pass_delta` is zone-keyed, not scalar (T7 addendum §5/Fix B — structural, not a
+magnitude change).** `SideEffects.b_pass_delta_by_zone: [f64; NUM_ZONES]` replaces the
+single `b_pass_delta` field this section originally specified. §3's own turnover mirroring
+makes a giveaway's cost zone-dependent — lost in this side's own `Def`, the opponent
+restarts in their `AttC` (expensive); lost in `Mid`, they restart in `Mid` (nearly free) — so
+a uniform bias prices every zone's risk identically regardless of what mirroring actually
+charges for it. See §5 below for what this was diagnosing.
 
 **What tactics deliberately does not touch:** the role→zone presence tables (`MATCH_MODEL.md`
 §6). Who *is* in a zone stays a property of the fielded roles; tactics changes what they
@@ -263,6 +306,133 @@ instruction (it moves the wide-origin share, §8) and interacts mainly with the 
 formation through `formation_p_wide`, not with the opponent — by design, so at least one
 instruction has an almost-orthogonal, easily-verified signature.
 
+**T7 finding (batch-3 addendum) — the triangle did not close on first measurement, and did
+not close after two principled fixes.** B3.9's own head-to-head harness (`bin/calibrate
+--head-to-head`, `calibrate::run_head_to_head`), pooled to 6,000 matches on an equal-strength
+squad (std error ≈ 0.0065), read:
+
+| Edge | First measurement | After Fix A (press zone-profile) | After Fix B (Direct zone-profile) |
+|---|---|---|---|
+| High press vs Patient | 0.502 / 0.498 (flat) | 0.495 / 0.505 (unchanged) | 0.495 / 0.505 (unchanged) |
+| Direct vs High press | 0.513 / 0.487 (weak, right direction) | 0.513 / 0.487 (unchanged) | 0.513 / 0.487 (unchanged) |
+| Patient vs Direct | 0.485 / 0.515 (**wrong direction**) | 0.485 / 0.515 (n/a — press not in this matchup) | 0.483 / 0.517 (**still wrong direction**) |
+
+Before touching any effect magnitude, T7a verified the press's own wiring: forcing
+`Pressing::High` with everything else neutral, pooled to 6,000 matches, the opponent's pass
+completion measurably drops in their own `Def` (−1.7pts) and `Mid` (−2.0pts) and is
+unchanged in `AttC`/`AttW` (both within 1pt, no localisation violation), and turnovers won
+in the presser's own `AttC` rise (+9.9%) — smaller than this section's original ±3–6pt /
++30–60% predictions, but real, correctly localised, and enormous relative to sampling noise
+(~200k pooled pass attempts per zone). **Not a wiring bug: the per-instruction rate effects
+land exactly where §3 says they should.** T7b then checked whether the strategy space even
+supports a cycle — `Pressing::High + Tempo::Direct` combined does not dominate all three
+corners (it loses to pure `Direct`, 0.491 vs pure-combined's 0.509, and reads flat against
+`High` and `Patient`), so a cycle is structurally possible; the flat/wrong-signed reads are
+not an artifact of Pressing being orthogonal to the Tempo axis.
+
+Two zone-profiling fixes were then applied, each with a specific, falsifiable prediction, and
+each measured in isolation before the next was applied (Fix A first, alone; Fix B applied on
+top of Fix A, not in place of it):
+
+- **Fix A** (§3, above): Pressing `High`'s bias concentrated `Def +0.25, Mid +0.10` (was
+  `+0.15` flat) — diagnosed cause: a flat bias spent equal pressure on contests of unequal
+  mirroring value, and against Patient's own `+0.10` `b_pass_delta` sitting in the same zones
+  with the opposite sign, very nearly cancelled (net ≈ +0.05, roughly one point per contest at
+  p ≈ 0.5) while the press's `fatigue_mult ×1.30` cost is global and certain. Predicted to move
+  Press-vs-Patient and Direct-vs-Press both upward. **Measured: moved neither, within noise.**
+- **Fix B** (§3, above): Direct's `b_pass_delta` zone-profiled `Def −0.25, Mid/Att −0.10` (was
+  `−0.15` uniform) — diagnosed cause: Direct's `advance_mult ×1.30` means it spends less time
+  in its own (expensive-to-lose) `Def` and more in the cheap `Mid`, so a uniform delta priced a
+  risk Direct was mostly not taking; Direct was winning Patient-vs-Direct by discount, not by
+  losing a real risk the way this section's original narrative credited Patient for punishing.
+  Predicted to move Patient-vs-Direct upward (Direct's discount priced out) without touching
+  Press-vs-Patient. **Measured: moved Patient-vs-Direct by −0.002 — statistically indistinguishable
+  from no effect, and if anything further in the wrong direction.**
+
+**T7's conclusion at the time — since overturned by T7-R, kept here because the reasoning
+that led to it is instructive:** Both fixes were
+individually well-motivated re-readings of the mirroring mechanics — the diagnosis (unequal
+zone value under mirroring, discounted risk) may still be correct as *rate-level* mechanics
+(T7a's localisation numbers confirm the machinery moves as designed) — but neither translated
+into a detectable *win-rate* shift even after roughly doubling the press's zone concentration
+and restructuring Direct's risk pricing entirely. That insensitivity is itself informative: a
+whole match accumulates on the order of 800+ possession steps, and the stochastic variance
+across all of them appears to swamp a handful of zone-localised probability shifts of this
+magnitude before they can surface as a net win/loss/draw signal — even where the underlying
+rate statistics (completion, turnovers, shots) move exactly as designed. Per the batch-3 T7
+addendum's own stop condition, further magnitude iteration was not attempted.
+
+### T7-R finding — the resolution: non-dominance is **squad-conditional**, and T7 was fitting the wrong lever
+
+T7 stopped one step short. Its "further magnitude iteration is futile" conclusion was drawn
+from two fixes that both adjusted **logit-class** terms (Fix A: `def_bias_by_zone`; Fix B:
+`b_pass_delta_by_zone`) — the weaker of §3's two lever classes by a factor of ~4. The lever
+that actually decides Tempo dominance, `advance_mult`, was never touched by either.
+
+**The diagnostic that proved it.** Setting `Tempo::Direct`'s and `Tempo::Patient`'s
+`advance_mult` to exactly `1.00`, changing nothing else, **flipped the dominant tactic** —
+Direct fell 0.5047 → 0.4813 against `neutral()` and Patient rose 0.4865 → 0.5080. A single
+advance-class term moved 2.3pp on one cell, more than both of T7's fixes produced combined,
+confirming the scale mismatch §3's new "two lever classes" note now records.
+
+**The re-fit.** Three advance-class magnitudes, each fitted so its instruction reads
+net-neutral against `Tactics::neutral()` on a control squad — leaving the *shape* effects
+(long-shot mix, take-on rate, possession) to carry each instruction's identity:
+
+| Term | Was | Now | Why |
+|---|---|---|---|
+| `Tempo::Direct` `advance_mult` | ×1.30 | **×1.13** | bought +6.0pp of Mid progress for −1.7pp of pass risk |
+| `Tempo::Patient` `advance_mult` | ×0.80 | **×0.88** | surrendered −4.0pp of progress for only +1.6pp of retention |
+| `Pressing::High` `opp_mid_advance_mult` | ×1.15 | **×1.02** | handed the opponent +3.0pp of Mid advance — larger than the entire `def_bias` benefit Fix A was topping up |
+
+`Pressing::High`'s `fatigue_mult ×1.30` was **deliberately left alone**: it is the term that
+makes Pressing squad-conditional at all, and flattening it to balance the press would have
+deleted the effect this whole question was about.
+
+**The measurement** (`bin/calibrate --squad-conditional`, `calibrate::run_squad_conditional_probe`;
+8 worlds × 3000 seeds × 2 legs per cell, i.e. 48,000 matches a cell, profiles applied as
+CA-preserving ±12 mirror shifts so only squad *shape* varies):
+
+| Squad profile | High press | Patient | Direct | per-world argmax |
+|---|---|---|---|---|
+| control | 0.4991 ±0.0035 | 0.5005 ±0.0036 | 0.4987 ±0.0060 | mixed (3-way tie) |
+| technical (high `PASS_ATK`) | 0.4871 ±0.0051 | **0.5023** ±0.0035 | 0.4969 ±0.0034 | `Patient` in **7/8** worlds |
+| physical (high Stamina) | **0.5064** ±0.0028 | 0.4992 ±0.0038 | 0.4991 ±0.0035 | `High press` in **7/8** worlds |
+| grinder (high Work Rate) | 0.5005 ±0.0037 | 0.5004 ±0.0015 | 0.4993 ±0.0030 | mixed (tie) |
+
+Two things are now established, and one is retired:
+
+1. **§5's opponent-relative cycle is retired as this note's mechanism for non-dominance.**
+   Before the re-fit, `Tempo::Direct` won **32 of 32** profile×world cells — not a weak cycle,
+   a clean dominance. After it, the three triangle edges read 0.498 / 0.498 / 0.504 on the
+   standard head-to-head squad: **flat, not cyclic**. The tactic space is now opponent-relatively
+   *neutral*, which satisfies `DESIGN.md` §4.1's "no tactic dominates" without delivering the
+   3-cycle §5 originally predicted. That prediction is **not confirmed and no longer load-bearing**.
+2. **Squad-conditional non-dominance is confirmed and adopted.** The press's value rises
+   with squad Stamina by **+0.0194** expected-points share (physical − technical), pooled over
+   8 worlds, ~11σ — and the sign is *forced by the engine's own algebra*, not fitted:
+   `contest::fatigue_mult` scales its drop by `(1 − stamina)`, so `Pressing::High`'s ×1.30
+   exertion cost is strictly cheaper for a high-Stamina squad, while its `def_bias_by_zone`
+   benefit is attribute-independent. The re-fit did not create this gradient (it read +0.0190
+   at the old magnitudes too); it *unmasked* it by removing the blanket Tempo advantage sitting
+   on top. Guarded by `calibrate::tests::tactics_are_squad_conditionally_non_dominant`.
+3. **The mechanism commitment at the top of this section survives intact.** No matchup table
+   was introduced; the squad-conditionality emerges from `fatigue_mult`'s attribute
+   dependence, exactly the "structural, not a lookup" standard §5 set. It also lands
+   §7's `ai_pick_tactics` policy on its feet: "Pressing from the legs — team Work-Rate +
+   Stamina mean above threshold → `High`" turns out to be the *right* policy shape for the
+   mechanism that actually exists, chosen before it was measured.
+
+**Newly exposed, and the reason `AI_TACTICS_ENABLED` stays `false` (see §9 item 7):** with
+Tempo and Pressing balanced, `Mentality` is now by a wide margin the dominant instruction —
+`Attacking` beats `Balanced` **0.530 / 0.470**, and the §5 counter posture `Defensive+Direct`
+*loses* to `Attacking` **0.432 / 0.568**. It is the same disease this section just diagnosed,
+in its purest form: Mentality's gains are two advance-class multipliers (`advance_mult` ×1.20,
+`penetrate_mult` ×1.20) and its only cost is a logit-class `def_bias_by_zone` −0.08 — a risk
+axis with no advance-class risk term at all. Fitting it is the next step, not this one's.
+
+`ai_pick_tactics`/`AiTacticKnobs` (§7) and all fix commits stay landed.
+
 ## 6. Determinism & the event-log seam — `Tactics` rides the `Lineup`
 
 **Decision: `Tactics` is a field of `Lineup`**, not a new command/event pair.
@@ -298,6 +468,22 @@ pub struct Lineup {
 inputs are recorded.
 
 ## 7. The AI tactics policy — and the Phase-5 seam it becomes
+
+**Status: live (T7-R2).** `match_engine::AI_TACTICS_ENABLED` is now `true`, so
+`ai_pick_lineup_vs` applies this policy's choice on every AI-controlled side of every fixture.
+
+It was gated off from T7 until now, and the reason is worth keeping: the gate let the rest of
+Phase 2e measure clean single-feature deltas against T5's stable golden baseline instead of
+against a still-moving tactics baseline. It came off in two steps — §9 item 6 (the triangle;
+Tempo and Pressing re-fitted so no tactic dominates) and then §9 item 7 (Mentality, which the
+first re-fit exposed as the last dominant instruction). Both are resolved. By §4's invariant
+`Tactics::neutral()` stays bit-identical to T5's baseline regardless of this flag, so nothing
+measured with it off needs redoing; §8 records the league aggregates that moved when it went on.
+
+Note in passing that "Pressing from the legs" — this policy's rule, written before anyone
+measured it — turned out to be the correct shape for the one genuinely squad-conditional
+mechanism the engine has (§9 item 6). That is luck rather than foresight, but it does mean the
+policy's attribute-driven axes are pointing at something real.
 
 **v1: `ai_pick_tactics(world, club, opponent, is_home) -> Tactics`** — deterministic,
 RNG-free, the tactics sibling of `ai_pick_lineup` and described the same way: *the Phase-1-
@@ -360,21 +546,29 @@ per-zone pass completion, and turnover-won-by-zone.
 | Mentality `Attacking` | match goals (both sides') | +0.2–0.4 |
 | Mentality `Attacking` | opponent goals from deep-mirrored restarts (counter-origin, via stream zone context) | visibly up |
 | Mentality `Defensive` | match goals | −0.2–0.4 |
-| Pressing `High` | opponent pass completion in their `Def`/`Mid` | −3–6 pts |
-| Pressing `High` | turnovers won in the opponent's `Def` (→ own `AttC` restarts) | +30–60% |
-| Pressing `High` | own contest success after 75' | measurably down (the fatigue cost is real) |
+| Pressing `High` | opponent pass completion in their `Def`/`Mid` | **[re-banked, T7a]** −3–6 pts predicted; measured −1.7pt (`Def`) / −2.0pt (`Mid`) at 3000-seed pooling — real and correctly localised (`AttC`/`AttW` within 1pt) but smaller than predicted |
+| Pressing `High` | turnovers won in the opponent's `Def` (→ own `AttC` restarts) | **[re-banked, T7a]** +30–60% predicted; measured +9.9% — right direction, smaller than predicted |
+| Pressing `High` | own contest success after 75' | measurably down (the fatigue cost is real) — not yet measured directly; T7a checked build-up completion and turnovers only |
 | any single instruction | pooled league H/D/A, favourite-discrimination slope | **within the existing §8 band / guard** |
 
 And the §5 triangle, as pooled head-to-head predictions (many seeds, equal-strength squads,
 only tactics varied):
 
-| Matchup | Prediction |
-|---|---|
-| `High` press vs `Patient` | press side +2–5 pts expected-points share |
-| `Direct` vs `High` press | direct side +2–5 pts |
-| `Patient` vs `Direct` (no press) | patient side +2–5 pts |
-| the three edges jointly | **cyclic** — no setting dominates the triangle |
-| `Defensive+Direct` vs `Attacking` | counter side profits; both-`Attacking` gpm > both-`Defensive` gpm |
+| Matchup | Prediction | **[re-banked, T7-R — see §5's resolution]** |
+|---|---|---|
+| `High` press vs `Patient` | press side +2–5 pts expected-points share | **0.498** post-re-fit (was 0.502→0.495 across T7's two fixes) — flat, **not confirmed** |
+| `Direct` vs `High` press | direct side +2–5 pts | **0.498** post-re-fit (was 0.513) — flat, **not confirmed**; the pre-fit edge was Direct's blanket `advance_mult` advantage, not a matchup effect |
+| `Patient` vs `Direct` (no press) | patient side +2–5 pts | **0.504** post-re-fit (was 0.485, wrong-signed) — now correctly signed but ~0.4pt, far under prediction |
+| the three edges jointly | **cyclic** — no setting dominates the triangle | **retired, not confirmed.** Pre-re-fit, `Direct` won 32/32 profile×world cells. Post-re-fit the edges are flat (±0.4pt), so no tactic dominates — but by *neutrality*, not by a 3-cycle. Non-dominance is delivered squad-conditionally instead (§5's T7-R finding, §9 item 6 resolved) |
+| **squad-conditional** — press value vs squad Stamina | *(new axis, T7-R)* no tactic best for every squad shape | **confirmed**: press's share rises **+0.0194** from a technical to a physical squad (8 worlds, ~11σ); `technical → Patient` in 7/8 worlds, `physical → High press` in 7/8. Sign forced by `fatigue_mult`'s `(1 − stamina)` term |
+| `Defensive+Direct` vs `Attacking` | counter side profits; both-`Attacking` gpm > both-`Defensive` gpm | measured **Attacking** winning the counter matchup **0.568 / 0.432**, and `Attacking` vs `Balanced` **0.530 / 0.470** — **wrong direction, not confirmed, and now the largest open dominance in the model** (§9 item 7); gpm comparison still not measured |
+
+**Tempo `Direct`'s shape predictions above are now under-powered and unverified.** The T7-R
+re-fit cut its `advance_mult` from ×1.30 to ×1.13, which mechanically shrinks the "+10–20%
+shots/game" row by roughly the same proportion. Those rows were never measured, so nothing
+*confirmed* was invalidated — but they should be re-measured before being relied on, and if
+the shape targets and the non-dominance target genuinely conflict, that is a real design
+tension to settle rather than split the difference on.
 
 **Rollout discipline:** the engine + neutral-everywhere lands first (zero drift, §4);
 `ai_pick_tactics` is enabled second, at which point pooled league aggregates *will* shift
@@ -384,6 +578,34 @@ are roughly zero-mean across a league, but the full harness re-runs and, if need
 `favourite_discrimination_regression_guard` and the ballpark guard re-run with AI tactics on;
 a tactics feature that breaks the favourite-discrimination slope is mis-designed, not
 mis-fitted.
+
+**[re-banked, T7-R2 — the enabling pass.]** `AI_TACTICS_ENABLED` is now `true`. Pooled league
+aggregates, 24 seeds, `bin/calibrate`:
+
+| Aggregate | Tactics off (T5 baseline) | **Tactics live** | Note |
+|---|---|---|---|
+| goals/match | 2.84 | **2.59** | −8.8%; still inside the ballpark guard's `1.2–4.0` sanity band |
+| H / D / A | 43.0 / 25.7 / 31.3 | 42.7 / 26.8 / 30.6 | slightly more draws, as more sides play `Defensive` |
+| shots/match | 25.24 | 23.64 | |
+| shots on target | 33.9% | 33.8% | flat |
+| conversion | 11.2% | 11.0% | flat |
+| headed goal share | 20.7% | 23.4% | Width instructions now live — more crosses, more headers |
+| wide-origin share | 27.2% | 30.3% | same cause |
+| home possession | 54.8% | 54.8% | unchanged |
+| fouls / yellows / reds | 20.2 / 2.20 / 0.039 | 20.5 / 2.23 / 0.039 | all in band |
+
+**No re-fit was required** — the `b_beat`-style pass this section reserved was not needed. All
+161 tests pass with the flag on, including `favourite_discrimination_regression_guard`,
+`aggregates_are_in_a_believable_ballpark`, `career_arcs_are_in_a_believable_ballpark`,
+`market_is_in_a_believable_ballpark`, and both golden-baseline tests (the last of those being
+automatic: §4's invariant makes `Tactics::neutral()` bit-identical regardless of this flag).
+
+The direction of the goals shift is worth recording because it inverted mid-investigation: with
+Mentality still unfitted, enabling the policy moved goals/match *up* to 3.19 (+12.3%), driven by
+`Attacking`'s then-dominant advance multipliers. With §9 item 7's concession term in place the
+same flip reads 2.59 — `Defensive` sides now genuinely suppress the game rather than merely
+handicapping themselves. That is the intended behaviour of a risk axis, and it is why the flip
+was held until Mentality was fitted rather than taken when it first became mechanically safe.
 
 ## 9. Open sub-questions
 
@@ -395,9 +617,13 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
    presence (men genuinely upfield, not just better odds)? Reserved with `MATCH_MODEL.md` §10
    item 1 — it is the same "derive presence from context" question, and it stays closed until
    real calibration demands it.
-3. **Per-zone press profile.** Pressing is one level applied to a fixed zone profile; whether
-   `High` should differentiate pressing the `Def` build-up vs the `Mid` progression is a
-   texture question — same seam, finer key.
+3. **Per-zone press profile.** **[resolved, T7 addendum §4/Fix A]** — differentiated:
+   `Pressing::High`'s `def_bias_by_zone` is `Def +0.25, Mid +0.10` (was `+0.15` flat), on the
+   reasoning that a turnover's mirrored cost is zone-dependent so a flat bias spent equal
+   pressure on contests of unequal value. The resolution did **not**, however, close the §5
+   triangle (item 6, below) — the differentiation is kept on its own textural merit (T7a
+   confirmed it lands correctly-localised in the opponent's `Def`/`Mid`), not because it fixed
+   the win-rate finding it was originally proposed to fix.
 4. **The reactive-plan vocabulary.** §7 fixes the pre-commitment shape; the exact condition
    set ("trailing", "after minute M", "man down") is pinned with substitutions
    (`MATCH_MODEL.md` §16) and should stay small enough for a utility baseline to search
@@ -405,3 +631,80 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
 5. **Line height as a sixth-zone tenant.** If `Box` ever becomes a dwell zone or the zone
    count grows (`MATCH_MODEL.md` §10 item 5), line height gets geometry of its own and
    re-enters as the fifth instruction (§2's reservation).
+6. **[RESOLVED, T7-R — squad-conditional]** §5's triangle did
+   not close after two targeted, individually-diagnosed zone-profiling fixes (§5's finding,
+   above) — win-rate edges stayed within noise of flat (or wrong-signed) even where the
+   underlying rate mechanics (pass completion, turnovers) moved exactly as designed and by
+   correspondingly larger magnitudes after the fixes. `DESIGN.md` §4.1 asks only for "soft"
+   rock-paper-scissors — no tactic dominating — and a strict opponent-relative 3-cycle is one
+   way to deliver that, but not the only one. The addendum's alternative: **squad-conditional
+   non-dominance**, where the best tactic depends on the fielded squad's own attributes (a
+   high-`PASS_ATK` squad doing better with `Patient` than `Direct` even though `Direct` beats
+   `Patient` on a neutral squad) rather than on the opponent's choice. This would still satisfy
+   §4.1's "no tactic dominates," would make squad composition and `ai_pick_tactics`'s own
+   attribute-driven policy meaningful in a way a pure cycle doesn't require, and would give
+   Phase 5's ablation a real decision-quality axis — but it retires this section's "intransitivity
+   emerges structurally from turnover mirroring" claim as this batch's mechanism for
+   non-dominance, one of this note's more load-bearing arguments.
+
+   **Resolution (T7-R): squad-conditional, and the cyclic claim is retired.** The addendum's
+   proposed check was run exactly as specified — tactics held fixed, squad composition varied
+   across high-`PASS_ATK` / high-physical / high-work-rate profiles — as
+   `calibrate::run_squad_conditional_probe` / `bin/calibrate --squad-conditional`. Full numbers
+   and the re-fit that made the reading possible are in §5's T7-R finding; in brief:
+   - The premise behind "further magnitude iteration is futile" was **wrong**. T7's two fixes
+     both moved logit-class terms, ~4× weaker than the advance-class `advance_mult` that
+     actually decides Tempo dominance (§3's new lever-class note). Neutralizing that one term
+     flipped which tactic won.
+   - After re-fitting three advance-class magnitudes to net-neutral, **no tactic dominates**
+     (triangle edges flat within ±0.4pt) and **squad shape decides**: `technical → Patient` in
+     7/8 worlds, `physical → High press` in 7/8, press gradient +0.0194 at ~11σ.
+   - The gradient's *sign* is forced by `contest::fatigue_mult`'s `(1 − stamina)` term, so this
+     is a structural property of the engine, not a fitted one — which is what makes it a
+     legitimate replacement for the cyclic mechanism rather than a curve-fit.
+
+   Guarded by `calibrate::tests::tactics_are_squad_conditionally_non_dominant`.
+   `match_engine::AI_TACTICS_ENABLED` stays `false`, but **no longer on account of this item** —
+   see item 7.
+
+7. **[RESOLVED, T7-R2] `Mentality` had no risk term; it has one now.** Balancing Tempo and
+   Pressing (item 6) exposed Mentality as the remaining dominant instruction: pooled over 6
+   worlds × 3000 seeds, `Attacking` beat `Balanced` **0.540 / 0.460** and the §5 counter posture
+   `Defensive+Direct` *lost* to `Attacking` **0.431 / 0.569**.
+
+   **Diagnosis — §3's lever-class mismatch in its purest form.** Mentality's gains were two
+   advance-class multipliers (`advance_mult` ×1.20, `penetrate_mult` ×1.20); its only cost was
+   a logit-class `def_bias_by_zone` −0.08, ~4× weaker. §5 had assigned the compensating role to
+   *turnover mirroring* — but mirroring sends a ball lost high to a **deep** opponent restart,
+   which protects the committed side rather than punishing it. The risk half of the risk axis
+   was simply never modelled.
+
+   **Fix — an advance-class concession, not a shrunken gain.** The gains were deliberately left
+   alone: they are what drives §8's goal-expectation rows, and shrinking them would have bought
+   points-neutrality by gutting the axis's purpose. Instead `Attacking` now concedes the
+   opponent `p_mid_advance` ×1.25 and `p_attc_penetrate` ×1.25, and `Defensive` denies them at
+   ×0.79 — the same shape `Pressing::High`'s beaten-press and `Pressing::Deep`'s compact-block
+   terms already use, so no new deformation type enters §3.
+
+   **Result** (8 worlds × 3000 seeds × 2 legs). Note the harness's own leg-asymmetry offset,
+   ~+0.0037, visible in the both-identical control rows that ought to read exactly 0.500:
+
+   | Matchup | Before | After | Goals/match (vs both-`Balanced` 0.917) |
+   |---|---|---|---|
+   | `Attacking` v `Balanced` | 0.540 | **0.5046** | 1.213 → **+0.296** ✓ §8 band |
+   | `Defensive` v `Balanced` | 0.470 | **0.5067** | 0.679 → **−0.238** ✓ §8 band |
+   | `Defensive+Direct` v `Attacking` | 0.431 | **0.5022** | — |
+   | both `Attacking` *(control, should be 0.500)* | 0.506 | 0.5040 | 1.613 |
+   | both `Defensive` *(control, should be 0.500)* | 0.506 | 0.5034 | 0.508 |
+
+   Every matchup is within ±0.3pt of even once the offset is subtracted, and §8's "match goals
+   ±0.2–0.4" predictions **land in band for the first time** — they previously read +0.16 /
+   −0.13, under-powered. The fix improved the pre-registered shape targets rather than trading
+   against them, which is the outcome that makes it a correction rather than a compromise.
+
+   `Defensive+Direct` v `Attacking` moves from badly wrong-signed to even. §5 predicted the
+   counter side would actively *profit*; it does not — it merely stops losing. That part of §5
+   remains unconfirmed, and is left standing as such rather than fitted toward.
+
+   **`AI_TACTICS_ENABLED` is now `true`** (see §7). With no instruction dominating, an AI side
+   choosing tactics is a decision rather than a free upgrade.

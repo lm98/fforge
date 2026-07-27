@@ -339,7 +339,11 @@ impl MarketTelemetry {
         }
         self.prev_ranks = Some(ranks);
 
-        let ctx = MarketContext::from_world(world, value_knobs);
+        // No per-player rating history at this snapshot layer (`world`
+        // only, not a full `GameState`) — neutral form, the identity; this
+        // harness's own target metrics are about transfer/valuation
+        // patterns, not form's calibration.
+        let ctx = MarketContext::from_world(world, value_knobs, &BTreeMap::new());
         let valuations = value_all(world, today, &ctx, value_knobs, dev_knobs);
         self.concentration_by_season
             .push(top3_share_of_top20(world, &table, &valuations));
@@ -620,7 +624,7 @@ fn submit_player_clubs_ai_equivalent_plan(
     }
     let world = &session.state.world;
     let today = session.state.date;
-    let ctx = MarketContext::from_world(world, value_knobs);
+    let ctx = MarketContext::from_world(world, value_knobs, &session.state.recent_ratings);
     let valuations = value_all(world, today, &ctx, value_knobs, dev_knobs);
     let obs = observe(world, club, today, &valuations, dev_knobs, utility_knobs);
     let decisions = UtilityPolicy::new(*utility_knobs).transfer_decisions(&obs);

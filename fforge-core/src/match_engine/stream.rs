@@ -7,6 +7,7 @@
 //! are free to discard it, and nothing here is ever persisted through the
 //! event-sourced `GameState` fold.
 
+use super::Card;
 use super::zone::Zone;
 use fforge_domain::PlayerId;
 
@@ -85,6 +86,25 @@ pub enum MatchEventKind {
     /// event immediately follows in the stream) vs cleanly collected.
     Save {
         parried: bool,
+    },
+    /// A foul (`MATCH_MODEL.md` §15, T11): a non-mirroring turnover — the
+    /// fouled side retains possession where it happened instead of the
+    /// action continuing, so `side`/`actor` still name the possessing
+    /// (fouled) side and player, per this struct's own convention;
+    /// `opponent` names the fouling defender. `card` is the resolved
+    /// severity, if any (most fouls draw none).
+    Foul {
+        card: Option<Card>,
+    },
+    /// A substitution (`MATCH_MODEL.md` §16, T12), resolved at a decision
+    /// point rather than sampled — `side`/`actor` name the substituting
+    /// side and the *entering* player (per this struct's own convention:
+    /// `actor` is always a member of `side`'s fielding XI, which the
+    /// entering player just joined); `player_out` is the departing
+    /// starter/substitute, on the same side (not a duel, so `opponent` is
+    /// unused rather than misapplied to a same-side player).
+    Substitution {
+        player_out: PlayerId,
     },
 }
 
@@ -166,6 +186,19 @@ impl MatchEvent {
                 format!("{m}' Parried! Loose ball in the box.")
             }
             MatchEventKind::Save { parried: false } => format!("{m}' Keeper collects."),
+            MatchEventKind::Foul { card: None } => format!("{m}' Foul {z}."),
+            MatchEventKind::Foul {
+                card: Some(Card::Yellow),
+            } => format!("{m}' Foul {z} — yellow card."),
+            MatchEventKind::Foul {
+                card: Some(Card::SecondYellow),
+            } => format!("{m}' Foul {z} — second yellow, off!"),
+            MatchEventKind::Foul {
+                card: Some(Card::Red),
+            } => format!("{m}' Foul {z} — red card!"),
+            MatchEventKind::Substitution { .. } => {
+                format!("{m}' Substitution ({side_name}): {actor} comes on.")
+            }
         }
     }
 }
@@ -207,6 +240,19 @@ mod tests {
             },
             MatchEventKind::Save { parried: true },
             MatchEventKind::Save { parried: false },
+            MatchEventKind::Foul { card: None },
+            MatchEventKind::Foul {
+                card: Some(Card::Yellow),
+            },
+            MatchEventKind::Foul {
+                card: Some(Card::SecondYellow),
+            },
+            MatchEventKind::Foul {
+                card: Some(Card::Red),
+            },
+            MatchEventKind::Substitution {
+                player_out: PlayerId(11),
+            },
         ];
         for kind in kinds {
             let event = MatchEvent {

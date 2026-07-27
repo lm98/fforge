@@ -16,6 +16,7 @@
 pub mod career_arc;
 pub mod club_ai;
 pub mod commands;
+pub mod condition;
 pub mod development;
 pub mod event;
 pub mod finance;
@@ -249,6 +250,9 @@ mod tests {
                 let lineup = Lineup {
                     formation: 0,
                     players: arr,
+                    tactics: fforge_domain::Tactics::neutral(),
+                    bench: Vec::new(),
+                    sub_plan: Vec::new(),
                 };
                 session
                     .execute(Command::SubmitLineup(lineup), &mut [])

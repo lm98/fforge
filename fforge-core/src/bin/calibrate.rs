@@ -15,33 +15,57 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    ELO_SCALE_S, StreamTelemetry, ai_pick_lineup, lineup_strength, play_match,
+    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, PROFILE_SHIFT, SQUAD_PROFILES,
+    StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, probe_tactics,
+    run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
-use fforge_domain::FORMATIONS;
+use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
 
 struct CalibReport {
     per_seed_gpm: Vec<f64>,
     pooled: StreamTelemetry,
 }
 
+/// Whatever `ai_pick_lineup_vs` actually does. Since T7-R2 flipped
+/// `match_engine::AI_TACTICS_ENABLED` to `true`, that means real
+/// `ai_pick_tactics` choices on both sides of every fixture — so this
+/// harness now pools the tactics-live engine, and the numbers it reports are
+/// the ones `TACTICS_MODEL.md` §8's re-bank records.
 fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
     let mut pooled = StreamTelemetry::default();
     let mut per_seed_gpm = Vec::with_capacity(seeds.len());
 
     for &seed in seeds {
-        let (world, schedule, _start) = worldgen::generate(seed, cfg);
+        let (world, schedule, start) = worldgen::generate(seed, cfg);
         let mut seed_goals = 0u32;
         let mut seed_matches = 0u32;
 
+        let suspended = std::collections::BTreeSet::new();
         for fixture in &schedule {
-            let home_lineup = ai_pick_lineup(&world, fixture.home);
-            let away_lineup = ai_pick_lineup(&world, fixture.away);
+            let home_lineup =
+                ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start, &suspended);
+            let away_lineup =
+                ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-            let outcome = play_match(&world, &home_lineup, &away_lineup, &mut rng);
+            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
+            let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
+            let mut foul_rng = derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
+            let outcome = play_match(
+                &world,
+                &home_lineup,
+                &away_lineup,
+                &mut rng,
+                &mut consistency_rng,
+                &mut injury_rng,
+                &mut foul_rng,
+                &Knobs::default(),
+                &std::collections::BTreeMap::new(),
+                start,
+            );
 
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
             seed_matches += 1;
@@ -120,6 +144,15 @@ fn print_report(report: &CalibReport) {
         "home possession   : {:.1}%",
         p.home_possession_share() * 100.0
     );
+    println!("fouls/match       : {:.1}", p.fouls_per_match());
+    println!(
+        "yellows/team/match: {:.2}  (target ~2-3)",
+        p.yellows_per_team_per_match()
+    );
+    println!(
+        "reds/team/match   : {:.3}  (target well under 0.1)",
+        p.reds_per_team_per_match()
+    );
     println!();
     println!("=== Expected points vs strength gap (bookmaker-baseline axis) ===");
     println!(
@@ -171,6 +204,18 @@ fn print_report(report: &CalibReport) {
     }
 }
 
+fn parse_u64_arg(args: &[String], flag: &str, default: u64) -> u64 {
+    for i in 0..args.len() {
+        if args[i] == flag
+            && let Some(v) = args.get(i + 1)
+            && let Ok(n) = v.parse::<u64>()
+        {
+            return n;
+        }
+    }
+    default
+}
+
 fn parse_seeds_arg(args: impl Iterator<Item = String>) -> u64 {
     const DEFAULT_SEEDS: u64 = 8;
     let args: Vec<String> = args.collect();
@@ -185,8 +230,292 @@ fn parse_seeds_arg(args: impl Iterator<Item = String>) -> u64 {
     DEFAULT_SEEDS
 }
 
+/// `TACTICS_MODEL.md` §7's head-to-head mode: the v1 AI never counter-picks
+/// (§7's opponent-blindness), so the §5 triangle is never exercised in
+/// ordinary league play (`run_calibration`, above) — only forcing both
+/// sides' tactics directly, on an equal-strength squad pooled over many
+/// seeds, can test it.
+fn run_head_to_head_report(num_seeds: u64) {
+    let cfg = WorldGenConfig {
+        num_clubs: 2,
+        ..Default::default()
+    };
+    let (world, _schedule, _start) = worldgen::generate(7, &cfg);
+    let club = world.competition.clubs[0];
+    let seeds: Vec<u64> = (0..num_seeds).collect();
+
+    let high = Tactics {
+        pressing: Pressing::High,
+        ..Tactics::neutral()
+    };
+    let patient = Tactics {
+        tempo: Tempo::Patient,
+        ..Tactics::neutral()
+    };
+    let direct = Tactics {
+        tempo: Tempo::Direct,
+        ..Tactics::neutral()
+    };
+    let attacking = Tactics {
+        mentality: Mentality::Attacking,
+        ..Tactics::neutral()
+    };
+    let defensive_direct = Tactics {
+        mentality: Mentality::Defensive,
+        tempo: Tempo::Direct,
+        ..Tactics::neutral()
+    };
+
+    println!("=== Head-to-head (equal-strength squad, {num_seeds} seeds x2) ===");
+    println!("TACTICS_MODEL.md §5's triangle — jointly cyclic if the model is sound:");
+    let high_vs_patient = run_head_to_head(&world, club, high, patient, &seeds);
+    println!(
+        "  High press vs Patient    : {:.3} / {:.3}",
+        high_vs_patient,
+        1.0 - high_vs_patient
+    );
+    let direct_vs_high = run_head_to_head(&world, club, direct, high, &seeds);
+    println!(
+        "  Direct vs High press     : {:.3} / {:.3}",
+        direct_vs_high,
+        1.0 - direct_vs_high
+    );
+    let patient_vs_direct = run_head_to_head(&world, club, patient, direct, &seeds);
+    println!(
+        "  Patient vs Direct        : {:.3} / {:.3}",
+        patient_vs_direct,
+        1.0 - patient_vs_direct
+    );
+    println!();
+    println!("Mentality (off-triangle risk axis):");
+    let attacking_vs_neutral =
+        run_head_to_head(&world, club, attacking, Tactics::neutral(), &seeds);
+    println!(
+        "  Attacking vs Balanced    : {:.3} / {:.3}",
+        attacking_vs_neutral,
+        1.0 - attacking_vs_neutral
+    );
+    let counter_vs_attacking = run_head_to_head(&world, club, defensive_direct, attacking, &seeds);
+    println!(
+        "  Defensive+Direct vs Attacking : {:.3} / {:.3}",
+        counter_vs_attacking,
+        1.0 - counter_vs_attacking
+    );
+}
+
+/// `TACTICS_MODEL.md` §9 item 6's probe: the same forced-tactics head-to-head
+/// as above, but swept across *squad shapes* rather than only across tactic
+/// pairs. The question it answers: is non-dominance cyclic (§5's original
+/// claim, unconfirmed) or squad-conditional (the T7 addendum's alternative)?
+/// Squad-conditional non-dominance holds iff the best tactic **rotates**
+/// across profiles — no single tactic best for every squad shape.
+fn run_squad_conditional_report(num_seeds: u64, num_worlds: u64) {
+    let cfg = WorldGenConfig {
+        num_clubs: 2,
+        ..Default::default()
+    };
+    let worlds: Vec<_> = (0..num_worlds)
+        .map(|w| {
+            let (world, _schedule, _start) = worldgen::generate(w * 7 + 7, &cfg);
+            let club = world.competition.clubs[0];
+            (world, club)
+        })
+        .collect();
+    let seeds: Vec<u64> = (0..num_seeds).collect();
+
+    println!(
+        "=== Squad-conditional probe ({num_worlds} worlds x {num_seeds} seeds x2 per cell, shift ±{PROFILE_SHIFT}) ==="
+    );
+    println!("TACTICS_MODEL.md §9 item 6. Each cell: that tactic's expected-points share against");
+    println!(
+        "Tactics::neutral(), both sides fielding the same profiled squad (equal strength, both"
+    );
+    println!("legs), pooled across worlds — sd is the spread *across worlds*, the axis a");
+    println!("single-world read hides.");
+    println!();
+
+    let rows = run_squad_conditional_probe(&worlds, &seeds, &SQUAD_PROFILES);
+    let labels: Vec<&str> = probe_tactics().iter().map(|&(n, _)| n).collect();
+
+    println!("--- vs neutral (>0.500 = the tactic helps this squad) ---");
+    print!("{:<12}", "profile");
+    for l in &labels {
+        print!("{l:>20}");
+    }
+    println!("{:>14}", "pooled best");
+    for row in &rows {
+        print!("{:<12}", row.profile);
+        for &(_, v, sd) in &row.vs_neutral {
+            print!("{:>20}", format!("{v:.4} ±{sd:.4}"));
+        }
+        println!("{:>14}", row.best_tactic());
+    }
+
+    println!();
+    println!("--- per-world argmax (rotation is only real if it survives the world draw) ---");
+    for row in &rows {
+        println!("{:<12} {}", row.profile, row.per_world_best.join(", "));
+    }
+
+    println!();
+    println!("--- the §5 triangle, per squad (>0.500 = first-named side wins the edge) ---");
+    println!(
+        "{:<12}{:>18}{:>18}{:>18}{:>10}",
+        "profile", "High v Patient", "Direct v High", "Patient v Direct", "cyclic?"
+    );
+    for row in &rows {
+        println!(
+            "{:<12}{:>18.4}{:>18.4}{:>18.4}{:>10}",
+            row.profile,
+            row.triangle[0],
+            row.triangle[1],
+            row.triangle[2],
+            if row.triangle.iter().all(|&e| e > 0.5) {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+    }
+
+    println!();
+    let bests: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.best_tactic()).collect();
+    println!(
+        "Distinct pooled best-tactics across {} profiles: {} ({})",
+        rows.len(),
+        bests.len(),
+        bests.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+
+    // The gradient §9 item 6 actually turns on, stated directly: Pressing's
+    // value is mechanically increasing in squad Stamina (`contest::fatigue_mult`
+    // scales its drop by `(1 - stamina)`, while `def_bias_by_zone` is
+    // attribute-independent), so `physical` minus `technical` on the press
+    // column is the one cell-difference the model *predicts the sign of*.
+    let press_of = |name: &str| -> (f64, f64) {
+        let r = rows
+            .iter()
+            .find(|r| r.profile == name)
+            .expect("profile row");
+        let c = r.vs_neutral.iter().find(|c| c.0 == "High press").unwrap();
+        (c.1, c.2)
+    };
+    let (phys, phys_sd) = press_of("physical");
+    let (tech, tech_sd) = press_of("technical");
+    println!(
+        "Press gradient (physical - technical): {:+.4}  (world sds {phys_sd:.4} / {tech_sd:.4})",
+        phys - tech
+    );
+}
+
+/// `TACTICS_MODEL.md` §9 item 7: the Mentality axis, pooled across worlds.
+///
+/// Mentality is §5's declared *risk* axis, deliberately off the triangle, so
+/// it is judged on two properties at once and a harness that reads only one
+/// of them cannot tell a balanced axis from a broken one:
+///
+/// - **expected points ≈ 0.500** against `Balanced` — a risk setting that
+///   also wins is not a risk setting, it is a better setting.
+/// - **goals/match moves** — `Attacking` up, `Defensive` down (§8 predicts
+///   ±0.2–0.4), *for both sides*, which is §5's own stated intent: committing
+///   men forward should open the game up, not just improve your own odds.
+fn run_mentality_report(num_seeds: u64, num_worlds: u64) {
+    let cfg = WorldGenConfig {
+        num_clubs: 2,
+        ..Default::default()
+    };
+    let worlds: Vec<_> = (0..num_worlds)
+        .map(|w| {
+            let (world, _s, _d) = worldgen::generate(w * 7 + 7, &cfg);
+            let club = world.competition.clubs[0];
+            (world, club)
+        })
+        .collect();
+    let seeds: Vec<u64> = (0..num_seeds).collect();
+
+    let attacking = Tactics {
+        mentality: Mentality::Attacking,
+        ..Tactics::neutral()
+    };
+    let defensive = Tactics {
+        mentality: Mentality::Defensive,
+        ..Tactics::neutral()
+    };
+    let defensive_direct = Tactics {
+        mentality: Mentality::Defensive,
+        tempo: Tempo::Direct,
+        ..Tactics::neutral()
+    };
+    let balanced = Tactics::neutral();
+
+    let matchups: [(&str, Tactics, Tactics); 5] = [
+        ("Attacking v Balanced", attacking, balanced),
+        ("Defensive v Balanced", defensive, balanced),
+        ("Def+Direct v Attacking", defensive_direct, attacking),
+        ("both Attacking", attacking, attacking),
+        ("both Defensive", defensive, defensive),
+    ];
+
+    println!("=== Mentality probe ({num_worlds} worlds x {num_seeds} seeds x2 per cell) ===");
+    println!("TACTICS_MODEL.md §9 item 7. Points ≈ 0.500 means the axis costs what it buys;");
+    println!("goals/match is what the axis is *for* (§8: Attacking +0.2-0.4, Defensive -0.2-0.4).");
+    println!();
+    println!(
+        "{:<26}{:>16}{:>10}{:>18}",
+        "matchup", "points (first)", "sd", "goals/match"
+    );
+
+    for (label, a, b) in matchups {
+        let mut pts = Vec::new();
+        let mut goals = Vec::new();
+        for (world, club) in &worlds {
+            let (p, g) = run_head_to_head_detailed(world, *club, a, b, &seeds);
+            pts.push(p);
+            goals.push(g);
+        }
+        let pm = pts.iter().sum::<f64>() / pts.len() as f64;
+        let psd = (pts.iter().map(|x| (x - pm).powi(2)).sum::<f64>()
+            / (pts.len() as f64 - 1.0).max(1.0))
+        .sqrt();
+        let gm = goals.iter().sum::<f64>() / goals.len() as f64;
+        println!("{label:<26}{pm:>16.4}{psd:>10.4}{gm:>18.3}");
+    }
+
+    let mut both_balanced = Vec::new();
+    for (world, club) in &worlds {
+        both_balanced.push(run_head_to_head_detailed(world, *club, balanced, balanced, &seeds).1);
+    }
+    let bb = both_balanced.iter().sum::<f64>() / both_balanced.len() as f64;
+    println!(
+        "{:<26}{:>16}{:>10}{bb:>18.3}",
+        "both Balanced", "0.5000", "-"
+    );
+    println!();
+    println!("Reference: both-Balanced goals/match = {bb:.3}. §8 wants both-Attacking clearly");
+    println!("above it and both-Defensive clearly below, with every points column near 0.500.");
+}
+
 fn main() {
-    let num_seeds = parse_seeds_arg(std::env::args().skip(1));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--mentality") {
+        let num_worlds = parse_u64_arg(&args, "--worlds", 6);
+        let num_seeds = parse_seeds_arg(args.into_iter());
+        run_mentality_report(num_seeds.max(50), num_worlds.max(1));
+        return;
+    }
+    if args.iter().any(|a| a == "--squad-conditional") {
+        let num_worlds = parse_u64_arg(&args, "--worlds", 8);
+        let num_seeds = parse_seeds_arg(args.into_iter());
+        run_squad_conditional_report(num_seeds.max(50), num_worlds.max(1));
+        return;
+    }
+    if args.iter().any(|a| a == "--head-to-head") {
+        let num_seeds = parse_seeds_arg(args.into_iter());
+        run_head_to_head_report(num_seeds.max(50));
+        return;
+    }
+
+    let num_seeds = parse_seeds_arg(args.into_iter());
     let seeds: Vec<u64> = (0..num_seeds).collect();
     let cfg = WorldGenConfig::default();
 

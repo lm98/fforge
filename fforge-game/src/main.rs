@@ -11,7 +11,8 @@ use fforge_core::{
     league_table, load_log, match_engine, observe, player_match_preview, save_log, value_all,
 };
 use fforge_domain::{
-    ClubId, FORMATIONS, Lineup, Money, PlayerId, ROLE_WEIGHTS, Role, World, XI, current_ability,
+    ClubId, FORMATIONS, Lineup, Money, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI,
+    current_ability,
 };
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
@@ -351,6 +352,14 @@ fn set_lineup_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
     let lineup = Lineup {
         formation: (fi - 1) as u8,
         players,
+        // No tactics UI yet — the human's team sheet plays neutral until a
+        // later batch adds the picker.
+        tactics: Tactics::neutral(),
+        // No bench/substitution UI yet either (MATCH_MODEL.md §16, T12) —
+        // the human's team sheet plays unsubstituted until a later batch
+        // adds the picker.
+        bench: Vec::new(),
+        sub_plan: Vec::new(),
     };
     println!(
         "\nTeam sheet ({}), strength {:.1}:",
@@ -418,7 +427,7 @@ fn build_transfer_context(session: &Session) -> TransferContext {
     let dev = DevKnobs::default();
     let vk = ValueKnobs::default();
     let uk = UtilityKnobs::default();
-    let ctx = MarketContext::from_world(&s.world, &vk);
+    let ctx = MarketContext::from_world(&s.world, &vk, &s.recent_ratings);
     let valuations = value_all(&s.world, s.date, &ctx, &vk, &dev);
     let obs = observe(&s.world, s.player_club, s.date, &valuations, &dev, &uk);
     TransferContext {
@@ -780,8 +789,11 @@ fn watch_friendly_flow(session: &Session) {
     let home_name = world.club(home_club).name.clone();
     let away_name = world.club(away_club).name.clone();
 
-    let home_lineup = match_engine::ai_pick_lineup(world, home_club);
-    let away_lineup = match_engine::ai_pick_lineup(world, away_club);
+    let suspended = session.state.suspended_players();
+    let home_lineup =
+        match_engine::ai_pick_lineup_available(world, home_club, session.state.date, &suspended);
+    let away_lineup =
+        match_engine::ai_pick_lineup_available(world, away_club, session.state.date, &suspended);
 
     // A friendly is never recorded through Session::execute — no Command, no
     // Event, no fold mutation — so an ad-hoc wall-clock seed is fine here
@@ -791,7 +803,29 @@ fn watch_friendly_flow(session: &Session) {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0xF00D);
     let mut rng = fforge_core::rng::Rng::seed_from(seed);
-    let outcome = match_engine::play_match(world, &home_lineup, &away_lineup, &mut rng);
+    let mut consistency_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(1));
+    let mut injury_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(2));
+    let mut foul_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(3));
+    // A real GameState is available even for an unrecorded friendly, so this
+    // reads the same accumulated condition a real fixture would.
+    let conditions: BTreeMap<PlayerId, f64> = home_lineup
+        .players
+        .iter()
+        .chain(&away_lineup.players)
+        .map(|&pid| (pid, session.state.condition(pid)))
+        .collect();
+    let outcome = match_engine::play_match(
+        world,
+        &home_lineup,
+        &away_lineup,
+        &mut rng,
+        &mut consistency_rng,
+        &mut injury_rng,
+        &mut foul_rng,
+        &match_engine::Knobs::default(),
+        &conditions,
+        session.state.date,
+    );
 
     print_humble_text_view(world, &home_name, &away_name, &outcome);
 }
