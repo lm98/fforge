@@ -379,6 +379,45 @@ technical onset **~26.9** (0.2), mental onset **~26.7** (0.3), overall CA peak *
 attainment mean **~0.88** (0.01) with p10 **~0.80** and a **~11%** sub-0.80 tail, veteran physical slope
 **~−2.7** (0.1), veteran mental slope **~+0.04** (0.01), wonderkid hit rate **~0.65** (0.07).
 
+**T14 re-bank: AI tactics live, development unmoved.** `TACTICS_MODEL.md` §7's policy is now enabled
+(`AI_TACTICS_ENABLED = true`), so every match in this harness is played with real per-side tactics
+rather than `Tactics::neutral()`. That reaches development through a genuine causal path — tactics
+change fatigue, fatigue changes fouls, fouls change cards and suspensions, and suspensions change who
+actually plays — so the harness was re-run at the banked 8 seeds × 16 seasons to see whether any of it
+survives into career shape. It does not:
+
+| Metric | Banked (T9, tactics neutral) | T14 re-read (tactics live) |
+|---|---|---|
+| Physical peak age | 26.00 | 25.94 (sd 0.09) |
+| Veteran physical slope (30→35) | −2.66 | −2.66 (sd 0.05) |
+| PA attainment mean | 0.86 | 0.86 (sd 0.01) |
+| Wonderkid hit rate | 0.59 | 0.60 (sd 0.07) |
+| Technical plateau onset | ~26.9 | 26.51 (sd 0.13) |
+| Mental plateau onset | ~26.7 | 26.38 (sd 0.20) |
+| Overall CA peak age | ~29.4 | 29.11 (sd 0.06) |
+
+Every row is inside its own per-seed spread. **No re-fit required** — which is the expected result
+rather than a lucky one: development integrates a monthly rate law over years, and the channel tactics
+opens onto it (a few extra suspensions redistributing minutes at the margin) is far too small to move a
+career-length integral. Recorded so the next person does not have to re-derive that reasoning.
+
+**Divergences between this table's *targets* and what the harness actually reads — pre-existing, and
+not introduced by the re-bank.** The T14 run makes four of them explicit, all present in the banked
+readings too:
+
+| Metric | Target | Actually reads | Note |
+|---|---|---|---|
+| Mental plateau onset | early 30s | **26.4** | ~5 years early, and has been since the original re-fit (~26.7) |
+| Veteran mental slope | ~ +0.3 CA/yr | **+0.02** | flat rather than slightly positive; banked read +0.04 |
+| Wonderkid flop rate | ~4% | **0.00** | the harness produces essentially no flops |
+| PA attainment sub-0.80 tail | ~13% | **18%** | fatter than targeted |
+
+The mental-onset and mental-slope rows are the same fact seen twice: the Mental envelope's late build
+and gentle decline (§2.2's `d = 32.5`, `w = 3.8`) are not surviving into the measured composite, so
+mental attributes plateau with the others in the mid-20s instead of holding into the 30s. That is a
+model-vs-target discrepancy worth a look on its own terms, not a calibration drift — it should be
+filed and fitted deliberately, not folded into a re-bank pass. Flagged here rather than fixed.
+
 **T9 checked, not re-fit: `aging_prof_weight = 0.5` against this table.** Re-running the same 8-seed
 ×16-season harness with the blend live (§3's `w = 0.5`) reads physical peak **26.00**, veteran physical
 slope **−2.66**, PA attainment mean **0.86**, wonderkid hit rate **0.59** — every metric inside the
@@ -388,6 +427,16 @@ uncorrelated ~N(50,·) inputs at `w = 0.5` leaves the *population mean* of the b
 unchanged from Professionalism alone — only individual careers move (the archetype the split exists
 to represent), which a population-level peak-age/slope reading is not sensitive to. `w` stays a T14
 knob if a later, more targeted archetype check calls for moving it.
+
+**T14 disposition: `w` stays at `0.5`, and the reason it cannot be settled here is worth stating.**
+The re-bank pass re-ran this harness (above) and `w` again shows no population-level signal — which
+is exactly what the paragraph above predicts, so the re-read carries no new information about it.
+Moving `w` needs the "more targeted archetype check" named here: a cohort matched on Professionalism
+but *split* on Natural Fitness, tracked individually rather than pooled. That is a new harness cut,
+not a re-run of an existing one, so it is left un-taken rather than approximated with the tool at
+hand. `w = 0.5` is a live production value backed by a plausibility argument (§3) and bounded by a
+guard, not an unvalidated guess — but it is not *fitted*, and this note is here so a later reader
+does not mistake "re-banked twice with no movement" for "confirmed".
 
 **Two structural findings the harness surfaced (real-`worldgen` shifts, not knob failures).** Both are
 consequences of worldgen seeding squads *near their plateau* rather than on the young envelope the

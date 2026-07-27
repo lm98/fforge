@@ -359,6 +359,16 @@ The meta-principle: **thin vertical slice first, then deepen.**
   ported to Rust (`fforge-core::match_engine`), and calibrated: the harness
   (`fforge-core::match_engine::calibrate`, `bin/calibrate`) re-fit `b_beat` against real `worldgen`
   and guards the result with a regression test.
+  **2e is now complete** — tactics (`TACTICS_MODEL.md`, AI policy live), consistency, condition &
+  recovery, injuries, fouls/cards/suspensions, substitutions, and match ratings & form
+  (`MATCH_MODEL.md` §11–§18), each landed behind the same call site with an identity setting that
+  reproduces the pinned 2a baseline bit-for-bit. **Set pieces are the one item deferred past 2e**
+  (`MATCH_MODEL.md` §11), so §4.1's "the match engine is done" bar is met with that exception
+  noted. Phase 2 is therefore closed and Phase 5 is the next frontier — §4.1's requirement that
+  tactical choice pose a real tradeoff is satisfied *squad-conditionally* rather than by the
+  opponent-relative cycle originally proposed (`TACTICS_MODEL.md` §5, §9 item 6), which is worth
+  knowing before designing Phase 5's ablation: the decision-quality axis an agent can be scored on
+  is "does it match tactics to its squad", not "does it counter-pick its opponent".
 - **Phase 3 — Player development.** CA/PA, age curves, training, diminishing returns; validate
   over decade-long runs. **Pinned in `DEVELOPMENT_MODEL.md`** (the six deferred development decisions
   resolved: PA-gating, the `DevCategory` curve parameters, the event-log seam, in-scope inputs,

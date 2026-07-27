@@ -37,14 +37,18 @@ All design decisions originate in these files at the workspace root:
   clearing loop, club finances, the player pool (youth intake/retirement), and the market
   pathology harness. `fforge-core::{valuation, club_ai, market, pool}` is a Rust
   transcription of this document.
-- **`docs/TACTICS_MODEL.md`** — the Phase 2e tactics design record (*drafted,
-  pre-implementation*): the four-instruction surface, per-side resolution into effective
-  knobs, the neutral-tactics bit-for-bit invariant, the structural rock-paper-scissors
-  interaction model, the `Tactics`-on-`Lineup` event-log seam, and the AI tactics policy /
-  Phase-5 seam. The rest of Phase 2e (condition/recovery, injuries, fouls & cards,
-  substitutions, ratings, character activation) is drafted as `MATCH_MODEL.md` §11–§18.
-  Of the 2e Rust, only §12's boundary plumbing exists (sequencing step 1 — fields empty,
-  engine unchanged); every 2e *model* is still gated on its design note (design-note-first).
+- **`docs/TACTICS_MODEL.md`** — the Phase 2e tactics design record, now *implemented and
+  calibrated*: the four-instruction surface, per-side resolution into effective knobs, the
+  neutral-tactics bit-for-bit invariant, the interaction model, the `Tactics`-on-`Lineup`
+  event-log seam, and the AI tactics policy / Phase-5 seam (live —
+  `match_engine::AI_TACTICS_ENABLED = true`). Read **§3's lever-class note** before touching
+  any effect magnitude: §3's table mixes *advance-class* multipliers (on raw transition
+  probabilities) with *logit-class* biases (additive, through a near-saturated sigmoid), and
+  the former move ~4× the absolute probability the latter do. Two separate calibration passes
+  failed by reaching for the weak lever before that was understood (§5's T7-R finding, §9
+  items 6–7). The rest of Phase 2e (condition/recovery, injuries, fouls & cards,
+  substitutions, ratings, character activation) is `MATCH_MODEL.md` §11–§18 and is likewise
+  implemented; set pieces stay deferred beyond 2e (`MATCH_MODEL.md` §11).
 
 When the code and the design docs diverge, treat the design docs as authoritative and
 file the discrepancy as a bug.
@@ -94,14 +98,21 @@ Phase 0 (design & data model) is complete. Phase 1 (walking skeleton) is complet
 Phase 2a (the event-based possession match engine, `MATCH_MODEL.md`) is implemented and
 calibrated: the Rust harness (`fforge-core::match_engine::calibrate`, `bin/calibrate`) runs
 real `worldgen` + `ai_pick_lineup` + `play_match` pooled over many seeds, re-fit `b_beat`
-against it, and guards the result with `favourite_discrimination_regression_guard`. Deferred
-to Phase 2e behind the same `play_match` call site: tactics, cards/fouls, injuries, set
-pieces, substitutions, and the character/hidden attributes. The 2e *design* is now drafted
-(`TACTICS_MODEL.md`; `MATCH_MODEL.md` §11–§18), and its sequencing step 1 has landed: the
-§12 `MatchOutcome`/`MatchPlayed` boundary carries resolved injuries/cards/ratings (plus the
-fold's derived-suspension bookkeeping and the §13 rolling appearance window), with the
-engine emitting all of it empty — every 2e model is still design-gated; set pieces stay
-deferred beyond 2e (`MATCH_MODEL.md` §11).
+against it, and guards the result with `favourite_discrimination_regression_guard`.
+
+**Phase 2e is complete.** Everything deferred behind the `play_match` call site at 2a has
+landed, in the sequencing `MATCH_MODEL.md` §11 set: the §12 `MatchOutcome`/`MatchPlayed`
+boundary (resolved injuries/cards/ratings/minutes, the fold's derived-suspension bookkeeping,
+the §13 rolling appearance window), then tactics (`TACTICS_MODEL.md`), consistency (§17),
+condition & recovery (§13), injuries (§14), fouls/cards/suspensions (§15), substitutions
+(§16), and match ratings & form (§18). Set pieces remain deferred beyond 2e (§11).
+
+The tactics model needed two calibration passes after its first landing, and the reason is
+worth carrying forward: §3's effect table mixes two lever classes of very different power
+(see `TACTICS_MODEL.md` §3), which left `Tempo::Direct` and then `Mentality::Attacking`
+strictly dominant. Both are fitted now — no instruction dominates, non-dominance is
+squad-conditional (§9 item 6), and `AI_TACTICS_ENABLED` is `true`, so every AI-controlled
+side picks real tactics. Pooled goals/match reads 2.59 with the whole of 2e live.
 
 Phase 3 (player development, `DEVELOPMENT_MODEL.md`) is implemented in `fforge-core::development`
 — a monthly `DevelopmentTick` records resolved attribute deltas the fold integer-adds. Its
@@ -119,8 +130,10 @@ loans, negotiation rounds, transfer clauses (`TRANSFER_MODEL.md` §1).
 
 `fforge-core` is the active development front. Changes to `fforge-domain` at this stage are
 corrections or clarifications to the Phase 0 deliverable plus the sanctioned Phase 4 finance
-extension (`Money`, `Contract`, `Finances`, `Club.reputation` — `TRANSFER_MODEL.md` §3) and,
-now that Phase 2e implementation has begun, the sanctioned 2e extension (`Tactics`/`Lineup.tactics`,
-`Lineup.bench`, `Character.natural_fitness`, `Player.condition`/`Player.injured_until` —
-`MATCH_MODEL.md` §12; of these, only `Player.injured_until` exists so far), not open-ended
-new features.
+extension (`Money`, `Contract`, `Finances`, `Club.reputation` — `TRANSFER_MODEL.md` §3) and
+the sanctioned Phase 2e extension, now fully landed: `Tactics`/`Lineup.tactics`,
+`Lineup.bench`/`Lineup.sub_plan` and the `substitution` module, `Character.natural_fitness`,
+and `Player.injured_until` (`MATCH_MODEL.md` §12). Note the one divergence from §12's original
+list: `Player.condition` was never added and should not be — condition is *derived* from
+`GameState::recent_appearances` rather than stored (`MATCH_MODEL.md` §13), the same
+"derive, don't store" rule CA already follows. Beyond these, not open-ended new features.

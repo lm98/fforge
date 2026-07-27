@@ -601,6 +601,45 @@ direction and bound directly, since this pooled harness is the wrong tool to see
 touched for this re-read; it is a regression check on `beta`/`revenue_per_reputation`'s existing bank,
 confirming form's addition doesn't require re-fitting either.
 
+**T14 re-bank: AI tactics live (pooled, 24 seeds × 15 seasons, matching both readings above).**
+`TACTICS_MODEL.md` §7's policy is now enabled, so every match feeding this harness is played with real
+per-side tactics. The causal path into the market is genuine and multi-step — tactics change match
+outcomes, outcomes change league position and ratings, ratings feed `MarketContext.form` (§2.5) and
+position feeds club revenue (§3) — so the harness was re-run at the banked pooling to check whether
+any of it reaches the market-level statistics:
+
+| Metric | T13 re-read (form live) | **T14 (AI tactics live)** |
+|---|---|---|
+| Transfers / club / window | 1.778 (sd 0.224) | 1.805 (sd 0.250) |
+| Fee median | 1.205M (sd 166k) | 1.237M (sd 157k) |
+| Fee p90 | 3.045M (sd 359k) | 3.183M (sd 452k) |
+| Points-Gini, early → late | 0.300 → 0.286 | 0.297 → 0.284 |
+| Season-to-season rank churn | 1.182 (sd 0.123) | 1.154 (sd 0.132) |
+| Top-3 share of top-20, early → late | 0.620 → 0.633 | 0.630 → 0.658 |
+| Median fee, last season / first season | 0.479 (sd 0.186) | 0.505 (sd 0.166) |
+| Clubs insolvent | 5.525 / 20 | 5.342 / 20 |
+| Clubs hoarding cash | 0.686 / 20 | 0.683 / 20 |
+| League mean age | 27.567 | 27.566 |
+| Squad size, min / max | 22.333 / 30 | 21.958 / 30 |
+| Role-coverage violations | 1.042 (sd 1.781) | 0.250 (sd 0.532) |
+| Squad-size snapshots below `squad_max` | 0.740 | 0.741 |
+| Share majority-pinned at `squad_max` | 0.092 | 0.079 |
+
+**No re-fit required.** Every row sits inside the previous reading's own seed-to-seed spread. The
+largest-looking mover, role-coverage violations (1.042 → 0.250), is the noisiest statistic in the
+table — its prior sd was 1.781, wider than the whole apparent change — so it is read as noise, not as
+evidence the role-coverage override got better. Two consecutive re-banks (form, then tactics) have now
+left `ValueKnobs::beta` and `FinanceKnobs::revenue_per_reputation` untouched, which is the intended
+robustness: the market prices off CA, and CA moves on the development timescale, not the match one.
+
+**Still open, and not closed by this pass: transfer volume.** 1.805 per club per window against §11's
+`~2-5` target — below band, as it was at 1.778 pre-tactics. This is a genuine unresolved divergence
+between the model and its own target, not drift; it survived the form multiplier and now the tactics
+rollout unchanged, which is itself informative (whatever suppresses volume is upstream of both, in the
+clearing loop or the utility policy's surplus filter rather than in valuation inputs). Left open
+rather than fitted here — a re-bank pass records what the harness reads; it does not get to invent a
+mechanism.
+
 ---
 
 ## 10. Human transfer decisions — the pre-commitment model
