@@ -1,13 +1,14 @@
 //! Formation + XI selection, submitted as `Command::SubmitLineup`.
 
+use crate::Observers;
 use crate::input::{prompt_choice, prompt_number, read_line};
 use crate::render::headline_ca;
-use fforge_core::{Command, SeasonTelemetry, Session, match_engine};
+use fforge_core::{Command, Session, match_engine};
 use fforge_domain::{
     FORMATIONS, Lineup, PlayerId, ROLE_WEIGHTS, Role, Tactics, World, XI, current_ability,
 };
 
-pub fn set_lineup_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
+pub fn set_lineup_flow(session: &mut Session, o: &mut Observers) {
     let s = &session.state;
     let world = s.world.clone();
     let squad = world.club(s.player_club).players.clone();
@@ -106,7 +107,7 @@ pub fn set_lineup_flow(session: &mut Session, telemetry: &mut SeasonTelemetry) {
     if prompt_choice("Confirm? [y/n] ", &["y", "n"]) != "y" {
         return;
     }
-    match session.execute(Command::SubmitLineup(lineup), &mut [&mut *telemetry]) {
+    match session.execute(Command::SubmitLineup(lineup), &mut o.all()) {
         Ok(_) => println!(
             "Lineup submitted for matchday {}.",
             session.state.current_matchday

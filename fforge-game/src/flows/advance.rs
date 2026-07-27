@@ -2,20 +2,20 @@
 //! `Command::AdvanceMatchday`, then report results and any transfer window
 //! the advance closed.
 
+use crate::Observers;
 use crate::flows::match_view::print_humble_text_view;
 use crate::render::sem::Palette;
 use crate::render::{ordinal, result_line, table_position};
-use fforge_core::{Command, Event, SeasonTelemetry, Session, player_match_preview};
+use fforge_core::{Command, Event, Session, player_match_preview};
 use fforge_domain::{ClubId, World};
 
-pub fn advance_flow(session: &mut Session, telemetry: &mut SeasonTelemetry, p: Palette) {
+pub fn advance_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     let md = session.state.current_matchday;
     // Computed from the pre-advance state, using the same lineup selection
     // and seed-derived RNG stream `AdvanceMatchday` is about to use, so it
     // can never disagree with the score actually recorded below.
     let preview = player_match_preview(&session.state);
-    let events: Vec<Event> = match session.execute(Command::AdvanceMatchday, &mut [&mut *telemetry])
-    {
+    let events: Vec<Event> = match session.execute(Command::AdvanceMatchday, &mut o.all()) {
         Ok(ev) => ev.to_vec(),
         Err(e) => {
             println!("Cannot advance: {e}");

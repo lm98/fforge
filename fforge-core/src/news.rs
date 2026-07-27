@@ -128,6 +128,24 @@ pub enum NewsKind {
         club: ClubId,
         balance: Money,
     },
+    /// Nobody in `club`'s squad rates `role` as his *best* role.
+    ///
+    /// **Advisory, and worded as such** (Batch 4 U5's reconciliation). This
+    /// check spans all eight roles, while the market's only hard role
+    /// stabilizer is `club_ai::UtilityKnobs::min_goalkeepers` (`≥ 2` GK,
+    /// `TRANSFER_MODEL.md` §11) — so a human will see coverage warnings the
+    /// club AI is under no obligation to act on. The two definitions were
+    /// deliberately *not* aligned: widening `club_ai`'s hard minimum to all
+    /// eight roles would change which bids its role-coverage override ranks
+    /// first, and that is a Phase-4 market recalibration, not a presentation
+    /// change. Narrowing this check to goalkeepers would instead throw away
+    /// the only signal a human gets about the other seven.
+    ///
+    /// So the item stays broad and its wording promises nothing: it reports
+    /// that no player *rates* the role as his best, which is exactly the
+    /// condition tested — not that nobody can play there (a centre-back
+    /// covers defensive midfield perfectly well), and not that anything will
+    /// be done about it.
     RoleCoverageGap {
         club: ClubId,
         role: Role,
@@ -228,7 +246,7 @@ impl NewsRenderer for TemplateRenderer {
                 world.club(*club).name
             ),
             NewsKind::RoleCoverageGap { club, role } => format!(
-                "{} has no recognised {} on the books.",
+                "Advisory: nobody at {} rates {} as his best role.",
                 world.club(*club).name,
                 role.name()
             ),

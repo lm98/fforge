@@ -19,8 +19,9 @@
 //! the core's own test suite leans on.
 
 use crate::render::sem::Palette;
-use crate::screens::{finances, fixtures, header, season_end, squad, stats, table};
-use fforge_core::{Command, SeasonTelemetry, Session, WorldGenConfig, new_game};
+use crate::screens::{finances, fixtures, header, inbox, season_end, squad, stats, table};
+use fforge_core::news::NewsObserver;
+use fforge_core::{Command, EventObserver, SeasonTelemetry, Session, WorldGenConfig, new_game};
 use fforge_domain::ClubId;
 use std::path::PathBuf;
 
@@ -56,6 +57,25 @@ fn finished_season() -> (Session, SeasonTelemetry) {
             .expect("advance until the season ends");
     }
     (session, telemetry)
+}
+
+/// A session's news observer, rebuilt over the same fixed-seed run. Kept
+/// separate from `fixture` so the screens that don't need it don't pay for it.
+fn news_fixture(matchdays: usize) -> NewsObserver {
+    let log = new_game(SEED, &WorldGenConfig::default(), MY_CLUB);
+    let mut news = NewsObserver::new();
+    let mut session = {
+        let obs: &mut [&mut dyn EventObserver] = &mut [&mut news];
+        Session::from_events(log, obs)
+    };
+    for _ in 0..matchdays {
+        session
+            .execute(Command::AdvanceMatchday, &mut [&mut news])
+            .expect("advance within the season");
+        // Matches `game_loop`: state-condition news is pumped once per command.
+        news.check_conditions(&session.state);
+    }
+    news
 }
 
 fn snapshot_path(name: &str) -> PathBuf {
@@ -113,6 +133,26 @@ fn finances_screen_snapshot_before_any_tick() {
     );
 }
 
+/// The inbox after a few matchdays: both news categories present
+/// (event-derived results, state-condition checks), ordered by salience.
+#[test]
+fn inbox_screen_snapshot() {
+    let (session, _) = fixture(5);
+    let news = news_fixture(5);
+    assert_snapshot("inbox", &inbox::render(&session, &news, 4, Palette::PLAIN));
+}
+
+/// The empty branch — before anything has happened at all.
+#[test]
+fn inbox_screen_snapshot_when_empty() {
+    let (session, _) = fixture(0);
+    let news = news_fixture(0);
+    assert_snapshot(
+        "inbox_empty",
+        &inbox::render(&session, &news, 0, Palette::PLAIN),
+    );
+}
+
 #[test]
 fn table_screen_snapshot() {
     let (session, _) = fixture(5);
@@ -153,7 +193,7 @@ fn stats_screen_snapshot_before_any_match() {
 #[test]
 fn header_snapshot() {
     let (session, _) = fixture(5);
-    assert_snapshot("header", &header::render(&session, Palette::PLAIN));
+    assert_snapshot("header", &header::render(&session, 3, Palette::PLAIN));
 }
 
 #[test]
@@ -168,14 +208,16 @@ fn season_end_snapshot() {
 /// Every screen, rendered both ways, for the two whole-suite invariants below.
 fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
     let (session, telemetry) = fixture(5);
+    let news = news_fixture(5);
     let (finished, finished_telemetry) = finished_season();
     vec![
         ("squad", squad::render(&session, p)),
+        ("inbox", inbox::render(&session, &news, 4, p)),
         ("finances", finances::render(&session, p)),
         ("table", table::render(&session, p)),
         ("fixtures", fixtures::render(&session, p)),
         ("stats", stats::render(&telemetry)),
-        ("header", header::render(&session, p)),
+        ("header", header::render(&session, 3, p)),
         (
             "season_end",
             season_end::render(&finished, &finished_telemetry, p),

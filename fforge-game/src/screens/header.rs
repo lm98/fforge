@@ -2,9 +2,9 @@
 //! what is still outstanding for the next matchday.
 //!
 //! **Colour axis: outstanding decisions** (R15) — what still wants your
-//! attention before you advance. No lineup set at all reads `Warn`; a stale
-//! lineup about to be reused reads `Warn` too, but quieter in wording; a
-//! submitted one reads `Ok` and costs no ink.
+//! attention before you advance: an unset lineup, unread inbox items. A
+//! submitted lineup reads `Ok` and costs no ink; anything left undone reads
+//! `Warn`.
 //!
 //! The note text says the same thing in words, which is the non-colour
 //! carrier — colour only makes it findable in one glance rather than one read.
@@ -18,7 +18,7 @@ use crate::render::table_position;
 use fforge_core::Session;
 use std::fmt::Write as _;
 
-pub fn render(session: &Session, p: Palette) -> String {
+pub fn render(session: &Session, unread: usize, p: Palette) -> String {
     let s = &session.state;
     let club = s.world.club(s.player_club);
     let pos = table_position(session, s.player_club);
@@ -42,6 +42,16 @@ pub fn render(session: &Session, p: Palette) -> String {
         ("no lineup set — assistant will auto-pick", Sem::Warn)
     };
     let _ = writeln!(out, "{}", p.paint(&format!("    ({lineup_note})"), sem));
+    if unread > 0 {
+        let _ = writeln!(
+            out,
+            "{}",
+            p.paint(
+                &format!("    ({unread} unread inbox item(s) — [i])"),
+                Sem::Warn
+            )
+        );
+    }
     if !s.pending_transfer_decisions.is_empty() {
         let _ = writeln!(
             out,

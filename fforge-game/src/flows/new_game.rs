@@ -1,12 +1,12 @@
 //! Starting a new game (world seed, club pick) and loading a saved one.
 
-use crate::SAVE_PATH;
 use crate::input::{prompt_number, prompt_seed};
 use crate::render::club_avg_ca;
-use fforge_core::{Event, SeasonTelemetry, Session, WorldGenConfig, load_log};
+use crate::{Observers, SAVE_PATH};
+use fforge_core::{Event, Session, WorldGenConfig, load_log};
 use std::path::Path;
 
-pub fn new_game_flow() -> Option<(Session, SeasonTelemetry)> {
+pub fn new_game_flow() -> Option<(Session, Observers)> {
     let seed = prompt_seed();
     let cfg = WorldGenConfig::default();
     let (world, schedule, start_date) = fforge_core::generate(seed, &cfg);
@@ -40,15 +40,20 @@ pub fn new_game_flow() -> Option<(Session, SeasonTelemetry)> {
         world,
         schedule,
     };
-    let mut telemetry = SeasonTelemetry::default();
-    let session = Session::from_events(vec![opening], &mut [&mut telemetry]);
-    Some((session, telemetry))
+    let mut observers = Observers::default();
+    let session = Session::from_events(vec![opening], &mut observers.all());
+    Some((session, observers))
 }
 
-pub fn load_flow() -> Option<(Session, SeasonTelemetry)> {
+pub fn load_flow() -> Option<(Session, Observers)> {
     let log = load_log(Path::new(SAVE_PATH)).ok()?;
-    let mut telemetry = SeasonTelemetry::default();
-    let session = Session::from_events(log, &mut [&mut telemetry]);
+    let mut observers = Observers::default();
+    // Replay feeds every event back through both observers, so the
+    // event-derived half of the inbox rebuilds for free. The state-condition
+    // half does not: `check_conditions` runs at command boundaries, and a cold
+    // load has none to replay — it re-fires for whatever is true *now*, which
+    // is the same asymmetry match commentary already has (`fforge-core::news`).
+    let session = Session::from_events(log, &mut observers.all());
     println!(
         "Loaded: {} — matchday {}/{}.",
         session.state.world.club(session.state.player_club).name,
@@ -58,5 +63,5 @@ pub fn load_flow() -> Option<(Session, SeasonTelemetry)> {
             .min(session.state.last_matchday),
         session.state.last_matchday
     );
-    Some((session, telemetry))
+    Some((session, observers))
 }

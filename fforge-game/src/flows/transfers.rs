@@ -12,12 +12,13 @@
 //! The `Fit` column is the non-colour carrier and names the *blocking* half
 //! (`ok`, `fee`, `wage`, `both`), which colour alone could not say anyway.
 
+use crate::Observers;
 use crate::input::{prompt_choice, prompt_money, prompt_number, read_line};
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use fforge_core::{
-    ClubObservation, Command, DevKnobs, MarketContext, SeasonTelemetry, Session, TransferDecision,
-    UtilityKnobs, ValueKnobs,
+    ClubObservation, Command, DevKnobs, MarketContext, Session, TransferDecision, UtilityKnobs,
+    ValueKnobs,
     club_ai::{Candidate, SquadMember},
     observe, value_all,
 };
@@ -128,7 +129,7 @@ pub fn build_transfer_context(session: &Session) -> TransferContext {
 
 /// Nothing is recorded until [4] Submit — browsing and editing the draft touch
 /// no `Session` state.
-pub fn transfer_flow(session: &mut Session, telemetry: &mut SeasonTelemetry, p: Palette) {
+pub fn transfer_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     let mut ctx = build_transfer_context(session);
     let mut draft: Vec<TransferDecision> = session.state.pending_transfer_decisions.clone();
     loop {
@@ -139,7 +140,7 @@ pub fn transfer_flow(session: &mut Session, telemetry: &mut SeasonTelemetry, p: 
             "2" => squad_transfer_screen(&session.state.world, &ctx, &mut draft, p),
             "3" => shortlist_screen(&session.state.world, &mut draft),
             "4" => {
-                submit_draft(session, telemetry, &draft);
+                submit_draft(session, o, &draft);
                 ctx = build_transfer_context(session);
             }
             _ => return,
@@ -458,14 +459,10 @@ fn decision_summary(world: &World, d: TransferDecision) -> String {
     }
 }
 
-fn submit_draft(
-    session: &mut Session,
-    telemetry: &mut SeasonTelemetry,
-    draft: &[TransferDecision],
-) {
+fn submit_draft(session: &mut Session, o: &mut Observers, draft: &[TransferDecision]) {
     match session.execute(
         Command::SubmitTransferDecision(draft.to_vec()),
-        &mut [&mut *telemetry],
+        &mut o.all(),
     ) {
         Ok(_) => println!(
             "\nShortlist submitted: {} decision(s) pending for the next window close.",

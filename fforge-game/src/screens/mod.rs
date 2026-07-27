@@ -16,6 +16,7 @@
 pub mod finances;
 pub mod fixtures;
 pub mod header;
+pub mod inbox;
 pub mod season_end;
 pub mod squad;
 pub mod stats;
