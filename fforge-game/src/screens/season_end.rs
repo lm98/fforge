@@ -49,14 +49,11 @@ pub fn render(session: &Session, telemetry: &SeasonTelemetry, p: Palette) -> Str
         )
     );
     out.push_str(&stats::render(telemetry));
-    // The core can roll a season over (`Command::StartNextSeason`, and the
-    // Phase-3 development fold rides on it); the CLI has not wired that up
-    // yet, so a run still ends here.
     let _ = writeln!(
         out,
         "{}",
         p.paint(
-            "(This run ends here — season rollover isn't wired into the CLI yet.)",
+            "(Starting the next season runs the summer's development on the squad you finish with.)",
             Sem::Muted
         )
     );

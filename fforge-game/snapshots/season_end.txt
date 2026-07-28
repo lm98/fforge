@@ -30,4 +30,4 @@ League-wide telemetry (the calibration harness embryo):
   matches played : 380
   goals per match: 2.43
   home/draw/away : 43% / 31% / 26%
-(This run ends here — season rollover isn't wired into the CLI yet.)
+(Starting the next season runs the summer's development on the squad you finish with.)

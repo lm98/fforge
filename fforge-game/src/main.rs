@@ -24,6 +24,7 @@ use flows::friendly::watch_friendly_flow;
 use flows::lineup::set_lineup_flow;
 use flows::new_game::{load_flow, new_game_flow};
 use flows::save::do_save;
+use flows::season::season_end_flow;
 use flows::transfers::transfer_flow;
 use input::{prompt_choice, prompt_menu};
 use render::sem::{Palette, Sem};
@@ -103,9 +104,10 @@ fn game_loop(mut session: Session, mut o: Observers, p: Palette) {
         let unread = screens::inbox::len(&session, &o.news).saturating_sub(inbox_seen);
 
         if session.state.season_over() {
-            print!("{}", screens::season_end::render(&session, &o.telemetry, p));
-            if prompt_choice("Save the finished season? [y/n] ", &["y", "n"]) == "y" {
-                do_save(&session);
+            if season_end_flow(&mut session, &mut o, p) {
+                // Rolled over: the fresh schedule is folded in, so fall
+                // straight back into the normal loop on matchday 1.
+                continue;
             }
             return;
         }

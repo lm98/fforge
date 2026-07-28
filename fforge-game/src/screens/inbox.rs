@@ -38,10 +38,15 @@ const MUST_SEE: u8 = 60;
 /// Below this, an item is background — league noise you can skim past.
 const BACKGROUND: u8 = 40;
 
-/// `unread` is how many of the newest inbox entries the player has not opened
-/// yet — tracked by the caller, because "read" is a fact about *this player's
-/// session*, never a fact of the recorded game (nothing about it belongs in
-/// the log, exactly like the news items themselves).
+/// `unread` counts **notable** entries the player has not opened yet — tracked
+/// by the caller, because "read" is a fact about *this player's session*, never
+/// a fact of the recorded game (nothing about it belongs in the log, exactly
+/// like the news items themselves).
+///
+/// Notable, not total, and that matters: a 20-club league produces ten results
+/// a matchday, so a total unread count reads "765 unread" by the end of a season
+/// and means nothing. Counting only what clears [`BACKGROUND`] makes the number
+/// in the header something a manager can act on.
 pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette) -> String {
     let s = &session.state;
     let audience = Audience::Club(s.player_club);
@@ -49,9 +54,14 @@ pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette)
     // itself, and dropping the league's background entirely would leave the
     // inbox showing only your own club, which is not an inbox.
     let newest_first = news.inbox(audience, 0);
-    // The newest `unread` entries are exactly the ones not yet seen: `inbox`
-    // only ever grows at the front.
-    let unread_refs: Vec<&NewsItem> = newest_first.iter().take(unread).copied().collect();
+    // The newest `unread` *notable* entries are the ones not yet seen: `inbox`
+    // only ever grows at the front, and the read cursor counts the same set.
+    let unread_refs: Vec<&NewsItem> = newest_first
+        .iter()
+        .filter(|i| i.salience >= BACKGROUND)
+        .take(unread)
+        .copied()
+        .collect();
 
     let mut out = String::new();
     let _ = writeln!(
@@ -59,7 +69,7 @@ pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette)
         "\n{}",
         p.paint(
             &format!(
-                "=== Inbox — {} · {} ({} unread of {}) ===",
+                "=== Inbox — {} · {} ({} unread, {} in all) ===",
                 s.world.club(s.player_club).name,
                 s.date,
                 unread,
@@ -141,12 +151,19 @@ fn salience_sem(salience: u8) -> Sem {
     }
 }
 
-/// How many entries the player's inbox currently holds — the caller's read
-/// cursor is a count against this, so it lives next to the filter that
-/// produces it rather than being re-derived at the call site.
+/// How many **notable** entries the player's inbox currently holds — the
+/// caller's read cursor is a count against exactly this set, so the definition
+/// lives next to the screen that renders it rather than at the call site.
+///
+/// Counts without collecting: this runs once per game-loop iteration and the
+/// item list grows for the whole run, across season boundaries included.
 pub fn len(session: &Session, news: &NewsObserver) -> usize {
-    news.inbox(Audience::Club(session.state.player_club), 0)
-        .len()
+    let mine = Audience::Club(session.state.player_club);
+    news.items()
+        .iter()
+        .filter(|i| i.salience >= BACKGROUND)
+        .filter(|i| i.audience == mine || i.audience == Audience::League)
+        .count()
 }
 
 #[cfg(test)]

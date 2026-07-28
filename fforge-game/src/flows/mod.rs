@@ -13,6 +13,7 @@ pub mod lineup;
 pub mod match_view;
 pub mod new_game;
 pub mod save;
+pub mod season;
 pub mod subs;
 pub mod tactics;
 pub mod transfers;
