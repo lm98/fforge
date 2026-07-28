@@ -7,28 +7,30 @@ resulting `Event`s.
 
 ## Current state
 
-Batch 4's unblocked half (U1–U7) is complete: the presentation layer is split by role and
-snapshot-tested, a semantic colour vocabulary is in place and adopted, and the Phase 4
-state that previously had no screen (finances, contracts, valuations, squad depth), the
-`fforge-core::news` inbox, and the Phase 2e tactics picker are all wired in behind R14's
-grouped menu.
+**Batch 4 is complete — U1–U7 and G1–G4 — plus season rollover.** Everything the
+simulation resolves now has somewhere to be seen:
 
-Batch 4's gated half is **not** built: `[f] Fitness & availability` (condition, injuries
-with return dates, suspensions), substitutions/cards/injuries in the match view, the
-substitution plan editor, and ratings/form columns. All four have their `fforge-core`
-dependencies landed (Phase 2e closed at T14), so they are unblocked whenever someone picks
-them up.
+- the presentation layer is split by role, pure, and snapshot-tested;
+- a semantic colour vocabulary is in place and adopted, one axis per screen;
+- Phase 4's state has screens (finances with the `FinanceTick` trend, contracts,
+  valuations, squad depth against the market's hard stabilizers);
+- `fforge-core::news` is wired into the live loop as an inbox;
+- Phase 2e is fully surfaced: tactics, fitness/availability, cards and injuries in the
+  match stream, the substitution plan editor, ratings and form;
+- seasons roll over, reporting the summer's development on the squad.
 
-Also not wired: **season rollover.** `Command::StartNextSeason` exists in the core and the
-Phase-3 development fold rides on it, but `game_loop` still ends the run at the final
-whistle. The season-end screen says so rather than implying otherwise.
+Not built, and deliberately: set pieces (deferred beyond 2e, `MATCH_MODEL.md` §11), and
+anything Phase 5 owns (agents, scouting fog-of-war, the journalist renderer).
+
+The `[r] Reports` screen is still just `SeasonTelemetry` — accurate, but thin, and now
+cumulative across seasons rather than per-season. It is the obvious next thing to grow.
 
 ## Module layout — split by role, not by feature (R17)
 
 ```
 main.rs        entry, game_loop, the grouped menu, the Observers bundle
 screens/       read-only renders — each a pure fn returning String (R16)
-flows/         multi-step interactions (new game, lineup+tactics, transfers, advance, friendly)
+flows/         multi-step interactions (new game, team sheet, transfers, advance, season, friendly)
 render/        the Sem colour vocabulary, table layout, shared formatting
 input.rs       the only functions that touch stdin
 snapshots/     committed screen snapshots (see Testing)
@@ -45,16 +47,19 @@ prints screens with `print!`, since every screen's string already ends in a newl
 |---|---|
 | `main` | the entry menu, `game_loop`, R14's grouped menu, `SAVE_PATH`, and `Observers` |
 | `screens::header` | club, matchday, date, position, and what is still outstanding (unset lineup, unread inbox, pending transfer plan) |
-| `screens::squad` | the squad list with wage/contract/valuation columns, plus depth against `SQUAD_TEMPLATE` and the market's hard stabilizers |
+| `screens::squad` | the squad list with wage/contract/valuation/rating/form columns, plus depth against `SQUAD_TEMPLATE` and the market's hard stabilizers |
+| `screens::availability` | condition, injuries with return dates, suspensions, card tallies — ordered unavailable-first |
 | `screens::finances` | balance, reserve floor, wage ceiling, committed wages, headroom, and the monthly `FinanceTick` trend read straight off the log |
 | `screens::inbox` | `news::NewsObserver`'s items via `TemplateRenderer`, ordered by salience with the background band capped separately |
 | `screens::{table, fixtures, stats, season_end}` | league table, this/last matchday, season telemetry, the end-of-season wrap |
 | `flows::new_game` | `new_game_flow` (seed → worldgen → club pick → `GameStarted`), `load_flow` |
-| `flows::lineup` | formation + XI, then `flows::tactics`, submitted together as one `Command::SubmitLineup` |
+| `flows::lineup` | formation + XI, then `flows::tactics`, then `flows::subs` — one `Command::SubmitLineup`, because they are one `Lineup` value |
 | `flows::tactics` | the four-instruction picker, seeded from `ai_pick_tactics`'s read on the upcoming fixture |
+| `flows::subs` | the bench and the condition→action rule list (`MATCH_MODEL.md` §16). The hardest screen in the game — see `docs/UI_TOOLKIT_EVIDENCE.md` §4 before changing it |
+| `flows::season` | the season boundary: roll over via `Command::StartNextSeason` and report the summer's development, or stop |
 | `flows::transfers` | the `TRANSFER_MODEL.md` §10 pre-commitment UI: a local `Vec<TransferDecision>` draft against one frozen `observe`/`value_all` snapshot, submitted in one shot |
 | `flows::advance` | `player_match_preview` → `Command::AdvanceMatchday` → match view, results, and any transfer window this advance closed |
-| `flows::match_view` | `DESIGN.md` §9's humble text match view; `commentary_lines` is pure, `print_humble_text_view` adds pacing and skip-on-keypress |
+| `flows::match_view` | `DESIGN.md` §9's humble text match view plus the full-time aftermath (cards, injuries, man of the match); `commentary_lines`/`aftermath` are pure, `print_humble_text_view` adds pacing and skip-on-keypress |
 | `flows::friendly` | the tactics sandbox: your club, an opponent you choose, any shape you like, nothing recorded |
 | `flows::save` | `do_save` — saving is literally "serialize the event log" |
 | `render::sem` | `Sem` and the **one and only** mapping from it to a colour |
@@ -106,11 +111,22 @@ prints screens with `print!`, since every screen's string already ends in a newl
    quietly wrong inbox rather than a compile error, so the list of who must see the stream
    is written down in exactly one place.
 
+9. **Don't re-derive a rule the core already owns.** The ban rule
+   (`GameState::is_suspended`), the man of the match (`match_engine::man_of_the_match`),
+   the squad template (`worldgen::SQUAD_TEMPLATE`), the substitution decision points
+   (`match_engine::SUB_CHECKPOINTS`) and the form window (`GameState::recent_ratings`) are
+   all read, never recomputed here. A second copy of a rule in the presentation layer is a
+   copy free to disagree with the one that decides — and the player will believe the one on
+   screen.
+
 ## Colour axes in force
 
 | Screen | Axis |
 |---|---|
-| Squad | ability relative to this squad (plus `Bad`-only for a stabilizer breach) |
+| Squad | ability relative to this squad (plus `Bad`-only for a stabilizer breach). Contract urgency and form are deliberately **uncoloured** — see below |
+| Fitness & availability | availability: fit / doubtful / injured / suspended |
+| Match aftermath | consequence severity |
+| Season rollover | direction of development |
 | Finances | headroom — comfortable / tight / breached |
 | Inbox | salience |
 | Table, Fixtures, Season end | `Mine` and nothing else |
@@ -118,6 +134,12 @@ prints screens with `print!`, since every screen's string already ends in a newl
 | Transfers | affordability against cash and wage headroom |
 | Tactics picker | departure from neutral (deliberately *not* good/bad — non-dominance is squad-conditional, `TACTICS_MODEL.md` §9) |
 | League stats | none, deliberately — raw readings with no direction to act on |
+
+**Twice now the one-axis rule has pushed a real signal off colour and onto a glyph or a
+bare column** — contract urgency (U4) and recent form (G4), both on the squad screen. Both
+were the right call, and both are recorded in `docs/UI_TOOLKIT_EVIDENCE.md` §4b as the
+clearest evidence that this screen wants more encodings than a terminal has channels. If
+you are about to add a third: don't colour it either, and add it to that list.
 
 Colour is suppressed on `NO_COLOR` (any value), `--no-color`, or a non-tty stdout;
 `--color` forces it back on for `| less -R`. The policy is a `Palette` value threaded from
@@ -152,5 +174,6 @@ affected flow.
 ## Related records
 
 - `docs/UI_TOOLKIT_EVIDENCE.md` — R18's record of what these screens taught, the input
-  `DESIGN.md` §10's toolkit question has been waiting on. Add to it when a new screen
-  teaches something, especially the gated ones.
+  `DESIGN.md` §10's toolkit question has been waiting on. Complete as of Batch 4, including
+  the G3 measurement it was written to wait for. Add to it when a new screen teaches
+  something.
