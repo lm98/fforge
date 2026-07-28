@@ -106,6 +106,20 @@ pub enum MatchEventKind {
     Substitution {
         player_out: PlayerId,
     },
+    /// A player going down injured (`MATCH_MODEL.md` §14, T10). `side`/`actor`
+    /// name the hurt player's own side and the player himself; `days_out` is
+    /// the resolved layoff, the same value riding into
+    /// `MatchOutcome.injuries`.
+    ///
+    /// The Trace is the *only* place an injury's minute survives:
+    /// `InjuryOutcome` records the layoff but not when it happened, because
+    /// that is a fact about the match's telling rather than about the state it
+    /// leaves behind. Putting the minute here rather than widening
+    /// `InjuryOutcome` keeps `Event::MatchPlayed`'s recorded shape untouched —
+    /// the same reasoning that keeps the whole stream out of the fold (§7).
+    Injury {
+        days_out: u16,
+    },
 }
 
 /// One beat in the minute-by-minute stream. `zone` is the zone-entry context
@@ -143,7 +157,19 @@ impl MatchEvent {
     /// `side`/`actor` display names from the `World` and pass them in — this
     /// crate never looks a `PlayerId` up (it holds no `World`) and never
     /// touches stdout. `actor` is the resolved name of `self.actor`.
-    pub fn commentary(&self, side_name: &str, actor: &str) -> String {
+    /// The *other* player this beat names, if any — the one a caller must
+    /// resolve a display name for alongside `actor`. For most beats that is
+    /// the contesting `opponent`; for a substitution it is the departing
+    /// player, who lives in the kind rather than in `opponent` (he is not a
+    /// duel partner).
+    pub fn other_player(&self) -> Option<PlayerId> {
+        match self.kind {
+            MatchEventKind::Substitution { player_out } => Some(player_out),
+            _ => self.opponent,
+        }
+    }
+
+    pub fn commentary(&self, side_name: &str, actor: &str, other: Option<&str>) -> String {
         let m = self.minute;
         let z = self.zone.label();
         match self.kind {
@@ -186,19 +212,37 @@ impl MatchEvent {
                 format!("{m}' Parried! Loose ball in the box.")
             }
             MatchEventKind::Save { parried: false } => format!("{m}' Keeper collects."),
-            MatchEventKind::Foul { card: None } => format!("{m}' Foul {z}."),
-            MatchEventKind::Foul {
-                card: Some(Card::Yellow),
-            } => format!("{m}' Foul {z} — yellow card."),
-            MatchEventKind::Foul {
-                card: Some(Card::SecondYellow),
-            } => format!("{m}' Foul {z} — second yellow, off!"),
-            MatchEventKind::Foul {
-                card: Some(Card::Red),
-            } => format!("{m}' Foul {z} — red card!"),
-            MatchEventKind::Substitution { .. } => {
-                format!("{m}' Substitution ({side_name}): {actor} comes on.")
+            // The fouled side is `side`/`actor`; `other` is the offender, and
+            // a card with nobody's name on it is no use to a manager.
+            MatchEventKind::Foul { card } => {
+                let offence = match other {
+                    Some(offender) => {
+                        format!("{m}' {offender} fouls {actor} ({side_name}) {z}")
+                    }
+                    None => format!("{m}' Foul on {actor} ({side_name}) {z}"),
+                };
+                let booked = other.unwrap_or("the offender");
+                match card {
+                    None => format!("{offence}."),
+                    Some(Card::Yellow) => format!("{offence} — yellow card for {booked}."),
+                    Some(Card::SecondYellow) => {
+                        format!("{offence} — second yellow, {booked} is off!")
+                    }
+                    Some(Card::Red) => format!("{offence} — red card, {booked} is off!"),
+                }
             }
+            MatchEventKind::Substitution { .. } => match other {
+                Some(off) => format!("{m}' Substitution ({side_name}): {actor} on for {off}."),
+                None => format!("{m}' Substitution ({side_name}): {actor} comes on."),
+            },
+            // A `days_out` of zero is a knock that costs no games — real, and
+            // worth narrating, but not the same news as a layoff.
+            MatchEventKind::Injury { days_out: 0 } => {
+                format!("{m}' {actor} ({side_name}) takes a knock but carries on.")
+            }
+            MatchEventKind::Injury { days_out } => format!(
+                "{m}' {actor} ({side_name}) is hurt and struggling on — {days_out} day(s) out."
+            ),
         }
     }
 }
@@ -253,6 +297,7 @@ mod tests {
             MatchEventKind::Substitution {
                 player_out: PlayerId(11),
             },
+            MatchEventKind::Injury { days_out: 21 },
         ];
         for kind in kinds {
             let event = MatchEvent {
@@ -263,7 +308,9 @@ mod tests {
                 actor: PlayerId(7),
                 opponent: Some(PlayerId(3)),
             };
-            assert!(!event.commentary("Home", "Rossi").is_empty());
+            assert!(!event.commentary("Home", "Rossi", Some("Bianchi")).is_empty());
+            // Every beat must also render with no second name resolved.
+            assert!(!event.commentary("Home", "Rossi", None).is_empty());
         }
     }
 }

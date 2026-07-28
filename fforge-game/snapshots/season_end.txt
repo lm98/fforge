@@ -1,0 +1,33 @@
+
+================ SEASON OVER ================
+
+      Club                        W   D   L   GF   GA   GD  Pts
+   1. Dinamo Fioressa        38  27   8   3  150    7 +143   89
+   2. Virtus Castonte        38  26  10   2  126    5 +121   88
+   3. Virtus Montaro         38  26  10   2  114    3 +111   88
+   4. US Bellessa            38  27   6   5  120   11 +109   87
+   5. Sporting Campetto      38  20  13   5   78   13  +65   73
+   6. Real Valdisola         38  18  13   7   48   14  +34   67
+   7. Dinamo Valdetto        38  17  16   5   46   17  +29   67
+>  8. FC Nerana              38  17  14   7   42   18  +24   65
+   9. FC Portaverde          38  15  12  11   39   38   +1   57
+  10. Union Montonte         38  13  14  11   40   31   +9   53
+  11. Real Valdessa          38  12  11  15   31   29   +2   47
+  12. Inter Ostetto          38   8  19  11   20   31  -11   43
+  13. Atlético Rivemona      38  11  10  17   18   39  -21   43
+  14. Olimpia Veraverde      38   7  16  15   11   38  -27   37
+  15. FC Fiorisola           38   5  17  16    9   54  -45   32
+  16. AC Veronte             38   7   7  24   11  130 -119   28
+  17. Real Pralora           38   3  10  25    5   77  -72   19
+  18. Dinamo Bellora         38   2  12  24    8  125 -117   18
+  19. Real Bellemona         38   2   8  28    4  109 -105   14
+  20. Olimpia Osturnia       38   1   6  31    3  134 -131    9
+
+Champions: Dinamo Fioressa
+You finished 8th with FC Nerana.
+
+League-wide telemetry (the calibration harness embryo):
+  matches played : 380
+  goals per match: 2.43
+  home/draw/away : 43% / 31% / 26%
+(Starting the next season runs the summer's development on the squad you finish with.)

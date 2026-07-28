@@ -33,6 +33,22 @@ fn bump(scores: &mut BTreeMap<PlayerId, f64>, pid: PlayerId, delta: f64) {
     }
 }
 
+/// The highest-rated player in a resolved rating set, ties broken by the
+/// lowest `PlayerId`.
+///
+/// **One rule, one place.** Both consumers want the same answer from the same
+/// data — `fforge-game`'s match view reads `MatchOutcome.ratings` live, and
+/// `news` reads `Event::MatchPlayed.ratings` off the log — and two copies of a
+/// tie-break are two copies free to disagree about the same match.
+///
+/// Ratings are in tenths (§18): `84` is 8.4.
+pub fn man_of_the_match(ratings: &[(PlayerId, u8)]) -> Option<(PlayerId, u8)> {
+    ratings
+        .iter()
+        .copied()
+        .max_by_key(|&(pid, rating)| (rating, std::cmp::Reverse(pid)))
+}
+
 /// One appeared player's identity for rating purposes — everything
 /// `compute_ratings` needs beyond the stream itself: which side he played
 /// for, his role (the clean-sheet gate is defensive-only), and his final
@@ -157,7 +173,13 @@ pub fn compute_ratings(
                     }
                 }
             }
-            MatchEventKind::Substitution { .. } | MatchEventKind::Turnover => {}
+            // A substitution and a turnover carry no per-player credit; an
+            // injury is a misfortune, not a performance — §18's table scores
+            // what a player *did*, and being hurt is not that. The minutes
+            // regression already accounts for a shortened match.
+            MatchEventKind::Substitution { .. }
+            | MatchEventKind::Turnover
+            | MatchEventKind::Injury { .. } => {}
         }
     }
 

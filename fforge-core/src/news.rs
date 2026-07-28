@@ -103,6 +103,17 @@ pub enum NewsKind {
         to: ClubId,
         fee: Money,
     },
+    /// The best individual performance in a match (`MATCH_MODEL.md` §18).
+    /// `rating` is in tenths, exactly as recorded — the renderer, not the
+    /// observer, decides how to show it. Derived with
+    /// `match_engine::man_of_the_match` rather than a second copy of the
+    /// tie-break, so this and the live match view can never name different
+    /// players for the same match.
+    ManOfTheMatch {
+        fixture: FixtureId,
+        player: PlayerId,
+        rating: u8,
+    },
     /// Sourced from `WindowOutcome`'s Trace, not the event log — see the
     /// module docs and [`NewsObserver::observe_rejected_bids`].
     BidRejected {
@@ -128,6 +139,24 @@ pub enum NewsKind {
         club: ClubId,
         balance: Money,
     },
+    /// Nobody in `club`'s squad rates `role` as his *best* role.
+    ///
+    /// **Advisory, and worded as such** (Batch 4 U5's reconciliation). This
+    /// check spans all eight roles, while the market's only hard role
+    /// stabilizer is `club_ai::UtilityKnobs::min_goalkeepers` (`≥ 2` GK,
+    /// `TRANSFER_MODEL.md` §11) — so a human will see coverage warnings the
+    /// club AI is under no obligation to act on. The two definitions were
+    /// deliberately *not* aligned: widening `club_ai`'s hard minimum to all
+    /// eight roles would change which bids its role-coverage override ranks
+    /// first, and that is a Phase-4 market recalibration, not a presentation
+    /// change. Narrowing this check to goalkeepers would instead throw away
+    /// the only signal a human gets about the other seven.
+    ///
+    /// So the item stays broad and its wording promises nothing: it reports
+    /// that no player *rates* the role as his best, which is exactly the
+    /// condition tested — not that nobody can play there (a centre-back
+    /// covers defensive midfield perfectly well), and not that anything will
+    /// be done about it.
     RoleCoverageGap {
         club: ClubId,
         role: Role,
@@ -206,6 +235,11 @@ impl NewsRenderer for TemplateRenderer {
                 };
                 format!("{club}'s {price} bid for {name} {why}.")
             }
+            NewsKind::ManOfTheMatch { player, rating, .. } => format!(
+                "{} is the game's outstanding performer, rated {:.1}.",
+                world.player(*player).name,
+                *rating as f64 / 10.0
+            ),
             NewsKind::YouthIntake { club, players } => format!(
                 "{} unveils {} youth prospect(s).",
                 world.club(*club).name,
@@ -228,7 +262,7 @@ impl NewsRenderer for TemplateRenderer {
                 world.club(*club).name
             ),
             NewsKind::RoleCoverageGap { club, role } => format!(
-                "{} has no recognised {} on the books.",
+                "Advisory: nobody at {} rates {} as his best role.",
                 world.club(*club).name,
                 role.name()
             ),
@@ -486,6 +520,7 @@ impl EventObserver for NewsObserver {
                 fixture,
                 home_goals,
                 away_goals,
+                ratings,
                 ..
             } => {
                 let Some(&(home, away)) = self.fixture_clubs.get(fixture) else {
@@ -517,6 +552,23 @@ impl EventObserver for NewsObserver {
                     salience: if mine_involved { 70 } else { 15 },
                     audience,
                 });
+                // The match's outstanding performance, from the same event.
+                // Salience sits just under the result itself: worth reading if
+                // he is yours, background otherwise.
+                if let Some((player, rating)) = crate::match_engine::man_of_the_match(ratings) {
+                    let mine = self.club_of.get(&player).copied() == self.player_club;
+                    self.items.push(NewsItem {
+                        date,
+                        kind: NewsKind::ManOfTheMatch {
+                            fixture: *fixture,
+                            player,
+                            rating,
+                        },
+                        sources: vec![this_ref],
+                        salience: if mine { 65 } else { 10 },
+                        audience,
+                    });
+                }
             }
             Event::TransferCompleted {
                 date,

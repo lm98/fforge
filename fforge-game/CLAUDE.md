@@ -1,71 +1,179 @@
 # fforge-game
 
-Layer 5 (per DESIGN.md) of the fforge workspace: the CLI binary, consuming both
-`fforge-domain` and `fforge-core`. `main.rs` is a thin presentation shell over
-`fforge-core::Session` — it renders screens, reads menu input, turns choices into
-`Command`s, and prints the resulting `Event`s. The Phase 1 walking skeleton is in
-place: new/load game, squad/table/fixtures screens, lineup selection, matchday advance,
-and JSON-lines save/load — matchday advance now runs the Phase 2a possession engine
-under the hood via `fforge-core`, unchanged from this crate's point of view. Also
-implements the Phase 2 "humble text match view" (`DESIGN.md` §9) for the human's own
-fixture during matchday advance, paced line-by-line (via `crossterm`, this crate's one
-non-workspace dependency) with a skip-to-full-time keypress when run in a real
-terminal — piped/non-tty output (tests, redirects) still gets the whole stream at once.
-The standalone friendly-match viewer (`watch_friendly_flow`) that also rendered this
-view still exists but is currently unreachable from `game_loop`'s menu — the "watch a
-friendly" option was removed (kept `#[allow(dead_code)]` rather than deleted).
+Layer 5 (per `DESIGN.md`) of the fforge workspace: the CLI binary, consuming both
+`fforge-domain` and `fforge-core`. A thin presentation shell over `fforge-core::Session` —
+it renders screens, reads menu input, turns choices into `Command`s, and prints the
+resulting `Event`s.
 
-The transfer-market menu (`TRANSFER_MODEL.md` §10's pre-commitment model) is wired in
-as menu option `[9]`: browse candidate signings and the human's own squad (both priced
-against one frozen `club_ai::observe`/`valuation::value_all` snapshot, rebuilt only on
-entry and after a submit), build a local draft of `Bid`/`List` decisions, reorder it
-(draft order is bid priority — `market::resolve_window` tries the first still-biddable
-entry each round), and submit it in one shot via `Command::SubmitTransferDecision`.
-Cash and wage headroom are shown in the screen header throughout, since those are what
-`market::filter_affordable`'s resolve-time gate silently drops a plan on. When
-`AdvanceMatchday` crosses a window's close date, `advance_flow` reports every
-`Event::TransferCompleted` touching the human's club (in/out) plus a league-wide deal
-count, right alongside that matchday's results — this is presentation only: nothing
-here decides which transfers clear, `fforge-core::market` already did that inside the
-event batch `AdvanceMatchday` returned. Deliberately function-only, no layout/IA work
-(that is a later batch's job): plain numbered lists and `[key]`-style prompts, matching
-the rest of `main.rs`'s existing screens.
+## Current state
 
-## Function map (`main.rs`)
+**Batch 4 is complete — U1–U7 and G1–G4 — plus season rollover.** Everything the
+simulation resolves now has somewhere to be seen:
 
-| Group | Functions | Does |
-|---|---|---|
-| Entry / flow | `main`, `new_game_flow`, `load_flow`, `game_loop` | top menu, world creation, save loading, the per-matchday menu loop |
-| Screens | `header`, `squad_screen`, `table_screen`, `fixtures_screen`, `stats_screen`, `season_end_screen` | read-only renders of `Session` state |
-| Lineup | `set_lineup_flow`, `auto_fill` | formation + XI picker, submits `Command::SubmitLineup` |
-| Transfers | `transfer_flow`, `build_transfer_context`, `print_transfer_header`, `browse_targets_screen`, `prompt_role_filter`, `add_bid`, `squad_transfer_screen`, `toggle_list`, `shortlist_screen`, `decision_summary`, `submit_draft`, `prompt_money` | the §10 pre-commitment UI: builds/edits a local `Vec<TransferDecision>` draft against a frozen `ClubObservation`, submits it via `Command::SubmitTransferDecision` |
-| Advance | `advance_flow`, `print_transfer_window_outcome` | calls `fforge_core::player_match_preview` on the pre-advance state to get the human's own match's trace, submits `Command::AdvanceMatchday`, renders that trace via `print_humble_text_view` before printing the matchday's plain results, then reports any transfer window this advance closed (`Event::TransferWindowClosed`/`TransferCompleted`) |
-| Friendly (unreachable, `#[allow(dead_code)]`) | `watch_friendly_flow` | picks two clubs, runs `match_engine::play_match` directly (not through `Session::execute` — unrecorded, no `Event`), renders the raw event stream via `print_humble_text_view` — no longer wired into `game_loop`'s menu |
-| Helpers | `print_humble_text_view`, `key_pressed_within`, `print_result`, `table_position`, `club_avg_ca`, `ordinal`, `do_save` | small pure/IO utilities used by the screens above; `key_pressed_within` polls for a keypress with a timeout (via `crossterm`) so `print_humble_text_view` can pace playback and skip on demand |
-| Input primitives | `read_line`, `prompt_choice`, `prompt_number`, `prompt_seed` | the only functions that touch stdin |
+- the presentation layer is split by role, pure, and snapshot-tested;
+- a semantic colour vocabulary is in place and adopted, one axis per screen;
+- Phase 4's state has screens (finances with the `FinanceTick` trend, contracts,
+  valuations, squad depth against the market's hard stabilizers);
+- `fforge-core::news` is wired into the live loop as an inbox;
+- Phase 2e is fully surfaced: tactics, fitness/availability, cards and injuries in the
+  match stream, the substitution plan editor, ratings and form;
+- seasons roll over, reporting the summer's development on the squad.
+
+Not built, and deliberately: set pieces (deferred beyond 2e, `MATCH_MODEL.md` §11), and
+anything Phase 5 owns (agents, scouting fog-of-war, the journalist renderer).
+
+The `[r] Reports` screen is still just `SeasonTelemetry` — accurate, but thin, and now
+cumulative across seasons rather than per-season. It is the obvious next thing to grow.
+
+## Module layout — split by role, not by feature (R17)
+
+```
+main.rs        entry, game_loop, the grouped menu, the Observers bundle
+screens/       read-only renders — each a pure fn returning String (R16)
+flows/         multi-step interactions (new game, team sheet, transfers, advance, season, friendly)
+render/        the Sem colour vocabulary, table layout, shared formatting
+input.rs       the only functions that touch stdin
+snapshots/     committed screen snapshots (see Testing)
+```
+
+**Screens are pure; flows are not.** A screen is a function of state that returns a
+`String` and prints nothing — that is what makes the presentation layer snapshot-testable,
+and it is the discipline `MatchEvent::commentary` already followed one layer down (build
+the string in a pure function, let the caller do the I/O). A flow is a state machine over
+player input: it prompts, loops, and eventually turns choices into a `Command`. `main`
+prints screens with `print!`, since every screen's string already ends in a newline.
+
+| Module | Holds |
+|---|---|
+| `main` | the entry menu, `game_loop`, R14's grouped menu, `SAVE_PATH`, and `Observers` |
+| `screens::header` | club, matchday, date, position, and what is still outstanding (unset lineup, unread inbox, pending transfer plan) |
+| `screens::squad` | the squad list with wage/contract/valuation/rating/form columns, plus depth against `SQUAD_TEMPLATE` and the market's hard stabilizers |
+| `screens::availability` | condition, injuries with return dates, suspensions, card tallies — ordered unavailable-first |
+| `screens::finances` | balance, reserve floor, wage ceiling, committed wages, headroom, and the monthly `FinanceTick` trend read straight off the log |
+| `screens::inbox` | `news::NewsObserver`'s items via `TemplateRenderer`, ordered by salience with the background band capped separately |
+| `screens::{table, fixtures, stats, season_end}` | league table, this/last matchday, season telemetry, the end-of-season wrap |
+| `flows::new_game` | `new_game_flow` (seed → worldgen → club pick → `GameStarted`), `load_flow` |
+| `flows::lineup` | formation + XI, then `flows::tactics`, then `flows::subs` — one `Command::SubmitLineup`, because they are one `Lineup` value |
+| `flows::tactics` | the four-instruction picker, seeded from `ai_pick_tactics`'s read on the upcoming fixture |
+| `flows::subs` | the bench and the condition→action rule list (`MATCH_MODEL.md` §16). The hardest screen in the game — see `docs/UI_TOOLKIT_EVIDENCE.md` §4 before changing it |
+| `flows::season` | the season boundary: roll over via `Command::StartNextSeason` and report the summer's development, or stop |
+| `flows::transfers` | the `TRANSFER_MODEL.md` §10 pre-commitment UI: a local `Vec<TransferDecision>` draft against one frozen `observe`/`value_all` snapshot, submitted in one shot |
+| `flows::advance` | `player_match_preview` → `Command::AdvanceMatchday` → match view, results, and any transfer window this advance closed |
+| `flows::match_view` | `DESIGN.md` §9's humble text match view plus the full-time aftermath (cards, injuries, man of the match); `commentary_lines`/`aftermath` are pure, `print_humble_text_view` adds pacing and skip-on-keypress |
+| `flows::friendly` | the tactics sandbox: your club, an opponent you choose, any shape you like, nothing recorded |
+| `flows::save` | `do_save` — saving is literally "serialize the event log" |
+| `render::sem` | `Sem` and the **one and only** mapping from it to a colour |
+| `render::table` | column layout — pads before it paints |
+| `render` (root) | `money`, `ordinal`, `result_line`, `headline_ca`, `club_avg_ca`, `table_position` |
+| `input` | `read_line`, `prompt_choice`, `prompt_menu`, `prompt_number`, `prompt_money`, `prompt_seed` |
 
 ## Hard constraints — never violate these
 
 1. **This crate is the only place allowed to touch stdin/stdout and the wall clock.**
    `fforge-domain` and `fforge-core` must stay pure (see their own CLAUDE.md files). Two
-   sanctioned wall-clock exceptions: `prompt_seed`'s fallback to `SystemTime::now()`
-   when the player leaves the seed blank (the chosen seed is immediately recorded in
-   `Event::GameStarted`, so replay/`fforge-core` never re-touches the clock), and
-   `watch_friendly_flow`'s ad-hoc RNG seed (a friendly is never recorded — no `Event`,
-   nothing for replay to reproduce). Any new randomness or timestamp need must be
-   sourced here and passed in as data, never added to `fforge-core`/`fforge-domain`.
-   `print_humble_text_view`'s terminal raw-mode toggling (for the skippable playback
-   delay) is the same kind of edge-only concern — it's always paired
-   (`enable_raw_mode`/`disable_raw_mode`) around the loop so canonical mode is restored
-   before the next `read_line`-based prompt.
-2. **All game-state mutation goes through `Session::execute`.** `main.rs` never mutates
+   sanctioned wall-clock exceptions, both at the edge and both harmless for the same
+   reason — nothing they produce ever reaches the fold: `input::prompt_seed`'s fallback to
+   `SystemTime::now()` when the player leaves the seed blank (the chosen seed is
+   immediately recorded in `Event::GameStarted`, so replay never re-derives it), and
+   `flows::friendly`'s ad-hoc RNG seed (a friendly produces no `Event` at all).
+   `print_humble_text_view`'s raw-mode toggling is the same kind of edge-only concern, and
+   is always paired so canonical mode is restored before the next prompt.
+
+2. **All game-state mutation goes through `Session::execute`.** Nothing here mutates
    `GameState` fields directly — it builds a `Command`, calls `execute`, and renders
-   whatever `Event`s or error comes back. This keeps the CLI a pure consumer of the
-   event-sourced core.
+   whatever `Event`s or error comes back.
+
+3. **Screens never print, prompt, or mutate.** If a new screen needs to ask something, the
+   asking half belongs in a flow. A screen that prints cannot be snapshot-tested, and the
+   snapshots are the only thing standing between this crate and silent formatting rot.
+
+4. **Nothing outside `render::sem` names a colour.** No `crossterm::style` import, no ANSI
+   escape, anywhere else. Screens ask for `Sem::Warn`. This is how a codebase avoids green
+   meaning "healthy" on one screen and "selected" on another.
+
+5. **One semantic axis per screen, stated in a comment at the top of it.** That comment is
+   what stops the vocabulary drifting back into decoration. If a screen genuinely needs a
+   second meaning, use a *disjoint* colour set and say so explicitly — `screens::squad` is
+   the worked example (ability uses `Good`/`Ok`/`Muted`; the depth block uses only `Bad`,
+   so a red on that screen has exactly one meaning).
+
+6. **Colour is never the sole carrier of information.** Every coloured distinction also has
+   a glyph, a column, or an ordering saying the same thing. Verify by reading the
+   *no-colour* snapshot: if a distinction is invisible there, colour is doing work alone
+   and the screen needs a non-colour carrier.
+
+7. **Pad before you paint.** An escape sequence has zero visual width and several bytes of
+   it, so `format!("{:<20}", palette.paint(..))` pads to the wrong place. Use
+   `render::table`, which enforces the ordering; if you must hand-roll, lay the line out
+   whole and paint the finished string.
+
+8. **Add every new observer to `Observers`.** An observer that misses events produces a
+   quietly wrong inbox rather than a compile error, so the list of who must see the stream
+   is written down in exactly one place.
+
+9. **Don't re-derive a rule the core already owns.** The ban rule
+   (`GameState::is_suspended`), the man of the match (`match_engine::man_of_the_match`),
+   the squad template (`worldgen::SQUAD_TEMPLATE`), the substitution decision points
+   (`match_engine::SUB_CHECKPOINTS`) and the form window (`GameState::recent_ratings`) are
+   all read, never recomputed here. A second copy of a rule in the presentation layer is a
+   copy free to disagree with the one that decides — and the player will believe the one on
+   screen.
+
+## Colour axes in force
+
+| Screen | Axis |
+|---|---|
+| Squad | ability relative to this squad (plus `Bad`-only for a stabilizer breach). Contract urgency and form are deliberately **uncoloured** — see below |
+| Fitness & availability | availability: fit / doubtful / injured / suspended |
+| Match aftermath | consequence severity |
+| Season rollover | direction of development |
+| Finances | headroom — comfortable / tight / breached |
+| Inbox | salience |
+| Table, Fixtures, Season end | `Mine` and nothing else |
+| Header | outstanding decisions |
+| Transfers | affordability against cash and wage headroom |
+| Tactics picker | departure from neutral (deliberately *not* good/bad — non-dominance is squad-conditional, `TACTICS_MODEL.md` §9) |
+| League stats | none, deliberately — raw readings with no direction to act on |
+
+**Twice now the one-axis rule has pushed a real signal off colour and onto a glyph or a
+bare column** — contract urgency (U4) and recent form (G4), both on the squad screen. Both
+were the right call, and both are recorded in `docs/UI_TOOLKIT_EVIDENCE.md` §4b as the
+clearest evidence that this screen wants more encodings than a terminal has channels. If
+you are about to add a third: don't colour it either, and add it to that list.
+
+Colour is suppressed on `NO_COLOR` (any value), `--no-color`, or a non-tty stdout;
+`--color` forces it back on for `| less -R`. The policy is a `Palette` value threaded from
+`main`, never an ambient `static` — the same instinct the core applies to RNG and the
+clock.
 
 ## Testing
 
-No `#[cfg(test)]` tests are expected in this crate — it's an interactive I/O shell, and
-correctness of the simulation lives in `fforge-core`/`fforge-domain`'s test suites.
-Verify changes by running `cargo run -p fforge-game` and walking the affected flow
-manually.
+Snapshot tests live in `screens/tests.rs`, with expected output committed as plain `.txt`
+files under `snapshots/` (no test framework, no extra dependency — `assert_eq!` against
+`read_to_string`). They run against one fixed seed, so the world, the fixtures, and every
+result are reproducible.
+
+```
+cargo test -p fforge-game                       # verify
+UPDATE_SNAPSHOTS=1 cargo test -p fforge-game    # regenerate, then READ THE DIFF
+```
+
+Three whole-suite invariants matter more than any individual snapshot:
+
+- `no_ansi_escapes_when_colour_is_disabled` — with colour off, no screen emits an escape.
+  That single test protects every piped consumer, CI logs included.
+- `colour_changes_nothing_but_colour` — strip the escapes from a coloured render and you
+  are back at the plain one, byte for byte. This is what makes the plain snapshots a
+  *complete* record of what a screen says.
+- `the_screens_with_an_axis_actually_colour` — a screen that silently stopped colouring
+  would otherwise pass everything else.
+
+Interactive flows are still verified by hand: `cargo run -p fforge-game` and walk the
+affected flow.
+
+## Related records
+
+- `docs/UI_TOOLKIT_EVIDENCE.md` — R18's record of what these screens taught, the input
+  `DESIGN.md` §10's toolkit question has been waiting on. Complete as of Batch 4, including
+  the G3 measurement it was written to wait for. Add to it when a new screen teaches
+  something.

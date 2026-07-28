@@ -1,0 +1,29 @@
+
+ Pos Name                  CA  Cond Cards  Status
+ AM  Giorgio Horvat        71  100% 5Y     Suspended for this matchday
+ W   Sota Rossi            81  100% 3Y     Fit
+ ST  Ibrahim Carvalho      76  100% 1Y     Fit
+ ST  João Moretti          74  100%        Fit
+ GK  Sergio Carvalho       74  100%        Fit
+ FB  Marco Kovac           73  100% 4Y     Fit
+ DM  Callum Colombo        70  100% 5Y     Fit
+ CB  Giorgio Sato          70  100% 3Y     Fit
+ GK  Kofi Rossi            69  100%        Fit
+ CM  Petar Serra           69  100% 2Y     Fit
+ CM  Anders Kane           68  100%        Fit
+ DM  Sergio Colombo        67  100%        Fit
+ FB  Josip Moretti         66  100%        Fit
+ FB  Kofi Mori             66  100% 2Y     Fit
+ W   Nicola Tanaka         66  100%        Fit
+ CB  Anders Conti          64  100%        Fit
+ GK  Kenji Conti           64  100%        Fit
+ ST  Sota Barbieri         64  100%        Fit
+ CB  Milan Vitale          62  100%        Fit
+ AM  Pedro Tanaka          62  100%        Fit
+ CB  Owen Duarte           61  100%        Fit
+ CM  Ivan Pereira          59  100%        Fit
+ W   Giorgio Serra         58  100%        Fit
+ FB  Dario Tanaka          55  100%        Fit
+ CM  Bruno Duarte          49  100%        Fit
+ W   Sandro Iglesias       43  100%        Fit
+ 25 of 26 available to pick.
