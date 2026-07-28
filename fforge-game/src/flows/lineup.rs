@@ -6,6 +6,7 @@
 //! `flows::tactics` for the picker itself.
 
 use crate::Observers;
+use crate::flows::subs::{self, Plan};
 use crate::flows::tactics;
 use crate::input::{prompt_choice, prompt_number, read_line};
 use crate::render::headline_ca;
@@ -93,17 +94,32 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
         return;
     };
 
+    // The bench and the plan ride the same `Lineup` value as the XI and the
+    // tactics (`MATCH_MODEL.md` §16), so they are the third and last step of
+    // one submission, not a separate menu entry. Seeded from last week's plan:
+    // the common case is reviewing a plan, not authoring one.
+    let previous = session.state.last_lineup.as_ref();
+    let Some(plan) = subs::edit(
+        &world,
+        &squad,
+        &chosen,
+        Plan {
+            bench: previous.map(|l| l.bench.clone()).unwrap_or_default(),
+            rules: previous.map(|l| l.sub_plan.clone()).unwrap_or_default(),
+        },
+        p,
+    ) else {
+        return;
+    };
+
     let mut players = [PlayerId(0); XI];
     players.copy_from_slice(&chosen);
     let lineup = Lineup {
         formation: (fi - 1) as u8,
         players,
         tactics: chosen_tactics,
-        // No bench/substitution UI yet (MATCH_MODEL.md §16, T12) — the human's
-        // team sheet plays unsubstituted until Batch 4's G3 adds the rule
-        // builder.
-        bench: Vec::new(),
-        sub_plan: Vec::new(),
+        bench: plan.bench,
+        sub_plan: plan.rules,
     };
     println!(
         "\nTeam sheet ({}, {}), strength {:.1}:",
@@ -120,6 +136,18 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
             current_ability(&p.attributes, formation.slots[i], &ROLE_WEIGHTS)
         );
     }
+    if !lineup.bench.is_empty() {
+        println!(
+            "  Bench: {}",
+            lineup
+                .bench
+                .iter()
+                .map(|&pid| world.player(pid).name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("  Substitution plan: {} rule(s).", lineup.sub_plan.len());
     if prompt_choice("Confirm? [y/n] ", &["y", "n"]) != "y" {
         return;
     }

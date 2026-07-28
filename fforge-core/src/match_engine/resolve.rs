@@ -1447,7 +1447,7 @@ pub fn play_match(
 /// Fixed decision-point checkpoints within the second half (`MATCH_MODEL.md`
 /// §16): half-time itself is the natural boundary between `simulate`'s two
 /// `for half` iterations, handled separately below.
-const SUB_CHECKPOINTS: [f64; 3] = [60.0, 70.0, 80.0];
+pub const SUB_CHECKPOINTS: [f64; 3] = [60.0, 70.0, 80.0];
 
 /// Whether a single `SubCondition` clause currently holds (`MATCH_MODEL.md`
 /// §16, T12/§2.7's vocabulary) — a pure read of already-resolved match
