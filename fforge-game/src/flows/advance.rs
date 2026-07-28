@@ -33,6 +33,7 @@ pub fn advance_flow(session: &mut Session, o: &mut Observers, p: Palette) {
             &s.world.club(f.home).name,
             &s.world.club(f.away).name,
             outcome,
+            p,
         );
     }
     println!("\nMatchday {md} results:");

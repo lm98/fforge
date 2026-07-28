@@ -101,5 +101,6 @@ pub fn watch_friendly_flow(session: &Session, p: Palette) {
         &world.club(mine).name,
         &world.club(opponent).name,
         &outcome,
+        p,
     );
 }

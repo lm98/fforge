@@ -157,7 +157,13 @@ pub fn compute_ratings(
                     }
                 }
             }
-            MatchEventKind::Substitution { .. } | MatchEventKind::Turnover => {}
+            // A substitution and a turnover carry no per-player credit; an
+            // injury is a misfortune, not a performance — §18's table scores
+            // what a player *did*, and being hurt is not that. The minutes
+            // regression already accounts for a shortened match.
+            MatchEventKind::Substitution { .. }
+            | MatchEventKind::Turnover
+            | MatchEventKind::Injury { .. } => {}
         }
     }
 

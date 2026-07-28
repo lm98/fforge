@@ -330,6 +330,7 @@ fn roll_injury(rng: &mut Rng, p_injury: f64, k: &Knobs) -> Option<u16> {
 /// beat-keeper roll on an off-target effort, not a violation of the
 /// unconditional-fixed-order rule (which governs whole-population draws
 /// like `build_xi`'s, not per-event narrative branches).
+#[allow(clippy::too_many_arguments)]
 fn maybe_contact_injury(
     injury_rng: &mut Rng,
     victim: &XiPlayer,
@@ -337,6 +338,9 @@ fn maybe_contact_injury(
     minute: f64,
     k: &Knobs,
     injuries: &mut Vec<InjuryOutcome>,
+    stream: &mut Vec<MatchEvent>,
+    side: Side,
+    zone: Zone,
 ) {
     if victim.injured_from_minute.get().is_some() {
         return;
@@ -351,7 +355,30 @@ fn maybe_contact_injury(
             player: victim.pid,
             days_out,
         });
+        push_injury_beat(stream, minute, side, zone, victim.pid, days_out);
     }
+}
+
+/// The Trace half of an injury (`MATCH_MODEL.md` §9): the same resolved
+/// layoff, plus the minute it happened, which `InjuryOutcome` does not carry
+/// and does not need to — a fold input records what outlives the match, a
+/// Trace records its telling.
+fn push_injury_beat(
+    stream: &mut Vec<MatchEvent>,
+    minute: f64,
+    side: Side,
+    zone: Zone,
+    player: PlayerId,
+    days_out: u16,
+) {
+    stream.push(MatchEvent {
+        minute: minute as u8,
+        side,
+        zone,
+        kind: MatchEventKind::Injury { days_out },
+        actor: player,
+        opponent: None,
+    });
 }
 
 /// The effective-attribute multiplier from an in-match injury
@@ -372,7 +399,14 @@ fn impairment_mult(player: &XiPlayer, minute: f64, k: &Knobs) -> f64 {
 /// channel keeps that earlier onset; the ambient roll is simply discarded
 /// rather than overwriting it (first injury wins, `MATCH_MODEL.md` §12's
 /// "never shorten" spirit applied to onset time instead of duration).
-fn fire_due_ambient_injuries(xi: &[XiPlayer], minute: f64, injuries: &mut Vec<InjuryOutcome>) {
+fn fire_due_ambient_injuries(
+    xi: &[XiPlayer],
+    minute: f64,
+    injuries: &mut Vec<InjuryOutcome>,
+    stream: &mut Vec<MatchEvent>,
+    side: Side,
+    zone: Zone,
+) {
     for player in xi {
         if let Some((onset, days_out)) = player.pending_ambient.get()
             && minute >= onset
@@ -384,6 +418,11 @@ fn fire_due_ambient_injuries(xi: &[XiPlayer], minute: f64, injuries: &mut Vec<In
                     player: player.pid,
                     days_out,
                 });
+                // An ambient injury has no location of its own (it is a
+                // muscle going, not a challenge), so it reports wherever play
+                // happens to be — the zone is context for the beat, and the
+                // commentary never quotes it for this kind.
+                push_injury_beat(stream, minute, side, zone, player.pid, days_out);
             }
         }
     }
@@ -788,6 +827,9 @@ fn take_shot(
                 minute,
                 k,
                 injuries,
+                stream,
+                poss,
+                Zone::Box,
             );
         }
         let (atk, d_block, d_gk) = match kind {
@@ -1119,6 +1161,9 @@ fn step(
                     minute,
                     k,
                     injuries,
+                    stream,
+                    poss,
+                    zone,
                 );
             }
             // The foul contest (MATCH_MODEL.md §15, T11): rolled whichever
@@ -1618,8 +1663,8 @@ fn simulate(
             // MATCH_MODEL.md §14, T10: fire any ambient injury whose
             // pre-rolled onset the clock has now reached — no RNG here, the
             // draw already happened at kickoff in `build_xi`.
-            fire_due_ambient_injuries(&home, minute, &mut injuries);
-            fire_due_ambient_injuries(&away, minute, &mut injuries);
+            fire_due_ambient_injuries(&home, minute, &mut injuries, &mut stream, Side::Home, zone);
+            fire_due_ambient_injuries(&away, minute, &mut injuries, &mut stream, Side::Away, zone);
 
             // MATCH_MODEL.md §16, T12: forced evaluation on a new injury or
             // card this tick, attributed to whichever side it actually
