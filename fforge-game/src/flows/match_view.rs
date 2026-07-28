@@ -15,7 +15,7 @@
 use crate::render::sem::{Palette, Sem};
 use fforge_core::match_engine;
 use fforge_core::{Card, CardOutcome, InjuryOutcome};
-use fforge_domain::{PlayerId, World};
+use fforge_domain::World;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
@@ -107,7 +107,7 @@ pub fn aftermath(world: &World, outcome: &match_engine::MatchOutcome, p: Palette
             let _ = writeln!(out, "{}", p.paint(&text, sem));
         }
     }
-    if let Some((pid, rating)) = man_of_the_match(outcome) {
+    if let Some((pid, rating)) = match_engine::man_of_the_match(&outcome.ratings) {
         let _ = writeln!(
             out,
             "\n{}",
@@ -122,18 +122,6 @@ pub fn aftermath(world: &World, outcome: &match_engine::MatchOutcome, p: Palette
         );
     }
     out
-}
-
-/// The highest-rated player on the pitch, ties broken by `PlayerId` so the
-/// answer is deterministic — the same rule a replay would reach.
-///
-/// Ratings are in tenths (`MATCH_MODEL.md` §18): `68` is 6.8.
-pub fn man_of_the_match(outcome: &match_engine::MatchOutcome) -> Option<(PlayerId, u8)> {
-    outcome
-        .ratings
-        .iter()
-        .copied()
-        .max_by_key(|&(pid, rating)| (rating, std::cmp::Reverse(pid)))
 }
 
 /// Prints the humble text match view. Shared by the standalone friendly viewer
@@ -203,49 +191,5 @@ fn key_pressed_within(delay: Duration) -> bool {
             }
             _ => return false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::man_of_the_match;
-    use fforge_core::match_engine::MatchOutcome;
-    use fforge_domain::PlayerId;
-
-    fn outcome_with(ratings: Vec<(PlayerId, u8)>) -> MatchOutcome {
-        MatchOutcome {
-            home_goals: 0,
-            away_goals: 0,
-            stream: Vec::new(),
-            injuries: Vec::new(),
-            cards: Vec::new(),
-            ratings,
-            minutes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_man_of_the_match_is_the_highest_rating() {
-        let o = outcome_with(vec![
-            (PlayerId(3), 68),
-            (PlayerId(7), 84),
-            (PlayerId(1), 71),
-        ]);
-        assert_eq!(man_of_the_match(&o), Some((PlayerId(7), 84)));
-    }
-
-    /// Ties break on the lowest `PlayerId`, so the answer never depends on the
-    /// order the engine happened to emit ratings in.
-    #[test]
-    fn ties_break_deterministically() {
-        let a = outcome_with(vec![(PlayerId(9), 80), (PlayerId(2), 80)]);
-        let b = outcome_with(vec![(PlayerId(2), 80), (PlayerId(9), 80)]);
-        assert_eq!(man_of_the_match(&a), Some((PlayerId(2), 80)));
-        assert_eq!(man_of_the_match(&a), man_of_the_match(&b));
-    }
-
-    #[test]
-    fn no_ratings_means_no_man_of_the_match() {
-        assert_eq!(man_of_the_match(&outcome_with(Vec::new())), None);
     }
 }

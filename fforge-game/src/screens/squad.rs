@@ -20,7 +20,9 @@
 //! Nothing here is colour-only. Ability is in the `CA` column and in the
 //! ordering; contract urgency is in the `Contract` column and its `!`/`!!`
 //! glyph; a stabilizer breach is in the depth block's `need` column and its
-//! `!` glyph.
+//! `!` glyph; recent form is in `Rtg`/`Form` and carries no ink at all, since
+//! it is a *second* reading of quality and two hues for two flavours of "how
+//! good is he" is exactly the ambiguity the one-axis rule forbids.
 
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
@@ -51,9 +53,11 @@ pub fn render(session: &Session, p: Palette) -> String {
         Col::left("Name", 20),
         Col::right("Age", 3),
         Col::right("CA", 3),
-        Col::right("Wage", 8),
-        Col::right("Contract", 11),
-        Col::right("Value*", 8),
+        Col::right("Wage", 7),
+        Col::right("Contract", 10),
+        Col::right("Value*", 7),
+        Col::right("Rtg", 4),
+        Col::right("Form", 4),
         Col::left("Best role", 0),
     ]);
     for player in &players {
@@ -82,6 +86,8 @@ pub fn render(session: &Session, p: Palette) -> String {
                 Cell::new(money(
                     valuations.get(&player.id).copied().unwrap_or(Money(0)),
                 )),
+                Cell::new(latest_rating(s.recent_ratings.get(&player.id))),
+                Cell::new(form(s.recent_ratings.get(&player.id))),
                 Cell::new(alt),
             ],
             bands.sem(ca),
@@ -100,6 +106,34 @@ pub fn render(session: &Session, p: Palette) -> String {
 /// the column does not quietly become a promise the fogged game has to break.
 const VALUATION_NOTE: &str =
     " * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).";
+
+/// The most recent match rating, or `—` for a player who has not played.
+/// Ratings are recorded in tenths (`MATCH_MODEL.md` §18): `74` is 7.4.
+fn latest_rating(recent: Option<&Vec<u8>>) -> String {
+    match recent.and_then(|r| r.last()) {
+        Some(&rating) => format!("{:.1}", rating as f64 / 10.0),
+        None => "—".to_string(),
+    }
+}
+
+/// Mean of the rolling form window `GameState::recent_ratings` already keeps
+/// (`RATING_FORM_WINDOW`-capped) — read, never re-derived, so this and the
+/// `form_mult` the transfer market prices with are the same number
+/// (`TRANSFER_MODEL.md` §2.5).
+///
+/// Uncoloured on purpose: this screen's one axis is ability (see the module
+/// docs), and form is a *second* reading of quality. Two hues for two flavours
+/// of "how good is he" is precisely the ambiguity R15 forbids, so form gets a
+/// column and no ink.
+fn form(recent: Option<&Vec<u8>>) -> String {
+    match recent.filter(|r| !r.is_empty()) {
+        Some(r) => {
+            let mean = r.iter().map(|&x| x as f64).sum::<f64>() / r.len() as f64;
+            format!("{:.1}", mean / 10.0)
+        }
+        None => "—".to_string(),
+    }
+}
 
 /// Years left on a deal, with an urgency glyph. The glyph — not a colour — is
 /// what carries urgency on this screen, because the row's colour is already
@@ -244,6 +278,21 @@ mod tests {
     fn an_empty_squad_does_not_panic() {
         let bands = Bands::of(std::iter::empty());
         assert_eq!(bands.sem(70), Sem::Ok);
+    }
+
+    #[test]
+    fn form_reads_the_window_and_the_latest_reads_the_last() {
+        let window = vec![70u8, 64, 82];
+        assert_eq!(latest_rating(Some(&window)), "8.2");
+        // (7.0 + 6.4 + 8.2) / 3 = 7.2
+        assert_eq!(form(Some(&window)), "7.2");
+    }
+
+    #[test]
+    fn a_player_who_has_not_played_shows_no_rating() {
+        assert_eq!(latest_rating(None), "—");
+        assert_eq!(form(None), "—");
+        assert_eq!(form(Some(&Vec::new())), "—");
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub use calibrate::{
     probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
 pub use knobs::Knobs;
+pub use ratings::man_of_the_match;
 /// The fixed in-match decision points a `sub_plan` is evaluated at
 /// (`MATCH_MODEL.md` §16), alongside half-time and any tick a new injury or
 /// card fires on. Public because a plan editor that does not tell the manager

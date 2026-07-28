@@ -61,7 +61,7 @@ pub fn render(session: &Session, p: Palette) -> String {
     t.row(vec![
         Cell::new("  less reserve floor"),
         Cell::new(money(knobs.cash_reserve_floor)).with(Sem::Muted),
-        Cell::new("kept unspent by the market's affordability gate").with(Sem::Muted),
+        Cell::new("held back by the affordability gate").with(Sem::Muted),
     ]);
     t.row(vec![
         Cell::new("  spendable on fees"),
