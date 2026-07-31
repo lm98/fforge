@@ -26,10 +26,13 @@
 //! `match_engine::calibrate` it never feeds back into `DevKnobs` by itself; the
 //! re-fit is a human reading these numbers and editing `DevKnobs::default`.
 
-use crate::{Command, Session, WorldGenConfig, new_game};
+use crate::development::{self, DevKnobs, EnvTables, norms_by_role};
+use crate::{Command, Session, WorldGenConfig, new_game, worldgen};
 use fforge_domain::{
-    Attribute, ClubId, DevCategory, ROLE_WEIGHTS, Role, World, best_role, date::DAYS_PER_YEAR,
+    Attribute, ClubId, DevCategory, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
+    date::DAYS_PER_YEAR,
 };
+use std::collections::BTreeMap;
 
 // --- observation-window filters (§6 "Peak-age metric note") --------------
 //
@@ -112,6 +115,10 @@ struct Sample {
 struct Arc {
     pa: f64,
     start_age: f64,
+    /// Best-role CA at the first sample (worldgen's output, before any
+    /// development tick) — the wonderkid-flop-analysis task's `r0 = start_ca /
+    /// pa`, the attainment a prospect starts at before any growth runs.
+    start_ca: f64,
     samples: Vec<Sample>,
 }
 
@@ -207,6 +214,7 @@ fn sample_world(world: &World, date: fforge_domain::GameDate, arcs: &mut Vec<(u3
                 Arc {
                     pa: player.character.potential as f64,
                     start_age: age,
+                    start_ca: sample.ca,
                     samples: Vec::new(),
                 },
             ));
@@ -243,6 +251,231 @@ fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> Vec<Arc> {
     arcs.into_iter().map(|(_, a)| a).collect()
 }
 
+/// Trace one world seed with growth **effectively disabled** — the
+/// wonderkid-flop-analysis decisive test (task 2): if the flop rate and
+/// attainment distribution are unchanged from the normal run even with no
+/// growth mechanism running at all, the floor comes from worldgen's initial
+/// state, not from anything the growth knobs can reach.
+///
+/// Deliberately does **not** drive `Session`/`Command::AdvanceMatchday` (that
+/// pipeline hardcodes `DevKnobs::default()` for the monthly tick, so it can't
+/// take a substituted knob table without changing `commands.rs`, which is out
+/// of scope for a measurement-only pass). Instead it calls the same
+/// `development::tick_changes`/`apply_attr_step` the fold uses, directly,
+/// against a `World` built once via the real `worldgen::generate` — no
+/// production file changes, no committed knob-default change. Playing no
+/// real matches is safe for this probe specifically: with `knobs.k == 0` the
+/// growth term is zero regardless of the playing-time multiplier, and the
+/// aging (decline) term never reads minutes at all (`attr_rate`), so an empty
+/// minutes map changes nothing either branch would otherwise do.
+fn trace_seed_growth_disabled(
+    seed: u64,
+    years: f64,
+    cfg: &WorldGenConfig,
+    knobs: &DevKnobs,
+) -> Vec<Arc> {
+    let (mut world, _fixtures, start_date) = worldgen::generate(seed, cfg);
+    let mut arcs: Vec<(u32, Arc)> = Vec::new();
+    sample_world(&world, start_date, &mut arcs);
+
+    let empty_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
+    let empty_matches: BTreeMap<ClubId, u32> = BTreeMap::new();
+
+    let start_idx = development::period_index(start_date);
+    let end_idx =
+        development::period_index(start_date.add_days((years * DAYS_PER_YEAR as f64) as i64));
+
+    for period in (start_idx + 1)..=end_idx {
+        let tick_date = development::period_date(period);
+        let changes = development::tick_changes(
+            &world,
+            seed,
+            period,
+            tick_date,
+            &empty_apps,
+            &empty_matches,
+            knobs,
+        );
+        for step in &changes {
+            development::apply_attr_step(&mut world, step);
+        }
+        sample_world(&world, tick_date, &mut arcs);
+    }
+
+    arcs.into_iter().map(|(_, a)| a).collect()
+}
+
+/// Run the growth-disabled probe (task 2) over `seeds`, pooling into the same
+/// `CareerArcReport` shape as the normal harness so the flop rate and
+/// attainment distribution are directly comparable. `k` near zero kills the
+/// proportional-growth term outright; `e_base`/`e_min` are also pinned at
+/// their floor as the task specifies, though with `k == 0` they are already
+/// inert (the growth branch multiplies by `k` regardless of `e`) — included
+/// for faithfulness to the ask, not because they add a second lever here.
+pub fn run_growth_disabled_probe(
+    seeds: &[u64],
+    years: f64,
+    cfg: &WorldGenConfig,
+) -> CareerArcReport {
+    let knobs = DevKnobs {
+        k: 0.0,
+        e_base: 0.0,
+        e_min: 0.0,
+        ..DevKnobs::default()
+    };
+    let mut report = CareerArcReport {
+        seeds: seeds.len(),
+        seasons: 0,
+        ..Default::default()
+    };
+    for &seed in seeds {
+        let arcs = trace_seed_growth_disabled(seed, years, cfg, &knobs);
+        report.record_seed(&arcs);
+    }
+    report
+}
+
+/// Result of task 3's `PA ~ a*CA + b*age + c` ordinary-least-squares fit
+/// across every `worldgen`-generated player (not just the development
+/// cohort) — the baseline for "is PA recoverable from (CA, age)".
+pub struct PaFit {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub residual_sd: f64,
+    pub n: usize,
+}
+
+/// Solve the 3x3 linear system `m * x = rhs` via Gaussian elimination with
+/// partial pivoting. Local to this one-off measurement fit — no need for a
+/// linear-algebra dependency for a single 3x3 solve.
+#[allow(clippy::needless_range_loop)]
+fn solve3(mut m: [[f64; 3]; 3], mut rhs: [f64; 3]) -> [f64; 3] {
+    for col in 0..3 {
+        let pivot = (col..3)
+            .max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))
+            .unwrap();
+        m.swap(col, pivot);
+        rhs.swap(col, pivot);
+        for row in (col + 1)..3 {
+            let factor = m[row][col] / m[col][col];
+            for k in col..3 {
+                m[row][k] -= factor * m[col][k];
+            }
+            rhs[row] -= factor * rhs[col];
+        }
+    }
+    let mut x = [0.0; 3];
+    for row in (0..3).rev() {
+        let sum: f64 = (row + 1..3).map(|k| m[row][k] * x[k]).sum();
+        x[row] = (rhs[row] - sum) / m[row][row];
+    }
+    x
+}
+
+/// Task 3: fit `PA ~ a*CA + b*age + c` by ordinary least squares over every
+/// player `worldgen` generates (pooled across `seeds`), and report the
+/// residual standard deviation — how tightly PA is determined by (CA, age)
+/// alone at generation time.
+pub fn fit_pa_from_ca_age(seeds: &[u64], cfg: &WorldGenConfig) -> PaFit {
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new(); // (ca, age, pa)
+    for &seed in seeds {
+        let (world, _fixtures, start_date) = worldgen::generate(seed, cfg);
+        for player in world.players.values() {
+            let ca = best_role(&player.attributes, &ROLE_WEIGHTS).1 as f64;
+            let age = (start_date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64;
+            let pa = player.character.potential as f64;
+            rows.push((ca, age, pa));
+        }
+    }
+
+    let n = rows.len() as f64;
+    let (mut s_ca, mut s_age, mut s_pa) = (0.0, 0.0, 0.0);
+    let (mut s_ca2, mut s_age2, mut s_ca_age) = (0.0, 0.0, 0.0);
+    let (mut s_ca_pa, mut s_age_pa) = (0.0, 0.0);
+    for &(ca, age, pa) in &rows {
+        s_ca += ca;
+        s_age += age;
+        s_pa += pa;
+        s_ca2 += ca * ca;
+        s_age2 += age * age;
+        s_ca_age += ca * age;
+        s_ca_pa += ca * pa;
+        s_age_pa += age * pa;
+    }
+
+    let m = [
+        [s_ca2, s_ca_age, s_ca],
+        [s_ca_age, s_age2, s_age],
+        [s_ca, s_age, n],
+    ];
+    let rhs = [s_ca_pa, s_age_pa, s_pa];
+    let [a, b, c] = solve3(m, rhs);
+
+    let sse: f64 = rows
+        .iter()
+        .map(|&(ca, age, pa)| {
+            let resid = pa - (a * ca + b * age + c);
+            resid * resid
+        })
+        .sum();
+    let residual_sd = (sse / (n - 3.0)).sqrt();
+
+    PaFit {
+        a,
+        b,
+        c,
+        residual_sd,
+        n: rows.len(),
+    }
+}
+
+/// Task 4: the maturity ratio `env_c(y) / NORM` at a given age, for a given
+/// `Role` — the role-weighted blend of each category's already-built envelope
+/// (`EnvTables::env_at`, reusing the identical inner loop `norms_by_role`
+/// uses, just at a fixed age instead of scanning for the age-maximum) divided
+/// by that role's `NORM`. This is `target_i`'s scaling factor with the `PA`
+/// term stripped out — "what fraction of this role's ultimate ceiling does
+/// the envelope license at age `y`."
+fn role_maturity_ratio(envs: &EnvTables, norms: &[f64], role: Role, y: f64) -> f64 {
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for attr in Attribute::ALL {
+        let w = ROLE_WEIGHTS.weight(role, attr) as f64;
+        if w > 0.0 {
+            num += w * envs.env_at(attr.dev_category(), y);
+            den += w;
+        }
+    }
+    (num / den) / norms[role.index()]
+}
+
+/// Pretty-print task 4's maturity-ratio table for a `DevKnobs` table (the
+/// production default unless a caller is probing a variant).
+pub fn print_maturity_ratios(knobs: &DevKnobs) {
+    let envs = EnvTables::new(knobs);
+    let norms = norms_by_role(&envs);
+    println!("--- Maturity ratio env_c(y)/NORM by Role (DevTables machinery) ---");
+    println!(
+        "{:<4} {:>8} {:>8} {:>8} {:>8}",
+        "Role", "age16", "age18", "age20", "age22"
+    );
+    for role in Role::ALL {
+        let ratios: Vec<f64> = [16.0, 18.0, 20.0, 22.0]
+            .iter()
+            .map(|&y| role_maturity_ratio(&envs, &norms, role, y))
+            .collect();
+        println!(
+            "{:<4} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            format!("{role:?}"),
+            ratios[0],
+            ratios[1],
+            ratios[2],
+            ratios[3]
+        );
+    }
+}
+
 /// Every §6 metric reduced to one number per seed (a per-seed mean over that
 /// seed's qualifying players), plus the pooled raw attainment values for the
 /// distribution tail. Per-seed vectors are the raw material for the spread
@@ -277,6 +510,18 @@ pub struct CareerArcReport {
 
     /// Pooled attainment values across all seeds — for the pooled p10 / tail.
     all_attainment: Vec<f64>,
+
+    // --- wonderkid-flop-analysis additions: r0 = start_ca / pa (§2.2's floor
+    // hypothesis) pooled over the wonderkid (PA >= 80) cohort, and the pooled
+    // (attainment - r0) gap it leaves for growth to have actually produced.
+    all_r0_wonderkid: Vec<f64>,
+    all_attain_minus_r0_wonderkid: Vec<f64>,
+    /// Arcs (over the whole development cohort, not just wonderkids) where
+    /// `attainment < r0` — should never happen for a pre-peak-only decline
+    /// model (§2.1: downward pull only acts past the category's envelope
+    /// peak, and `peak_ca()` is a max over the whole traced arc). Non-empty
+    /// means pre-peak decline is reachable and this analysis is incomplete.
+    r0_violations: Vec<(f64, f64)>, // (attainment, r0) pairs that violated
 }
 
 /// Mean, sd, and range of a per-seed metric — the `MATCH_MODEL.md` §8
@@ -325,6 +570,45 @@ fn mean_finite(xs: &[f64]) -> f64 {
         f64::NAN
     } else {
         valid.iter().sum::<f64>() / valid.len() as f64
+    }
+}
+
+/// Mean, sd, min of a pooled (not per-seed) raw sample — the distribution
+/// readout for the wonderkid-flop-analysis r0/attainment-gap report, which
+/// pools individual arcs rather than per-seed means (unlike `SeedSpread`).
+pub struct PooledStats {
+    pub mean: f64,
+    pub sd: f64,
+    pub min: f64,
+    pub p10: f64,
+    pub n: usize,
+}
+
+fn pooled_stats(xs: &[f64]) -> PooledStats {
+    let valid: Vec<f64> = xs.iter().copied().filter(|x| x.is_finite()).collect();
+    let n = valid.len();
+    if n == 0 {
+        return PooledStats {
+            mean: f64::NAN,
+            sd: f64::NAN,
+            min: f64::NAN,
+            p10: f64::NAN,
+            n: 0,
+        };
+    }
+    let mean = valid.iter().sum::<f64>() / n as f64;
+    let sd = if n < 2 {
+        0.0
+    } else {
+        (valid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt()
+    };
+    let min = valid.iter().cloned().fold(f64::INFINITY, f64::min);
+    PooledStats {
+        mean,
+        sd,
+        min,
+        p10: percentile(&valid, 0.10),
+        n,
     }
 }
 
@@ -400,6 +684,18 @@ impl CareerArcReport {
                 let attainment = arc.peak_ca() / arc.pa;
                 attainments.push(attainment);
                 self.all_attainment.push(attainment);
+
+                let r0 = arc.start_ca / arc.pa;
+                // peak_ca() is a max over the whole traced arc and includes the
+                // starting sample itself, so attainment >= r0 always *unless*
+                // a pre-peak player can decline — which §2.1 says cannot
+                // happen (the downward pull only acts past the category's
+                // envelope peak). Recorded as a violation, not a panic, so one
+                // bad arc doesn't blank the rest of this report.
+                if attainment < r0 - 1e-9 {
+                    self.r0_violations.push((attainment, r0));
+                }
+
                 if arc.pa >= WONDERKID_PA {
                     wk_hits.push(if attainment >= WONDERKID_HIT {
                         1.0
@@ -411,6 +707,8 @@ impl CareerArcReport {
                     } else {
                         0.0
                     });
+                    self.all_r0_wonderkid.push(r0);
+                    self.all_attain_minus_r0_wonderkid.push(attainment - r0);
                 }
             }
         }
@@ -481,6 +779,35 @@ impl CareerArcReport {
     pub fn attainment_percentile(&self, p: f64) -> f64 {
         percentile(&self.all_attainment, p)
     }
+
+    /// `r0 = start_ca / pa` distribution over the wonderkid (PA >= 80) cohort
+    /// — the worldgen-floor hypothesis's central object.
+    pub fn r0_wonderkid(&self) -> PooledStats {
+        pooled_stats(&self.all_r0_wonderkid)
+    }
+    /// `attainment - r0` distribution over the same cohort — how much of
+    /// final attainment growth actually added, on top of the worldgen floor.
+    pub fn attainment_minus_r0_wonderkid(&self) -> PooledStats {
+        pooled_stats(&self.all_attain_minus_r0_wonderkid)
+    }
+    /// Arcs where `attainment < r0` — see the field doc; should be empty.
+    pub fn r0_violations(&self) -> &[(f64, f64)] {
+        &self.r0_violations
+    }
+    /// Fraction of the wonderkid cohort born with `r0 < 0.75` already — i.e.
+    /// already a flop by worldgen's own headroom draw, before any growth (or
+    /// lack of it) runs at all. Directly explains the growth-disabled probe's
+    /// nonzero flop rate without needing that probe's own sampling noise.
+    pub fn r0_below_flop_frac(&self) -> f64 {
+        if self.all_r0_wonderkid.is_empty() {
+            return f64::NAN;
+        }
+        self.all_r0_wonderkid
+            .iter()
+            .filter(|&&r| r < WONDERKID_FLOP)
+            .count() as f64
+            / self.all_r0_wonderkid.len() as f64
+    }
 }
 
 /// Run the career-arc harness over `seeds` world seeds, each traced `seasons`
@@ -549,6 +876,34 @@ pub fn print_report(report: &CareerArcReport) {
         "Attainment p10 (pooled)",
         report.attainment_percentile(0.10)
     );
+    println!();
+    println!("--- Wonderkid-flop-analysis: r0 = start_ca / PA (PA >= 80 cohort) ---");
+    let r0 = report.r0_wonderkid();
+    println!(
+        "r0                              : mean {:.3}, sd {:.3}, min {:.3}, p10 {:.3} ({} arcs)",
+        r0.mean, r0.sd, r0.min, r0.p10, r0.n
+    );
+    let gap = report.attainment_minus_r0_wonderkid();
+    println!(
+        "attainment - r0                 : mean {:.3}, sd {:.3}, min {:.3}, p10 {:.3} ({} arcs)",
+        gap.mean, gap.sd, gap.min, gap.p10, gap.n
+    );
+    println!(
+        "fraction of wonderkid cohort born with r0 < 0.75 : {:.4}  (already a flop at birth, before any growth)",
+        report.r0_below_flop_frac()
+    );
+    let violations = report.r0_violations();
+    if violations.is_empty() {
+        println!("attainment >= r0 holds for every cohort arc (no violations)");
+    } else {
+        println!(
+            "WARNING: {} arc(s) with attainment < r0 — pre-peak decline is reachable, analysis incomplete:",
+            violations.len()
+        );
+        for (attainment, r0) in violations.iter().take(10) {
+            println!("  attainment {attainment:.3} < r0 {r0:.3}");
+        }
+    }
     println!();
     println!("--- Veteran decline, 30->35 composite slope (CA/yr) ---");
     row(
