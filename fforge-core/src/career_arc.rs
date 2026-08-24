@@ -119,6 +119,15 @@ struct Arc {
     /// development tick) — the wonderkid-flop-analysis task's `r0 = start_ca /
     /// pa`, the attainment a prospect starts at before any growth runs.
     start_ca: f64,
+    /// Fixed for the whole arc (`natural_role`) — the W1b projection
+    /// (`maturity(start_age - phi)`) needs it to read the right role's
+    /// envelope blend, the same `role_maturity_ratio` the maturity-ratio
+    /// report (task 4) already computes.
+    role: Role,
+    /// The player's once-resolved bloomer phase (`DevProfile::bloomer_phase`,
+    /// years) — recorded, not re-drawn, so the W1b projection reads the same
+    /// per-player noise draw the traced career actually used.
+    phi: f64,
     samples: Vec<Sample>,
 }
 
@@ -215,6 +224,8 @@ fn sample_world(world: &World, date: fforge_domain::GameDate, arcs: &mut Vec<(u3
                     pa: player.character.potential as f64,
                     start_age: age,
                     start_ca: sample.ca,
+                    role,
+                    phi: player.development.bloomer_phase(),
                     samples: Vec::new(),
                 },
             ));
@@ -378,12 +389,33 @@ fn solve3(mut m: [[f64; 3]; 3], mut rhs: [f64; 3]) -> [f64; 3] {
 /// residual standard deviation — how tightly PA is determined by (CA, age)
 /// alone at generation time.
 pub fn fit_pa_from_ca_age(seeds: &[u64], cfg: &WorldGenConfig) -> PaFit {
+    fit_pa_from_ca_age_filtered(seeds, cfg, |_age| true)
+}
+
+/// W1b amendment §4: the same fit restricted to `age < 24` — worldgen's
+/// `headroom` formula is piecewise (`2*(24-age) + U(0,8)` below 24, `U(0,3)`
+/// at/above), so a single linear-in-age fit over the whole population is
+/// misspecified across that kink. Restricting to the youth band before the
+/// kink removes that source of residual and isolates the genuine conditional
+/// uncertainty for the population scouting actually cares about.
+pub fn fit_pa_from_ca_age_youth(seeds: &[u64], cfg: &WorldGenConfig) -> PaFit {
+    fit_pa_from_ca_age_filtered(seeds, cfg, |age| age < 24.0)
+}
+
+fn fit_pa_from_ca_age_filtered(
+    seeds: &[u64],
+    cfg: &WorldGenConfig,
+    age_filter: impl Fn(f64) -> bool,
+) -> PaFit {
     let mut rows: Vec<(f64, f64, f64)> = Vec::new(); // (ca, age, pa)
     for &seed in seeds {
         let (world, _fixtures, start_date) = worldgen::generate(seed, cfg);
         for player in world.players.values() {
-            let ca = best_role(&player.attributes, &ROLE_WEIGHTS).1 as f64;
             let age = (start_date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64;
+            if !age_filter(age) {
+                continue;
+            }
+            let ca = best_role(&player.attributes, &ROLE_WEIGHTS).1 as f64;
             let pa = player.character.potential as f64;
             rows.push((ca, age, pa));
         }
@@ -474,6 +506,248 @@ pub fn print_maturity_ratios(knobs: &DevKnobs) {
             ratios[3]
         );
     }
+}
+
+// --- W1b: arithmetic projection of the env-consistent seeding fix ---------
+//
+// `WONDERKID_FLOP_DIAGNOSIS.md`'s amendment, §5: before touching `worldgen`,
+// predict what an env-consistent reseed (`r0' = maturity(start_age - phi)`,
+// task 4's table) would do to the flop/hit rates, using the *already-traced*
+// arcs' own gap-closure fraction `f = (attainment - r0) / (1 - r0)` — no new
+// simulation, since `f` is (approximately) scale-invariant under the
+// proportional growth law (§2 of the amendment). Two honest limitations,
+// reported alongside every number rather than worked around:
+// - `f` is only exactly scale-invariant for a pure proportional law;
+//   `max_step` quantization and additive jitter both reduce `f` at larger
+//   gaps, so `attainment'` here is an upper bound and the projected flop
+//   rate a lower bound.
+// - `phi` is read from each arc's own recorded `DevProfile`, never re-drawn,
+//   so the projection stays over the same population it is predicting for.
+
+/// One cohort arc's contribution to the projection: the actual `r0`/
+/// `attainment` this arc measured, and the hypothetical `r0'`/`attainment'`
+/// an env-consistent reseed would have produced for the *same* player (same
+/// `f`, same `phi`, different starting point).
+struct ProjRow {
+    /// `floor(start_age)` — the age-band split the pooled arithmetic in the
+    /// amendment's §3 couldn't do.
+    start_age_band: i64,
+    is_wonderkid: bool,
+    r0: f64,
+    r0_proj: f64,
+    attainment: f64,
+    attainment_proj: f64,
+}
+
+/// Pooled hit/flop/attainment/tail stats for one group of `ProjRow`s — either
+/// one start-age band or the `overall()` pool across all bands.
+pub struct ProjectionBandStats {
+    /// The band's `floor(start_age)`, or `-1` for `overall()`'s all-bands pool.
+    pub start_age_band: i64,
+    pub n: usize,
+    pub n_wonderkid: usize,
+    pub r0_mean: f64,
+    pub r0_proj_mean: f64,
+    pub attainment_mean: f64,
+    pub attainment_proj_mean: f64,
+    pub sub80_frac: f64,
+    pub sub80_proj_frac: f64,
+    pub hit_rate: f64,
+    pub hit_rate_proj: f64,
+    pub flop_rate: f64,
+    pub flop_rate_proj: f64,
+}
+
+/// Fraction of `xs` satisfying `pred` — `NaN` for an empty slice, matching
+/// `mean_finite`'s convention.
+fn frac(xs: &[f64], pred: impl Fn(f64) -> bool) -> f64 {
+    if xs.is_empty() {
+        return f64::NAN;
+    }
+    xs.iter().filter(|&&x| pred(x)).count() as f64 / xs.len() as f64
+}
+
+fn summarize_band(band: i64, rows: &[&ProjRow]) -> ProjectionBandStats {
+    let r0: Vec<f64> = rows.iter().map(|r| r.r0).collect();
+    let r0_proj: Vec<f64> = rows.iter().map(|r| r.r0_proj).collect();
+    let attainment: Vec<f64> = rows.iter().map(|r| r.attainment).collect();
+    let attainment_proj: Vec<f64> = rows.iter().map(|r| r.attainment_proj).collect();
+    let wk_attainment: Vec<f64> = rows
+        .iter()
+        .filter(|r| r.is_wonderkid)
+        .map(|r| r.attainment)
+        .collect();
+    let wk_attainment_proj: Vec<f64> = rows
+        .iter()
+        .filter(|r| r.is_wonderkid)
+        .map(|r| r.attainment_proj)
+        .collect();
+
+    ProjectionBandStats {
+        start_age_band: band,
+        n: rows.len(),
+        n_wonderkid: wk_attainment.len(),
+        r0_mean: mean_finite(&r0),
+        r0_proj_mean: mean_finite(&r0_proj),
+        attainment_mean: mean_finite(&attainment),
+        attainment_proj_mean: mean_finite(&attainment_proj),
+        sub80_frac: frac(&attainment, |a| a < ATTAINMENT_TAIL),
+        sub80_proj_frac: frac(&attainment_proj, |a| a < ATTAINMENT_TAIL),
+        hit_rate: frac(&wk_attainment, |a| a >= WONDERKID_HIT),
+        hit_rate_proj: frac(&wk_attainment_proj, |a| a >= WONDERKID_HIT),
+        flop_rate: frac(&wk_attainment, |a| a < WONDERKID_FLOP),
+        flop_rate_proj: frac(&wk_attainment_proj, |a| a < WONDERKID_FLOP),
+    }
+}
+
+/// Pooled W1b projection rows across every traced seed.
+#[derive(Default)]
+pub struct SeedingProjectionReport {
+    rows: Vec<ProjRow>,
+}
+
+impl SeedingProjectionReport {
+    /// Fold one seed's already-traced arcs into the projection — the same
+    /// cohort filter `CareerArcReport::record_seed` uses, so the two reports
+    /// are reading the same population.
+    fn record_seed(&mut self, arcs: &[Arc], envs: &EnvTables, norms: &[f64]) {
+        for arc in arcs {
+            let hi = arc.max_age();
+            if !(arc.start_age <= COHORT_MAX_START_AGE && hi >= COHORT_MIN_END_AGE && arc.pa > 0.0)
+            {
+                continue;
+            }
+            let r0 = arc.start_ca / arc.pa;
+            let gap = 1.0 - r0;
+            if gap <= 1e-9 {
+                continue; // no headroom to measure a gap-closure fraction from
+            }
+            let attainment = arc.peak_ca() / arc.pa;
+            let f = (attainment - r0) / gap;
+            let y = arc.start_age - arc.phi; // bloomer-shifted seeding age (§2's convention)
+            let r0_proj = role_maturity_ratio(envs, norms, arc.role, y).clamp(0.0, 1.0);
+            let attainment_proj = r0_proj + f * (1.0 - r0_proj);
+            self.rows.push(ProjRow {
+                start_age_band: arc.start_age.floor() as i64,
+                is_wonderkid: arc.pa >= WONDERKID_PA,
+                r0,
+                r0_proj,
+                attainment,
+                attainment_proj,
+            });
+        }
+    }
+
+    /// Per-start-age-band stats, ascending age — the split the pooled
+    /// arithmetic in the amendment's §3 couldn't produce.
+    pub fn bands(&self) -> Vec<ProjectionBandStats> {
+        let mut by_band: BTreeMap<i64, Vec<&ProjRow>> = BTreeMap::new();
+        for row in &self.rows {
+            by_band.entry(row.start_age_band).or_default().push(row);
+        }
+        by_band
+            .into_iter()
+            .map(|(band, rows)| summarize_band(band, &rows))
+            .collect()
+    }
+
+    /// All bands pooled — the top-line number the amendment's §5 decision
+    /// rule reads.
+    pub fn overall(&self) -> ProjectionBandStats {
+        let rows: Vec<&ProjRow> = self.rows.iter().collect();
+        summarize_band(-1, &rows)
+    }
+}
+
+/// Run the career-arc harness and the W1b projection together off the same
+/// traced arcs — the projection needs no extra tracing (it's pure arithmetic
+/// on `attainment`/`r0`/`phi` the normal trace already produces), so both
+/// reports come from one pass over `seeds` rather than re-running the real
+/// worldgen+match+development pipeline a second time.
+pub fn run_career_arc_with_projection(
+    seeds: &[u64],
+    seasons: usize,
+    cfg: &WorldGenConfig,
+) -> (CareerArcReport, SeedingProjectionReport) {
+    let dev_knobs = DevKnobs::default();
+    let envs = EnvTables::new(&dev_knobs);
+    let norms = norms_by_role(&envs);
+
+    let mut report = CareerArcReport {
+        seeds: seeds.len(),
+        seasons,
+        ..Default::default()
+    };
+    let mut projection = SeedingProjectionReport::default();
+    for &seed in seeds {
+        let arcs = trace_seed(seed, seasons, cfg);
+        report.record_seed(&arcs);
+        projection.record_seed(&arcs, &envs, &norms);
+    }
+    (report, projection)
+}
+
+/// Pretty-print the W1b projection: per-band and overall actual-vs-projected
+/// stats, plus the amendment's §5 decision-rule read on the pooled projected
+/// flop rate.
+pub fn print_seeding_projection(report: &SeedingProjectionReport) {
+    println!("--- W1b: arithmetic projection of the env-consistent seeding fix ---");
+    println!("(f = (attainment - r0)/(1 - r0) from the arcs already traced above, applied to");
+    println!(" r0' = maturity(start_age - phi); NOT a re-simulation of worldgen or DevKnobs.");
+    println!(" attainment' is an upper bound / flop' a lower bound — see this fn's doc comment.)");
+    println!();
+    println!(
+        "{:>4} {:>5} {:>5} {:>6} {:>6} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "band", "n", "n_wk", "r0", "r0'", "attain", "attain'", "sub80", "sub80'", "hit", "hit'",
+        "flop", "flop'"
+    );
+    for b in report.bands() {
+        println!(
+            "{:>4} {:>5} {:>5} {:>6.3} {:>6.3} {:>7.3} {:>7.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
+            b.start_age_band,
+            b.n,
+            b.n_wonderkid,
+            b.r0_mean,
+            b.r0_proj_mean,
+            b.attainment_mean,
+            b.attainment_proj_mean,
+            b.sub80_frac,
+            b.sub80_proj_frac,
+            b.hit_rate,
+            b.hit_rate_proj,
+            b.flop_rate,
+            b.flop_rate_proj
+        );
+    }
+    println!();
+    let o = report.overall();
+    println!(
+        "OVERALL: n={} n_wk={}  r0 {:.3}->{:.3}  attainment {:.3}->{:.3}  sub80 {:.3}->{:.3}  hit {:.3}->{:.3}  flop {:.3}->{:.3}",
+        o.n,
+        o.n_wonderkid,
+        o.r0_mean,
+        o.r0_proj_mean,
+        o.attainment_mean,
+        o.attainment_proj_mean,
+        o.sub80_frac,
+        o.sub80_proj_frac,
+        o.hit_rate,
+        o.hit_rate_proj,
+        o.flop_rate,
+        o.flop_rate_proj
+    );
+    println!();
+    let verdict = if o.flop_rate_proj <= 0.10 {
+        "<=10%: close to drop-in — proceed with W3 as planned, W4 as a normal re-fit"
+    } else if o.flop_rate_proj <= 0.30 {
+        "10-30%: proceed, but land W3 and W4 together in one PR"
+    } else {
+        ">=30%: STOP — escalate as design, not fit (amendment §5's decision rule)"
+    };
+    println!(
+        "Decision rule on projected flop rate {:.3}: {}",
+        o.flop_rate_proj, verdict
+    );
 }
 
 /// Every §6 metric reduced to one number per seed (a per-seed mean over that

@@ -10,8 +10,8 @@
 use fforge_core::DevKnobs;
 use fforge_core::WorldGenConfig;
 use fforge_core::career_arc::{
-    fit_pa_from_ca_age, print_maturity_ratios, print_report, run_career_arc,
-    run_growth_disabled_probe,
+    fit_pa_from_ca_age, fit_pa_from_ca_age_youth, print_maturity_ratios, print_report,
+    print_seeding_projection, run_career_arc_with_projection, run_growth_disabled_probe,
 };
 
 fn parse_usize_arg(args: &[String], flag: &str, default: usize) -> usize {
@@ -34,8 +34,11 @@ fn main() {
     let seeds: Vec<u64> = (0..num_seeds as u64).collect();
     let cfg = WorldGenConfig::default();
 
-    let report = run_career_arc(&seeds, seasons, &cfg);
+    let (report, projection) = run_career_arc_with_projection(&seeds, seasons, &cfg);
     print_report(&report);
+
+    println!();
+    print_seeding_projection(&projection);
 
     // --- Wonderkid-flop-analysis (measurement-only) ---
     println!();
@@ -75,7 +78,16 @@ fn main() {
         "a={:.4}  b={:.4}  c={:.4}  residual_sd={:.4}  n={}  (target residual_sd approx 2.3)",
         fit.a, fit.b, fit.c, fit.residual_sd, fit.n
     );
+    // W1b amendment §4: the same fit restricted to age < 24, isolating the
+    // youth band from the headroom formula's kink at 24 (see
+    // `fit_pa_from_ca_age_youth`'s doc comment).
+    let fit_youth = fit_pa_from_ca_age_youth(&seeds, &cfg);
+    println!(
+        "youth-only (age<24): a={:.4}  b={:.4}  c={:.4}  residual_sd={:.4}  n={}  (predicted approx 2.31 = 8/sqrt(12))",
+        fit_youth.a, fit_youth.b, fit_youth.c, fit_youth.residual_sd, fit_youth.n
+    );
     println!();
 
     print_maturity_ratios(&DevKnobs::default());
+    println!();
 }
