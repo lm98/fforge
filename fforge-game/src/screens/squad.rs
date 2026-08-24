@@ -53,6 +53,7 @@ pub fn render(session: &Session, p: Palette) -> String {
         Col::left("Name", 20),
         Col::right("Age", 3),
         Col::right("CA", 3),
+        Col::left("Potential", POTENTIAL_COL_WIDTH),
         Col::right("Wage", 7),
         Col::right("Contract", 10),
         Col::right("Value*", 7),
@@ -81,6 +82,7 @@ pub fn render(session: &Session, p: Palette) -> String {
                 Cell::new(player.name.clone()),
                 Cell::new(player.age(s.date).to_string()),
                 Cell::new(ca.to_string()),
+                Cell::new(potential_label(player.character.potential)),
                 Cell::new(wage),
                 Cell::new(contract),
                 Cell::new(money(
@@ -106,6 +108,30 @@ pub fn render(session: &Session, p: Palette) -> String {
 /// the column does not quietly become a promise the fogged game has to break.
 const VALUATION_NOTE: &str =
     " * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).";
+
+/// Wide enough for the longest label (`"can become special"`, 19 chars) —
+/// `render::table::pad` never truncates an over-long cell, so a column too
+/// narrow for its widest label doesn't clip, it silently shears every column
+/// after it instead. `potential_label_fits_its_column` pins this.
+const POTENTIAL_COL_WIDTH: usize = 19;
+
+/// A plain-language read on a player's PA (`ATTRIBUTE_SCHEMA.md` §4: the
+/// hidden ceiling on best-role CA development) — the same omniscient
+/// ground-truth channel `VALUATION_NOTE` already opens for `Value`, and no
+/// more scouting fog-of-war than that column has until Phase 5 adds it.
+/// Thresholds are non-overlapping by construction: `[80, 85)` promising,
+/// `[85, 90)` great potential, `[90, 100]` can become special.
+fn potential_label(pa: u8) -> &'static str {
+    if pa >= 90 {
+        "can become special"
+    } else if pa >= 85 {
+        "great potential"
+    } else if pa >= 80 {
+        "promising"
+    } else {
+        ""
+    }
+}
 
 /// The most recent match rating, or `—` for a player who has not played.
 /// Ratings are recorded in tenths (`MATCH_MODEL.md` §18): `74` is 7.4.
@@ -293,6 +319,27 @@ mod tests {
         assert_eq!(latest_rating(None), "—");
         assert_eq!(form(None), "—");
         assert_eq!(form(Some(&Vec::new())), "—");
+    }
+
+    #[test]
+    fn potential_label_fits_its_column() {
+        for pa in 0..=u8::MAX {
+            assert!(
+                potential_label(pa).chars().count() <= POTENTIAL_COL_WIDTH,
+                "potential_label({pa}) exceeds POTENTIAL_COL_WIDTH"
+            );
+        }
+    }
+
+    #[test]
+    fn potential_bands_are_non_overlapping() {
+        assert_eq!(potential_label(79), "");
+        assert_eq!(potential_label(80), "promising");
+        assert_eq!(potential_label(84), "promising");
+        assert_eq!(potential_label(85), "great potential");
+        assert_eq!(potential_label(89), "great potential");
+        assert_eq!(potential_label(90), "can become special");
+        assert_eq!(potential_label(100), "can become special");
     }
 
     #[test]

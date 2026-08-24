@@ -84,11 +84,18 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
         }
     }
 
-    // The assistant's read on this fixture seeds the picker, so a player who
-    // just hits [d] fields a real shape rather than four `Balanced` shrugs.
+    // The picker starts from last week's shape (or neutral, first time out) —
+    // *not* the assistant's read. Seeding it with `suggested` made [a] a
+    // silent no-op on the common path (the picker already showed the
+    // suggestion), which read as "assistant's pick does nothing". Starting
+    // from the previous shape means [a] is a real, visible action: it
+    // actually moves every instruction onto the assistant's recommendation.
     let suggested = tactics::assistant_pick(session);
-    let start = suggested
-        .or(session.state.last_lineup.as_ref().map(|l| l.tactics))
+    let start = session
+        .state
+        .last_lineup
+        .as_ref()
+        .map(|l| l.tactics)
         .unwrap_or_else(Tactics::neutral);
     let Some(chosen_tactics) = tactics::pick(start, suggested, p) else {
         return;

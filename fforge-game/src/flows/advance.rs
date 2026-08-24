@@ -5,7 +5,7 @@
 use crate::Observers;
 use crate::flows::match_view::print_humble_text_view;
 use crate::render::sem::Palette;
-use crate::render::{ordinal, result_line, table_position};
+use crate::render::{money, ordinal, result_line, table_position};
 use fforge_core::{Command, Event, Session, player_match_preview};
 use fforge_domain::{ClubId, World};
 
@@ -112,9 +112,13 @@ fn print_transfer_window_outcome(world: &World, mine: ClubId, events: &[Event]) 
             let seller = from
                 .map(|c| world.club(c).name.clone())
                 .unwrap_or_else(|| "a free transfer".to_string());
-            println!("  IN:  {name} joins from {seller} for {fee}.");
+            println!("  IN:  {name} joins from {seller} for {}.", money(*fee));
         } else {
-            println!("  OUT: {name} joins {} for {fee}.", world.club(*to).name);
+            println!(
+                "  OUT: {name} joins {} for {}.",
+                world.club(*to).name,
+                money(*fee)
+            );
         }
     }
     if !any_of_mine {
