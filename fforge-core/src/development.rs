@@ -185,6 +185,14 @@ impl EnvTables {
             DevCategory::Goalkeeping => &self.gk,
         }
     }
+
+    /// Read-only accessor for `env_c(y)` (`DEVELOPMENT_MODEL.md` §2.1), for
+    /// measurement/harness code outside this module (`career_arc`'s maturity-
+    /// ratio report) that wants the already-built envelope rather than
+    /// re-deriving `grow_c`/`loss_c` a second time.
+    pub(crate) fn env_at(&self, cat: DevCategory, y: f64) -> f64 {
+        self.env(cat).env(y)
+    }
 }
 
 /// The development knob table (`DEVELOPMENT_MODEL.md` §2–§3), sibling of
