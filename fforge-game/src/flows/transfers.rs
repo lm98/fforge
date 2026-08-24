@@ -14,6 +14,7 @@
 
 use crate::Observers;
 use crate::input::{prompt_choice, prompt_money, prompt_number, read_line};
+use crate::render::money;
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use fforge_core::{
@@ -22,7 +23,7 @@ use fforge_core::{
     club_ai::{Candidate, SquadMember},
     observe, value_all,
 };
-use fforge_domain::{Money, PlayerId, Role, World};
+use fforge_domain::{GameDate, Money, PlayerId, Role, World};
 use std::collections::BTreeMap;
 
 /// Everything the transfer screens read, computed once per visit to
@@ -134,9 +135,15 @@ pub fn transfer_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     let mut draft: Vec<TransferDecision> = session.state.pending_transfer_decisions.clone();
     loop {
         print_transfer_header(session, &ctx, &draft, p);
-        println!("[1] Browse targets  [2] My squad  [3] Shortlist  [4] Submit  [0] Back");
-        match prompt_choice("> ", &["1", "2", "3", "4", "0"]).as_str() {
-            "1" => browse_targets_screen(&session.state.world, &ctx, &mut draft, p),
+        println!("[1] Browse targets  [2] My squad  [3] Shortlist  [4] Submit  [q] Back");
+        match prompt_choice("> ", &["1", "2", "3", "4", "q"]).as_str() {
+            "1" => browse_targets_screen(
+                &session.state.world,
+                &ctx,
+                &mut draft,
+                session.state.date,
+                p,
+            ),
             "2" => squad_transfer_screen(&session.state.world, &ctx, &mut draft, p),
             "3" => shortlist_screen(&session.state.world, &mut draft),
             "4" => {
@@ -167,18 +174,18 @@ fn print_transfer_header(
         p.paint(
             &format!(
                 "Cash {} (spendable {}, reserve floor {})",
-                ctx.obs.balance,
-                Money(spendable),
-                ctx.knobs.cash_reserve_floor
+                money(ctx.obs.balance),
+                money(Money(spendable)),
+                money(ctx.knobs.cash_reserve_floor)
             ),
             headroom_sem(spendable)
         ),
         p.paint(
             &format!(
                 "Wage headroom {} (budget {} - committed {})",
-                Money(wage_room),
-                ctx.obs.wage_budget,
-                ctx.obs.committed_wages
+                money(Money(wage_room)),
+                money(ctx.obs.wage_budget),
+                money(ctx.obs.committed_wages)
             ),
             headroom_sem(wage_room)
         )
@@ -209,6 +216,7 @@ fn browse_targets_screen(
     world: &World,
     ctx: &TransferContext,
     draft: &mut Vec<TransferDecision>,
+    today: GameDate,
     palette: Palette,
 ) {
     let mut role_filter: Option<Role> = None;
@@ -230,10 +238,11 @@ fn browse_targets_screen(
             Col::left("#", 3),
             Col::left("Name", 20),
             Col::left("Pos", 4),
+            Col::right("Age", 3),
             Col::left("Club", 20),
-            Col::right("Value", 12),
-            Col::right("Ask price", 12),
-            Col::right("Wage", 10),
+            Col::right("Value", 8),
+            Col::right("Ask price", 9),
+            Col::right("Wage", 7),
             Col::left("Fit", 4),
             Col::left("", 0),
         ]);
@@ -252,10 +261,11 @@ fn browse_targets_screen(
                     Cell::new((i + 1).to_string()),
                     Cell::new(p.name.clone()),
                     Cell::new(c.role.short()),
+                    Cell::new(p.age(today).to_string()),
                     Cell::new(owner),
-                    Cell::new(c.value.to_string()),
-                    Cell::new(c.asking_price.to_string()),
-                    Cell::new(c.wage.to_string()),
+                    Cell::new(money(c.value)),
+                    Cell::new(money(c.asking_price)),
+                    Cell::new(money(c.wage)),
                     Cell::new(afford.label()),
                     Cell::new(if shortlisted { "(shortlisted)" } else { "" }),
                 ],
@@ -300,8 +310,8 @@ fn add_bid(world: &World, c: &Candidate, draft: &mut Vec<TransferDecision>) {
         "\n{} ({}) — value {}, asking {}",
         p.name,
         c.role.short().trim(),
-        c.value,
-        c.asking_price
+        money(c.value),
+        money(c.asking_price)
     );
     let Some(price) = prompt_money(
         "Reservation price (blank = asking price, q = cancel): ",
@@ -358,9 +368,9 @@ fn squad_transfer_screen(
                     Cell::new(m.natural_role.short()),
                     Cell::new(m.current_ca.to_string()),
                     Cell::new(m.projected_ca.to_string()),
-                    Cell::new(m.wage.to_string()),
+                    Cell::new(money(m.wage)),
                     Cell::new(format!("{:.1}y", m.years_left_on_contract)),
-                    Cell::new(ask.to_string()),
+                    Cell::new(money(ask)),
                     Cell::new(if listed { "(listed)" } else { "" }),
                 ],
                 // The same affordability axis, read from the selling side:
@@ -448,7 +458,8 @@ fn decision_summary(world: &World, d: TransferDecision) -> String {
                 None => "a free agent".to_string(),
             };
             format!(
-                "Bid {price} for {} ({}, from {owner})",
+                "Bid {} for {} ({}, from {owner})",
+                money(price),
                 p.name,
                 role.short().trim()
             )

@@ -70,8 +70,8 @@ fn main() {
     println!("   FOOTBALL FORGE");
     println!("==========================================");
     loop {
-        println!("\n[1] New game   [2] Load game   [0] Quit");
-        match prompt_choice("> ", &["1", "2", "0"]).as_str() {
+        println!("\n[1] New game   [2] Load game   [q] Quit");
+        match prompt_choice("> ", &["1", "2", "q"]).as_str() {
             "1" => {
                 if let Some((session, observers)) = new_game_flow() {
                     game_loop(session, observers, palette);
