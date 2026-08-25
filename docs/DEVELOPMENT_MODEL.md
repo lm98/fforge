@@ -509,13 +509,18 @@ Deliberately unresolved, to settle during the Rust port or Phase 3/4 calibration
 ## 8. The wonderkid seeding fix — normative record
 
 **Status: normative, pinning `BACKLOG.md` §2's critical-path item — the only thing blocking
-`AGENT_MODEL.md`.** Full measurement history in `WONDERKID_FLOP_DIAGNOSIS.md` and its W1 amendment:
-W1 (measurement-only) confirmed the attainment floor §6 already flagged and refuted the stronger
-"no knob can produce a flop" claim (5.1% of the wonderkid cohort is born below 0.75 PA-attainment;
-a growth-disabled probe surfaces 2.7% of it even with growth switched off); W1b added the arithmetic
-seeding-fix projection now implemented as `fforge-core::career_arc::{run_career_arc_with_projection,
-print_seeding_projection, fit_pa_from_ca_age_youth}` and exposed by `bin/career_arc`. This section is
-the destination those investigations were gated on reaching, and the reason §2.1's and §6's structural
+`AGENT_MODEL.md`.** Full measurement history in `WONDERKID_FLOP_DIAGNOSIS.md` and
+`WONDERKID_W1_AMENDMENT.md`: W1 (measurement-only) confirmed the attainment floor §6 already flagged,
+and — the one place the original diagnosis's own prediction was wrong, per the amendment's own
+scorecard — the growth-disabled probe did **not** hold the flop rate at 0.00 as predicted; it measured
+**2.7%**, because 5.1% of the wonderkid cohort is already born below 0.75 PA-attainment, a real
+left-tail the original arithmetic had asserted away. The amendment's own corrected mechanism (§2: the
+career gap-closure fraction `f = (attainment − r0)/(1 − r0)` is approximately scale-invariant under
+proportional growth) is what makes projecting the fix's effect from already-traced arcs possible at
+all without touching `worldgen` first — W1b, now implemented as
+`fforge-core::career_arc::{run_career_arc_with_projection, print_seeding_projection,
+fit_pa_from_ca_age_youth}` and exposed by `bin/career_arc`. This section is the destination those
+investigations were gated on reaching, and the reason §2.1's and §6's structural
 findings above are marked superseded rather than rewritten in place — the numbers they recorded are a
 real, banked reading of the *pre-fix* engine and stay true as that.
 
@@ -665,6 +670,16 @@ Fixed in advance because `BACKLOG.md` §2 item 3 correctly predicts the knobs be
 other and fitting them singly will oscillate," and gives no procedure to stop that. This is the
 procedure.
 
+**Land the seeding invert and this re-fit together, in one change — not two.**
+`WONDERKID_W1_AMENDMENT.md` §5's own decision rule on a projected flop rate in the 10–30% band (which
+§8.3's 0.191/0.176 readings are) is explicit: "proceed, but W3 and W4 land together in one PR — a
+seeding change plus a growth re-fit are one change, and splitting them leaves the tree in a state
+where the harness fails for a known reason." A seeding-only commit that leaves `DevKnobs` at its
+current, seeding-bug-compensated values is expected to fail the accept-bands below by construction
+(§8.6's `k_dec` clause is exactly this: the current `0.30` is a compensation for the old seeding, not
+a fitted value) — that predictable failure is not a regression to chase, but it must not sit
+unaddressed on the branch either.
+
 - **Primary — fit to this, and only this:** the `start_age ≤ 18` wonderkid flop rate. Target band
   **0.02–0.08**.
 - **Accept-bands — must hold, but are never the fitting target:**
@@ -696,12 +711,16 @@ procedure.
   — the quantity every W1b projection number and the `residual_sd` prediction above are computed from.
   Moving `env_*` during this re-fit would silently invalidate every number this section pins.
 
-### 8.6 Two escalation clauses
+### 8.6 Three escalation clauses
 
 **Max-step saturation.** The required gap-closure fraction on the `≤ 18` cohort rises from the current
 `f ≈ 0.412` to `f ≈ 0.62` (+50% relative) under the seeding fix — and the W1b projection's own
 documented caveat is that `max_step` quantization *suppresses* `f` at larger gaps, which is exactly the
-regime a lower `r0'` (a bigger `1 − r0'` gap to close) enters. **The re-fit must instrument the
+regime a lower `r0'` (a bigger `1 − r0'` gap to close) enters. (`f`'s scale-invariance under the
+proportional-growth law — the reason a gap-closure fraction measured on today's arcs projects onto a
+hypothetical lower `r0'` at all — is `WONDERKID_W1_AMENDMENT.md` §2's finding, at a cruder,
+all-cohort-pooled `f ≈ 0.50`; the `0.412`/`0.62` figures here are the same mechanism read off the real,
+per-band `W1b` implementation, not a second, contradicting number.) **The re-fit must instrument the
 fraction of monthly attribute steps clipped at `max_step`, specifically for the 16-year-old-start-age
 band** (the band with the largest post-fix gap and the most exposure). If that fraction rises
 materially *and* the primary metric (the `≤ 18` flop rate) stalls short of its target band even after
@@ -721,3 +740,14 @@ still crashes the veteran slopes, the seeding change is incomplete** — some po
 range, `pool::youth_cohort`'s own generation path, or a re-roll edge case) is not actually landing on
 the envelope — **and the re-fit stops** rather than compensating a second time with a suppressed
 `k_dec`, which is the exact trap that produced `0.30` in the first place.
+
+**The scale-invariance assumption, checked immediately after the seeding change lands — before any
+knob is touched.** `WONDERKID_W1_AMENDMENT.md` §5's own amendment to W3's stop conditions: read the
+`≤ 18` flop and hit rates right after `worldgen`'s draw is inverted, at the *pre-re-fit* `DevKnobs`
+values, and compare against §8.3's W1b projection (0.191 / 0.176). **If the measured flop rate misses
+the projection by more than roughly 2×, the scale-invariance assumption behind the whole projection
+has broken somewhere** — most likely `max_step` clipping biting harder than the projection's own
+upper-bound caveat allowed for, but possibly something else — **and that must be understood before
+§8.5's re-fit starts, not folded into it.** A re-fit run on knobs whose starting point already
+disagrees with the model that predicted them is fitting blind: any resulting numbers landing in band
+would be luck, not confirmation.

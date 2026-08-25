@@ -140,6 +140,13 @@ uncertainty about a sixteen-year-old's ceiling should be on the order of ±15–
 
 # 5. Revised task gating
 
+**[W1b done, and W2's landing pinned this section's own requirements — `DEVELOPMENT_MODEL.md` §8.]**
+The projection ran: overall 0.176, `start_age ≤ 18` 0.191 — this document's own 10–30% band, so §8.5
+now states explicitly that W3 and W4 must land together in one change, per this section's decision
+rule. §8.6 also now carries this section's "amend W3's stop conditions" note as its third escalation
+clause — read the post-seeding-change flop rate against this projection *before* any knob moves, not
+after.
+
 The change: **insert a cheap projection task before W2/W3**, and make W3 read the flop rate rather
 than deferring it.
 
