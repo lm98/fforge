@@ -1,29 +1,29 @@
 
  Pos Name                 Age  CA Potential              Wage   Contract  Value*  Rtg Form Best role
- GK  Dario Mori            22  66                        1.1M       4.5y    2.1M    —    —
- GK  Ousmane Carvalho      23  60                        1.0M       4.6y    1.5M    —    —
- GK  Jonas Farina          25  58                        768k       1.8y    797k    —    —
- CB  Rafael Ward           29  70                        1.2M       3.2y    2.7M    —    —
+ GK  Dario Mori            22  66                        1.1M       4.5y    2.3M    —    —
+ GK  Ousmane Carvalho      23  60                        1.0M       4.6y    1.6M    —    —
+ GK  Jonas Farina          25  58                        768k       1.8y    925k    —    —
+ CB  Rafael Ward           29  70                        1.2M       3.2y    2.6M    —    —
  CB  Harry Mori            26  70                        1.3M       2.3y    2.2M    —    —
- CB  Owen Barbieri         28  56                        768k       2.1y    685k    —    —
- CB  Hiro Horvat           20  55                        666k       4.4y    1.1M    —    —
- FB  Matteo Greco          25  71                        1.4M       4.3y    4.1M    —    —
- FB  Tommaso Vitale        21  67                        942k       5.5y    2.9M    —    — CB (67)
- FB  Owen Morales          22  64                        1.1M       3.7y    2.1M    —    —
+ CB  Owen Barbieri         28  56                        768k       2.1y    663k    —    —
+ CB  Hiro Horvat           20  55                        666k       4.4y    1.2M    —    —
+ FB  Matteo Greco          25  71                        1.4M       4.3y    4.0M    —    —
+ FB  Tommaso Vitale        21  67                        942k       5.5y    3.1M    —    — CB (67)
+ FB  Owen Morales          22  64                        1.1M       3.7y    2.2M    —    —
  FB  Karl Barbieri         27  63                        1.2M       2.6y    1.8M    —    —
  DM  Sandro Kovac          33  67                        1.2M       3.9y    2.4M    —    —
- DM  Bruno Ferrari         32  63                        932k       2.2y    1.4M    —    —
+ DM  Bruno Ferrari         32  63                        932k       2.2y    1.5M    —    —
  CM  Pietro Fontana        27  70                        1.4M       4.5y    2.8M    —    — AM (71)
- CM  Ousmane Gallo         30  69                        1.5M       3.0y    3.0M    —    — DM (70)
- CM  Petar Pereira         30  63                        1.1M       2.3y    1.5M    —    — DM (64)
- AM  Ousmane Mensah        26  71                        1.3M       4.3y    2.9M    —    —
- AM  Andrea Ortega         24  62                        795k       4.4y    1.4M    —    —
- W   Sandro Mensah         30  66                        1.4M       3.6y    2.1M    —    — AM (67)
- W   Pedro Diallo          19  65                        999k       6.0y    3.6M    —    —
- W   Pedro Berg            32  53                        781k       2.2y    499k    —    — AM (53)
- ST  Rui Pereira           32  60                        1.1M       3.8y    1.2M    —    — AM (61)
- ST  Ousmane Barbieri      24  57                        894k       3.3y    1.0M    —    — AM (57)
- ST  Enzo Babic            16  27                         91k       1.4y    135k    —    — CB (27)
+ CM  Ousmane Gallo         30  69                        1.5M       3.0y    3.2M    —    — DM (70)
+ CM  Petar Pereira         30  63                        1.1M       2.3y    1.4M    —    — DM (64)
+ AM  Ousmane Mensah        26  71                        1.3M       4.3y    3.0M    —    —
+ AM  Andrea Ortega         24  62                        795k       4.4y    1.3M    —    —
+ W   Sandro Mensah         30  66                        1.4M       3.6y    2.3M    —    — AM (67)
+ W   Pedro Diallo          19  65                        999k       6.0y    3.7M    —    —
+ W   Pedro Berg            32  53                        781k       2.2y    515k    —    — AM (53)
+ ST  Rui Pereira           32  60                        1.1M       3.8y    1.3M    —    — AM (61)
+ ST  Ousmane Barbieri      24  57                        894k       3.3y    1.1M    —    — AM (57)
+ ST  Enzo Babic            16  27                         91k       1.4y    142k    —    — CB (27)
  * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).
 
  Squad depth by natural role:

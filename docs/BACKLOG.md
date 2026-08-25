@@ -75,17 +75,21 @@ number gates everything below:
    `env_c(age − φ)`, which is what makes PA non-trivially inferable. The divergence and its
    resolution are recorded there too — this is a *note-wins* reconciliation, the first on record
    (§8.2 explains why, against the project's two prior code-wins reconciliations).
-2. **Invert the draw** in `gen_player`, reusing `development`'s existing ceiling/`NORM` machinery
-   rather than re-encoding the envelope. `youth_discount` and `headroom` both disappear.
-   `pool::youth_cohort` inherits it. Expect a world re-roll and a re-pinned golden baseline; a
-   re-roll is not a re-fit.
-3. **Re-fit `DevKnobs`.** `k_dec` first — it currently sits at 0.30 purely to stop
-   non-envelope-consistent veterans crashing, and should move toward the scratchpad's 1.0. Then
-   `plast_*`, `e_sigma`, `e_min` jointly against flop rate, hit rate, attainment mean, and the
-   sub-0.80 tail; they trade against each other and fitting them singly will oscillate. Expect them
-   to loosen — the reverse of the re-fit that compensated for the bug.
+2. **[Done — `DEVELOPMENT_MODEL.md` §8.1.]** Invert the draw in `gen_player`, reusing `development`'s
+   existing ceiling/`NORM` machinery rather than re-encoding the envelope. `youth_discount` and
+   `headroom` both disappeared. `pool::youth_cohort` inherits it via a shared `SeedTables`. Golden
+   baselines re-pinned; a re-roll, not a re-fit.
+3. **[Done — `DEVELOPMENT_MODEL.md` §6's "§8.5's W3+W4 re-fit" subsection, landed together with item 2
+   per `WONDERKID_W1_AMENDMENT.md` §5's decision rule.]** `k_dec` moved 0.30 → the scratchpad's 1.0
+   first, doubling as the W3 correctness check (veteran slopes barely moved, confirming seeding landed
+   env-consistent). Then `plast_*`/`e_sigma`/`e_min` jointly: `(23.5, 2.2)/(0.42, 0.15)` →
+   `(31.25, 4.6)/(0.095, 0.61)`. Every accept-band holds (24-seed pool) except the veteran physical
+   slope, which — per a stage-1 finding, not a stage-2 fitting failure — reads a plateaued ~−2.0 to
+   −2.1 regardless of `k_dec`, likely unreachable without moving `env_phys` (forbidden). Max-step
+   saturation checked clean (0.0000 before and after).
 4. **Re-bank the market harness.** Youth pricing shifts. Read transfer volume explicitly (§4) but do
-   not fit toward it.
+   not fit toward it. A single post-W3/W4 `bin/market` run read every metric inside its per-seed
+   spread already; a full re-bank pass (matching `TRANSFER_MODEL.md` §9's discipline) is still open.
 
 **Resolve as part of this work:** the cohort admits `start_age ≤ 21`, mixing 16-year-olds (maturity
 ~0.55) with 21-year-olds (~0.91). Post-fix those populations have structurally different flop

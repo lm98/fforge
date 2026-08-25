@@ -719,8 +719,11 @@ fn fit_pa_from_composites_age_filtered(
     let sse: f64 = rows
         .iter()
         .map(|&(phys, tech, ment, age, pa)| {
-            let pred =
-                coeffs[0] * phys + coeffs[1] * tech + coeffs[2] * ment + coeffs[3] * age + coeffs[4];
+            let pred = coeffs[0] * phys
+                + coeffs[1] * tech
+                + coeffs[2] * ment
+                + coeffs[3] * age
+                + coeffs[4];
             (pa - pred).powi(2)
         })
         .sum();
@@ -957,7 +960,11 @@ impl SeedingProjectionReport {
     /// population, narrower than `overall()`'s full `<= 21` pool) —
     /// `start_age_band` is `-2` as a distinct marker from `overall()`'s `-1`.
     pub fn le18(&self) -> ProjectionBandStats {
-        let rows: Vec<&ProjRow> = self.rows.iter().filter(|r| r.start_age_band <= 18).collect();
+        let rows: Vec<&ProjRow> = self
+            .rows
+            .iter()
+            .filter(|r| r.start_age_band <= 18)
+            .collect();
         summarize_band(-2, &rows)
     }
 }
@@ -1001,8 +1008,19 @@ pub fn print_seeding_projection(report: &SeedingProjectionReport) {
     println!();
     println!(
         "{:>4} {:>5} {:>5} {:>6} {:>6} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "band", "n", "n_wk", "r0", "r0'", "attain", "attain'", "sub80", "sub80'", "hit", "hit'",
-        "flop", "flop'"
+        "band",
+        "n",
+        "n_wk",
+        "r0",
+        "r0'",
+        "attain",
+        "attain'",
+        "sub80",
+        "sub80'",
+        "hit",
+        "hit'",
+        "flop",
+        "flop'"
     );
     for b in report.bands() {
         println!(
@@ -1602,14 +1620,22 @@ mod tests {
             tech.mean
         );
         let ment = report.ment_onset_age();
+        // Widened 34.0 -> 36.0 for the same reason as `ca_peak` below: the
+        // §8 W3/W4 re-fit's looser plast_*/e_min pushed the banked reading to
+        // ~32.1, leaving too little margin on the old ceiling.
         assert!(
-            (24.0..=34.0).contains(&ment.mean),
+            (24.0..=36.0).contains(&ment.mean),
             "mental plateau onset {:.2} outside believable band",
             ment.mean
         );
         let ca_peak = report.ca_peak_age();
+        // Widened 32.0 -> 34.0 after the §8 seeding-invert + re-fit (W3/W4):
+        // the looser plast_*/e_min the primary flop-rate target needed also
+        // pushed CA peak age later (banked reading ~31.4) — still a loose
+        // tripwire, just re-centered on where the fixed engine actually
+        // lands rather than the pre-fix reading's margin.
         assert!(
-            (25.0..=32.0).contains(&ca_peak.mean),
+            (25.0..=34.0).contains(&ca_peak.mean),
             "overall CA peak age {:.2} outside believable band",
             ca_peak.mean
         );
