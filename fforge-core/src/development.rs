@@ -564,14 +564,26 @@ fn minutes_multiplier(
     }
 }
 
+/// Resolve just the bloomer phase φ (§2.3), split out of `resolve_dev_profile`
+/// so `worldgen::gen_player` can draw it *before* the rest of the profile
+/// (`DEVELOPMENT_MODEL.md` §8.1): seeding needs φ to place a youth on the same
+/// envelope shift the growth engine will later grow him against, and it must
+/// be the same φ `resolve_dev_profile` records, not a second independent
+/// draw.
+pub fn resolve_bloomer_phase(rng: &mut Rng, knobs: &DevKnobs) -> f64 {
+    rng.normal(0.0, knobs.phi_sigma).clamp(-6.0, 6.0)
+}
+
 /// Resolve a player's once-only development trajectory (§2.3) at worldgen from
-/// their character + seeded noise. Called from `worldgen`; the result is stored
+/// their character + seeded noise, plus an already-resolved `phi` (see
+/// `resolve_bloomer_phase`). Called from `worldgen`; the result is stored
 /// in `Player::development` and recorded in the `World` snapshot — never
 /// re-derived.
 pub fn resolve_dev_profile(
     rng: &mut Rng,
     determination: u8,
     professionalism: u8,
+    phi: f64,
     knobs: &DevKnobs,
 ) -> fforge_domain::DevProfile {
     let mean = knobs.e_base
@@ -580,7 +592,6 @@ pub fn resolve_dev_profile(
     let e = rng
         .normal(mean, knobs.e_sigma)
         .clamp(knobs.e_min, knobs.e_max);
-    let phi = rng.normal(0.0, knobs.phi_sigma).clamp(-6.0, 6.0);
     fforge_domain::DevProfile {
         efficiency_milli: (e * 1000.0).round() as u16,
         bloomer_phase_centi: (phi * 100.0).round() as i16,
@@ -878,10 +889,24 @@ mod tests {
         // No panic reaching past these two calls is itself the primary
         // assertion (§8.3): `world_clubless` has `pid` in `World.players`
         // but on no club's roster at all.
-        let rostered_changes =
-            tick_changes(&world_rostered, 1, 0, start, &empty_apps, &empty_matches, &knobs);
-        let clubless_changes =
-            tick_changes(&world_clubless, 1, 0, start, &empty_apps, &empty_matches, &knobs);
+        let rostered_changes = tick_changes(
+            &world_rostered,
+            1,
+            0,
+            start,
+            &empty_apps,
+            &empty_matches,
+            &knobs,
+        );
+        let clubless_changes = tick_changes(
+            &world_clubless,
+            1,
+            0,
+            start,
+            &empty_apps,
+            &empty_matches,
+            &knobs,
+        );
 
         assert!(
             !rostered_changes.is_empty(),

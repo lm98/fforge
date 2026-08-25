@@ -1,29 +1,29 @@
 
  Pos Name                  CA  Cond Cards  Status
- W   Sota Rossi            81  100% 4Y     Fit
- ST  Ibrahim Carvalho      76  100% 2Y     Fit
- ST  João Moretti          74  100%        Fit
- GK  Sergio Carvalho       74  100%        Fit
- FB  Marco Kovac           73  100% 3Y     Fit
- AM  Giorgio Horvat        71  100% 1Y     Fit
- DM  Callum Colombo        70  100% 5Y     Fit
- CB  Giorgio Sato          70  100% 3Y     Fit
- GK  Kofi Rossi            69  100%        Fit
- CM  Petar Serra           69  100% 1Y     Fit
- CM  Anders Kane           68  100% 1Y     Fit
- DM  Sergio Colombo        67  100%        Fit
- FB  Josip Moretti         66  100%        Fit
- FB  Kofi Mori             66  100%        Fit
- W   Nicola Tanaka         66  100%        Fit
- CB  Anders Conti          64  100%        Fit
- GK  Kenji Conti           64  100%        Fit
- ST  Sota Barbieri         64  100%        Fit
- CB  Milan Vitale          62  100%        Fit
- AM  Pedro Tanaka          62  100%        Fit
- CB  Owen Duarte           61  100%        Fit
- CM  Ivan Pereira          59  100%        Fit
- W   Giorgio Serra         58  100%        Fit
- FB  Dario Tanaka          55  100%        Fit
- CM  Bruno Duarte          49  100%        Fit
- W   Sandro Iglesias       43  100%        Fit
+ FB  Matteo Greco          71  100% 2Y     Fit
+ AM  Ousmane Mensah        71  100% 4Y     Fit
+ CB  Harry Mori            70  100% 1Y     Fit
+ CM  Pietro Fontana        70  100% 3Y     Fit
+ CB  Rafael Ward           70  100% 2Y     Fit
+ CM  Ousmane Gallo         69  100% 3Y     Fit
+ DM  Sandro Kovac          67  100% 5Y     Fit
+ FB  Tommaso Vitale        67  100% 2Y     Fit
+ GK  Dario Mori            66  100%        Fit
+ W   Sandro Mensah         66  100% 1Y     Fit
+ W   Pedro Diallo          65  100%        Fit
+ FB  Owen Morales          64  100%        Fit
+ DM  Bruno Ferrari         63  100%        Fit
+ FB  Karl Barbieri         63  100%        Fit
+ CM  Petar Pereira         63  100%        Fit
+ AM  Andrea Ortega         62  100%        Fit
+ GK  Ousmane Carvalho      60  100%        Fit
+ ST  Rui Pereira           60  100%        Fit
+ GK  Jonas Farina          58  100%        Fit
+ ST  Ousmane Barbieri      57  100%        Fit
+ CB  Owen Barbieri         56  100%        Fit
+ CB  Hiro Horvat           55  100%        Fit
+ W   Pedro Berg            52  100%        Fit
+ FB  Franco Rinaldi        42  100%        Fit
+ CM  Sami Moretti          36  100%        Fit
+ ST  Enzo Babic            27  100%        Fit
  26 of 26 available to pick.

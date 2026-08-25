@@ -402,6 +402,14 @@ pub fn fit_pa_from_ca_age_youth(seeds: &[u64], cfg: &WorldGenConfig) -> PaFit {
     fit_pa_from_ca_age_filtered(seeds, cfg, |age| age < 24.0)
 }
 
+/// The same fit restricted to one single-year age band `[lo, hi)`
+/// (`DEVELOPMENT_MODEL.md` §8.4: the `residual_sd` rise is predicted
+/// strongest at 16, weakest at 21) — the per-band decomposition `fit_youth`'s
+/// pooled 16-23 read cannot show on its own.
+pub fn fit_pa_from_ca_age_band(seeds: &[u64], cfg: &WorldGenConfig, lo: f64, hi: f64) -> PaFit {
+    fit_pa_from_ca_age_filtered(seeds, cfg, move |age| age >= lo && age < hi)
+}
+
 fn fit_pa_from_ca_age_filtered(
     seeds: &[u64],
     cfg: &WorldGenConfig,
@@ -460,6 +468,136 @@ fn fit_pa_from_ca_age_filtered(
         residual_sd,
         n: rows.len(),
     }
+}
+
+/// Solve an `n x n` linear system by Gaussian elimination with partial
+/// pivoting — `solve3`'s generalization for the COMPETENT fit's 5 unknowns
+/// (`fit_pa_from_composites_age_filtered`). One-off measurement code; not
+/// worth a linear-algebra dependency for a handful of small, dense solves.
+#[allow(clippy::needless_range_loop)]
+fn solve_n(mut m: Vec<Vec<f64>>, mut rhs: Vec<f64>) -> Vec<f64> {
+    let n = rhs.len();
+    for col in 0..n {
+        let pivot = (col..n)
+            .max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))
+            .unwrap();
+        m.swap(col, pivot);
+        rhs.swap(col, pivot);
+        for row in (col + 1)..n {
+            let factor = m[row][col] / m[col][col];
+            for k in col..n {
+                m[row][k] -= factor * m[col][k];
+            }
+            rhs[row] -= factor * rhs[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let sum: f64 = (row + 1..n).map(|k| m[row][k] * x[k]).sum();
+        x[row] = (rhs[row] - sum) / m[row][row];
+    }
+    x
+}
+
+/// Result of the COMPETENT attack's `PA ~ a*phys + b*tech + c*ment + d*age +
+/// e` ordinary-least-squares fit (`DEVELOPMENT_MODEL.md` §8.4's two-attack
+/// measurement): `coeffs` is `[phys, tech, ment, age, intercept]`.
+pub struct PaFitMulti {
+    pub coeffs: [f64; 5],
+    pub residual_sd: f64,
+    pub n: usize,
+}
+
+/// The COMPETENT attack on PA: fit `PA` on the per-`DevCategory` composites
+/// (physical/technical/mental — `category_composite`, the same aggregation
+/// `career_arc`'s own arc-tracing already uses) plus age, instead of on raw
+/// best-role CA alone. Under envelope-consistent seeding the composite
+/// *ratios* partially decode the hidden bloomer phase φ (φ shifts the whole
+/// envelope, but each category's envelope has a different shape, so a
+/// φ-shifted player's phys/tech/ment mix differs from an on-schedule player's
+/// even at matched CA) — this is the skilled-observer attack the NAIVE
+/// `fit_pa_from_ca_age*` fits cannot make. The gap between the two residuals
+/// is the headroom a real scouting signal could close.
+fn fit_pa_from_composites_age_filtered(
+    seeds: &[u64],
+    cfg: &WorldGenConfig,
+    age_filter: impl Fn(f64) -> bool,
+) -> PaFitMulti {
+    // rows: (phys, tech, ment, age, pa)
+    let mut rows: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
+    for &seed in seeds {
+        let (world, _fixtures, start_date) = worldgen::generate(seed, cfg);
+        for player in world.players.values() {
+            let age = (start_date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64;
+            if !age_filter(age) {
+                continue;
+            }
+            let role = player.natural_role;
+            let phys = category_composite(role, &player.attributes, DevCategory::Physical);
+            let tech = category_composite(role, &player.attributes, DevCategory::Technical);
+            let ment = category_composite(role, &player.attributes, DevCategory::Mental);
+            let pa = player.character.potential as f64;
+            rows.push((phys, tech, ment, age, pa));
+        }
+    }
+
+    // Design-matrix predictors, in `coeffs`' order, plus a constant 1 for the
+    // intercept — build the 5x5 normal-equations system X'X x = X'y directly
+    // rather than materializing X.
+    let n = rows.len();
+    let mut xtx = vec![vec![0.0; 5]; 5];
+    let mut xty = vec![0.0; 5];
+    for &(phys, tech, ment, age, pa) in &rows {
+        let x = [phys, tech, ment, age, 1.0];
+        for i in 0..5 {
+            xty[i] += x[i] * pa;
+            for j in 0..5 {
+                xtx[i][j] += x[i] * x[j];
+            }
+        }
+    }
+    let coeffs_vec = solve_n(xtx, xty);
+    let coeffs: [f64; 5] = coeffs_vec.try_into().unwrap();
+
+    let sse: f64 = rows
+        .iter()
+        .map(|&(phys, tech, ment, age, pa)| {
+            let pred =
+                coeffs[0] * phys + coeffs[1] * tech + coeffs[2] * ment + coeffs[3] * age + coeffs[4];
+            (pa - pred).powi(2)
+        })
+        .sum();
+    let residual_sd = (sse / (n as f64 - 5.0)).sqrt();
+
+    PaFitMulti {
+        coeffs,
+        residual_sd,
+        n,
+    }
+}
+
+/// The COMPETENT fit over every `worldgen`-generated player, all ages —
+/// `fit_pa_from_ca_age`'s sibling.
+pub fn fit_pa_from_composites_age(seeds: &[u64], cfg: &WorldGenConfig) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, |_age| true)
+}
+
+/// The COMPETENT fit restricted to `age < 24` — `fit_pa_from_ca_age_youth`'s
+/// sibling, same population.
+pub fn fit_pa_from_composites_age_youth(seeds: &[u64], cfg: &WorldGenConfig) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, |age| age < 24.0)
+}
+
+/// The COMPETENT fit restricted to one single-year age band `[lo, hi)` —
+/// `fit_pa_from_ca_age_band`'s sibling, so the NAIVE/COMPETENT gap can be
+/// read per band, not just pooled.
+pub fn fit_pa_from_composites_age_band(
+    seeds: &[u64],
+    cfg: &WorldGenConfig,
+    lo: f64,
+    hi: f64,
+) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, move |age| age >= lo && age < hi)
 }
 
 /// Task 4: the maturity ratio `env_c(y) / NORM` at a given age, for a given
@@ -656,6 +794,14 @@ impl SeedingProjectionReport {
     pub fn overall(&self) -> ProjectionBandStats {
         let rows: Vec<&ProjRow> = self.rows.iter().collect();
         summarize_band(-1, &rows)
+    }
+
+    /// `start_age_band <= 18` pooled (§8.3: the headline wonderkid hit/flop
+    /// population, narrower than `overall()`'s full `<= 21` pool) —
+    /// `start_age_band` is `-2` as a distinct marker from `overall()`'s `-1`.
+    pub fn le18(&self) -> ProjectionBandStats {
+        let rows: Vec<&ProjRow> = self.rows.iter().filter(|r| r.start_age_band <= 18).collect();
+        summarize_band(-2, &rows)
     }
 }
 

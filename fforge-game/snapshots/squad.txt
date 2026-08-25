@@ -1,29 +1,29 @@
 
  Pos Name                 Age  CA Potential              Wage   Contract  Value*  Rtg Form Best role
- GK  Sergio Carvalho       23  74 promising              1.2M       4.4y    5.0M    —    —
- GK  Kofi Rossi            22  69                        1.4M       4.6y    3.2M    —    —
- GK  Kenji Conti           33  64                        1.3M       3.0y    1.4M    —    —
- CB  Giorgio Sato          24  70                        1.2M       4.3y    3.0M    —    —
- CB  Anders Conti          24  64                        1.2M       4.5y    1.7M    —    —
- CB  Milan Vitale          29  63                        962k       2.6y    1.2M    —    —
- CB  Owen Duarte           25  61                        856k       3.1y    1.3M    —    —
- FB  Marco Kovac           23  73                        1.6M       4.8y    4.0M    —    —
- FB  Kofi Mori             30  67                        959k       3.0y    2.0M    —    —
- FB  Josip Moretti         25  66                        1.1M       3.9y    1.9M    —    — CB (66)
- FB  Dario Tanaka          17  55                        905k       4.1y    1.3M    —    — DM (56)
- DM  Callum Colombo        25  70                        1.3M       3.0y    4.2M    —    —
- DM  Sergio Colombo        31  68                        1.4M       3.0y    2.5M    —    —
- CM  Petar Serra           25  69                        1.3M       3.9y    3.8M    —    — DM (69)
- CM  Anders Kane           23  68                        1.4M       4.0y    3.9M    —    — FB (68)
- CM  Ivan Pereira          21  59                        1.0M       3.7y    2.8M    —    — DM (59)
- AM  Giorgio Horvat        32  71                        1.6M       3.5y    2.4M    —    —
- AM  Pedro Tanaka          28  62                        986k       2.9y    1.2M    —    —
- W   Sota Rossi            31  81 promising              2.1M       3.4y    8.2M    —    —
- W   Nicola Tanaka         25  66                        1.1M       3.9y    2.4M    —    —
- W   Giorgio Serra         23  58                        840k       3.2y    1.1M    —    — AM (58)
- ST  Ibrahim Carvalho      25  76                        1.7M       4.2y    5.7M    —    —
- ST  João Moretti          20  73 great potential        1.8M       5.4y    9.1M    —    —
- ST  Sota Barbieri         22  64                        1.2M       4.3y    2.9M    —    —
+ GK  Dario Mori            22  66                        1.1M       4.5y    2.1M    —    —
+ GK  Ousmane Carvalho      23  60                        1.0M       4.6y    1.5M    —    —
+ GK  Jonas Farina          25  58                        768k       1.8y    797k    —    —
+ CB  Rafael Ward           29  70                        1.2M       3.2y    2.7M    —    —
+ CB  Harry Mori            26  70                        1.3M       2.3y    2.2M    —    —
+ CB  Owen Barbieri         28  56                        768k       2.1y    685k    —    —
+ CB  Hiro Horvat           20  55                        666k       4.4y    1.1M    —    —
+ FB  Matteo Greco          25  71                        1.4M       4.3y    4.1M    —    —
+ FB  Tommaso Vitale        21  67                        942k       5.5y    2.9M    —    — CB (67)
+ FB  Owen Morales          22  64                        1.1M       3.7y    2.1M    —    —
+ FB  Karl Barbieri         27  63                        1.2M       2.6y    1.8M    —    —
+ DM  Sandro Kovac          33  67                        1.2M       3.9y    2.4M    —    —
+ DM  Bruno Ferrari         32  63                        932k       2.2y    1.4M    —    —
+ CM  Pietro Fontana        27  70                        1.4M       4.5y    2.8M    —    — AM (71)
+ CM  Ousmane Gallo         30  69                        1.5M       3.0y    3.0M    —    — DM (70)
+ CM  Petar Pereira         30  63                        1.1M       2.3y    1.5M    —    — DM (64)
+ AM  Ousmane Mensah        26  71                        1.3M       4.3y    2.9M    —    —
+ AM  Andrea Ortega         24  62                        795k       4.4y    1.4M    —    —
+ W   Sandro Mensah         30  66                        1.4M       3.6y    2.1M    —    — AM (67)
+ W   Pedro Diallo          19  65                        999k       6.0y    3.6M    —    —
+ W   Pedro Berg            32  53                        781k       2.2y    499k    —    — AM (53)
+ ST  Rui Pereira           32  60                        1.1M       3.8y    1.2M    —    — AM (61)
+ ST  Ousmane Barbieri      24  57                        894k       3.3y    1.0M    —    — AM (57)
+ ST  Enzo Babic            16  27                         91k       1.4y    135k    —    — CB (27)
  * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).
 
  Squad depth by natural role:
