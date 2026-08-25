@@ -12,8 +12,8 @@ use fforge_core::WorldGenConfig;
 use fforge_core::career_arc::{
     fit_pa_from_ca_age, fit_pa_from_ca_age_band, fit_pa_from_ca_age_youth,
     fit_pa_from_composites_age, fit_pa_from_composites_age_band, fit_pa_from_composites_age_youth,
-    print_maturity_ratios, print_report, print_seeding_projection, run_career_arc_with_projection,
-    run_growth_disabled_probe,
+    max_step_saturation_16_band, print_maturity_ratios, print_report, print_seeding_projection,
+    run_career_arc_with_projection, run_growth_disabled_probe,
 };
 
 fn parse_usize_arg(args: &[String], flag: &str, default: usize) -> usize {
@@ -32,6 +32,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let num_seeds = parse_usize_arg(&args, "--seeds", 8);
     let seasons = parse_usize_arg(&args, "--seasons", 16);
+
+    if args.iter().any(|a| a == "--max-step-saturation") {
+        let cfg = WorldGenConfig::default();
+        let seeds: Vec<u64> = (0..num_seeds as u64).collect();
+        let (attempted, clipped, frac) = max_step_saturation_16_band(&seeds, seasons, &cfg);
+        println!(
+            "max_step clip fraction, [16,17) start-age cohort: {clipped}/{attempted} = {frac:.4} \
+             ({num_seeds} seeds x {seasons} seasons, DevKnobs::default() as currently compiled)"
+        );
+        return;
+    }
 
     let seeds: Vec<u64> = (0..num_seeds as u64).collect();
     let cfg = WorldGenConfig::default();

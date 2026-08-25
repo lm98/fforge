@@ -27,10 +27,11 @@
 //! re-fit is a human reading these numbers and editing `DevKnobs::default`.
 
 use crate::development::{self, DevKnobs, EnvTables, norms_by_role};
+use crate::event::Event;
 use crate::{Command, Session, WorldGenConfig, new_game, worldgen};
 use fforge_domain::{
-    Attribute, ClubId, DevCategory, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
-    date::DAYS_PER_YEAR,
+    Attribute, ClubId, DevCategory, Fixture, GameDate, PlayerId, ROLE_WEIGHTS, Role, World,
+    best_role, date::DAYS_PER_YEAR,
 };
 use std::collections::BTreeMap;
 
@@ -260,6 +261,162 @@ fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> Vec<Arc> {
     }
 
     arcs.into_iter().map(|(_, a)| a).collect()
+}
+
+/// Record the age of every player seen for the first time — `Arc`'s "start
+/// age" definition (age at worldgen or, later, youth intake) applied to a
+/// plain `PlayerId -> age` map instead of a full traced arc, for the
+/// clip-stats measurement below.
+fn record_new_start_ages(world: &World, date: GameDate, start_age: &mut BTreeMap<PlayerId, f64>) {
+    for (&pid, player) in &world.players {
+        start_age
+            .entry(pid)
+            .or_insert_with(|| (date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64);
+    }
+}
+
+/// The `[16, 17)` start-age cohort's `max_step`-clamp exposure
+/// (`DEVELOPMENT_MODEL.md` §8.6's max-step-saturation escalation clause):
+/// pools `(attempted, clipped)` weighted-attribute steps across every such
+/// player's whole traced career.
+///
+/// Reconstructs, from the real per-matchday `MatchPlayed`/`DevelopmentTick`
+/// events a real `Session` produces, the exact `(world, minutes,
+/// club_matches)` triple `commands::dev_ticks_between` fed to
+/// `development::tick_changes` for that matchday's boundary — then re-derives
+/// the identical changes via `tick_changes_with_clip_stats` and
+/// `debug_assert_eq!`s the result against the real recorded
+/// `DevelopmentTick.changes`, so a reconstruction bug fails loudly rather
+/// than silently mismeasuring. Limited to the single-tick case
+/// `commands::advance_matchday`'s own doc comment describes ("at most one
+/// [boundary], since a matchday step is 7 days") — a multi-tick
+/// `StartNextSeason` offseason span is skipped for this diagnostic only (the
+/// large majority of ticks are the single-tick case: ~37 matchdays/season
+/// vs. one season transition).
+fn trace_seed_clip_stats_16_band(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> (u64, u64) {
+    // The real `Session`/`commands::dev_ticks_between` pipeline this function
+    // reconstructs against hardcodes `DevKnobs::default()` internally (it has
+    // no seam to take a substituted table) — so the reconstruction must use
+    // the identical table, not a caller-supplied one, or the
+    // `debug_assert_eq!` below would fail on a currently-committed knob
+    // table it was never actually measuring against.
+    let knobs = DevKnobs::default();
+    let log = new_game(seed, cfg, ClubId(0));
+    let mut session = Session::from_events(log, &mut []);
+
+    let mut start_age: BTreeMap<PlayerId, f64> = BTreeMap::new();
+    record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+
+    let mut attempted_16 = 0u64;
+    let mut clipped_16 = 0u64;
+
+    for s in 0..seasons {
+        while !session.state.season_over() {
+            let fixtures: Vec<Fixture> = session
+                .state
+                .fixtures_of_matchday(session.state.current_matchday)
+                .cloned()
+                .collect();
+            let pre_world = session.state.world.clone();
+            let pre_apps = session.state.appearances_since_tick.clone();
+            let pre_club_matches = session.state.club_matches_since_tick.clone();
+            let log_before = session.log.len();
+
+            session
+                .execute(Command::AdvanceMatchday, &mut [])
+                .expect("advance matchday");
+
+            record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+
+            let mut this_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
+            let mut tick: Option<(GameDate, Vec<crate::event::AttrStep>)> = None;
+            for ev in &session.log[log_before..] {
+                match ev {
+                    Event::MatchPlayed { minutes, .. } => {
+                        for &(pid, mins) in minutes {
+                            *this_apps.entry(pid).or_default() += mins as u32;
+                        }
+                    }
+                    Event::DevelopmentTick { date, changes } => {
+                        tick = Some((*date, changes.clone()));
+                    }
+                    _ => {}
+                }
+            }
+
+            let Some((tick_date, real_changes)) = tick else {
+                continue; // no 30-day boundary crossed this matchday
+            };
+
+            let mut window_apps = pre_apps;
+            for (pid, mins) in this_apps {
+                *window_apps.entry(pid).or_default() += mins;
+            }
+            let mut window_club_matches = pre_club_matches;
+            for f in &fixtures {
+                *window_club_matches.entry(f.home).or_default() += 1;
+                *window_club_matches.entry(f.away).or_default() += 1;
+            }
+
+            let period = development::period_index(tick_date);
+            let (recomputed, clip_map) = development::tick_changes_with_clip_stats(
+                &pre_world,
+                session.state.seed,
+                period,
+                tick_date,
+                &window_apps,
+                &window_club_matches,
+                &knobs,
+            );
+            debug_assert_eq!(
+                recomputed, real_changes,
+                "clip-stats reconstruction diverged from the real recorded tick \
+                 — the window/world reconstruction above is not faithful"
+            );
+
+            for (pid, stats) in clip_map {
+                if let Some(&sa) = start_age.get(&pid)
+                    && (16.0..17.0).contains(&sa)
+                {
+                    attempted_16 += stats.attempted as u64;
+                    clipped_16 += stats.clipped as u64;
+                }
+            }
+        }
+        if s + 1 < seasons {
+            session
+                .execute(Command::StartNextSeason, &mut [])
+                .expect("start next season");
+            record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+        }
+    }
+
+    (attempted_16, clipped_16)
+}
+
+/// Pool `trace_seed_clip_stats_16_band` over `seeds`: the max-step-saturation
+/// escalation clause's own reading (`DEVELOPMENT_MODEL.md` §8.6) — the
+/// clipped fraction of monthly attribute steps for the `[16, 17)` start-age
+/// cohort, read before fitting and again after each re-fit stage. Returns
+/// `(attempted, clipped, fraction)`.
+pub fn max_step_saturation_16_band(
+    seeds: &[u64],
+    seasons: usize,
+    cfg: &WorldGenConfig,
+) -> (u64, u64, f64) {
+    let mut attempted = 0u64;
+    let mut clipped = 0u64;
+    for &seed in seeds {
+        let (a, c) = trace_seed_clip_stats_16_band(seed, seasons, cfg);
+        attempted += a;
+        clipped += c;
+    }
+    let frac = if attempted > 0 {
+        clipped as f64 / attempted as f64
+    } else {
+        f64::NAN
+    };
+    (attempted, clipped, frac)
 }
 
 /// Trace one world seed with growth **effectively disabled** — the
@@ -1368,6 +1525,25 @@ pub fn print_report(report: &CareerArcReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `max_step_saturation_16_band`'s reconstruction is validated by its own
+    /// internal `debug_assert_eq!` against the real recorded
+    /// `DevelopmentTick.changes` on every single-tick boundary it processes
+    /// (`DEVELOPMENT_MODEL.md` §8.6) — this test just needs to run that path,
+    /// in a debug build, across enough matchdays to cross at least one
+    /// 30-day boundary, and confirm it returns a sane (non-NaN, in-range)
+    /// fraction rather than panicking.
+    #[test]
+    fn max_step_saturation_reconstruction_matches_the_real_recorded_ticks() {
+        let cfg = WorldGenConfig {
+            num_clubs: 4,
+            ..Default::default()
+        };
+        let (attempted, clipped, frac) = max_step_saturation_16_band(&[1, 2], 2, &cfg);
+        assert!(attempted > 0, "expected at least one attempted step");
+        assert!(clipped <= attempted);
+        assert!((0.0..=1.0).contains(&frac), "frac {frac} out of range");
+    }
 
     /// The career-arc regression guard (`DEVELOPMENT_MODEL.md` §6): the
     /// development sibling of `aggregates_are_in_a_believable_ballpark`

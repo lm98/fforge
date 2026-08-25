@@ -622,6 +622,18 @@ pub fn apply_attr_step(world: &mut World, step: &AttrStep) {
     }
 }
 
+/// Per-player instrumentation of the `max_step` clamp
+/// (`DEVELOPMENT_MODEL.md` §8.6's max-step-saturation escalation clause):
+/// how many weighted-attribute steps a tick attempted for this player, and
+/// how many were clipped. A read-only side channel — `tick_changes_inner`
+/// computes it alongside the real growth law with zero effect on the
+/// returned `Vec<AttrStep>`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClipStats {
+    pub attempted: u32,
+    pub clipped: u32,
+}
+
 /// Produce one development tick's resolved changes (§2, §5): the sparse set of
 /// integer attribute steps that crossed a boundary this month. Reads world
 /// attributes + the once-resolved per-player `E`/`φ` + coaching + the window's
@@ -637,6 +649,33 @@ pub fn tick_changes(
     club_matches: &BTreeMap<ClubId, u32>,
     knobs: &DevKnobs,
 ) -> Vec<AttrStep> {
+    tick_changes_inner(world, seed, period, tick_date, minutes, club_matches, knobs).0
+}
+
+/// `tick_changes`'s instrumented sibling (`DEVELOPMENT_MODEL.md` §8.6):
+/// identical output, plus per-player `ClipStats` for the harness's max-step
+/// saturation measurement (`career_arc`). `pub(crate)` — harness-only.
+pub(crate) fn tick_changes_with_clip_stats(
+    world: &World,
+    seed: u64,
+    period: i64,
+    tick_date: GameDate,
+    minutes: &BTreeMap<PlayerId, u32>,
+    club_matches: &BTreeMap<ClubId, u32>,
+    knobs: &DevKnobs,
+) -> (Vec<AttrStep>, BTreeMap<PlayerId, ClipStats>) {
+    tick_changes_inner(world, seed, period, tick_date, minutes, club_matches, knobs)
+}
+
+fn tick_changes_inner(
+    world: &World,
+    seed: u64,
+    period: i64,
+    tick_date: GameDate,
+    minutes: &BTreeMap<PlayerId, u32>,
+    club_matches: &BTreeMap<ClubId, u32>,
+    knobs: &DevKnobs,
+) -> (Vec<AttrStep>, BTreeMap<PlayerId, ClipStats>) {
     let mut rng = derive_stream(seed, DEV_STREAM_NS | (period as u64));
     let envs = EnvTables::new(knobs);
     let norms = norms_by_role(&envs);
@@ -653,6 +692,7 @@ pub fn tick_changes(
     }
 
     let mut changes = Vec::new();
+    let mut clip_stats: BTreeMap<PlayerId, ClipStats> = BTreeMap::new();
     // BTreeMap iteration is id order — the determinism the fold relies on.
     for (&pid, player) in &world.players {
         let e = player.development.efficiency();
@@ -703,8 +743,11 @@ pub fn tick_changes(
             let whole = mag.floor();
             let frac = mag - whole;
             let mut steps = whole as i64 + if u < frac { 1 } else { 0 };
+            let stat = clip_stats.entry(pid).or_default();
+            stat.attempted += 1;
             if steps > knobs.max_step as i64 {
                 steps = knobs.max_step as i64;
+                stat.clipped += 1;
             }
             let raw = if monthly >= 0.0 { steps } else { -steps };
             if raw == 0 {
@@ -723,7 +766,7 @@ pub fn tick_changes(
             }
         }
     }
-    changes
+    (changes, clip_stats)
 }
 
 #[cfg(test)]
