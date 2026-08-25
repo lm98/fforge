@@ -88,8 +88,9 @@ number gates everything below:
    −2.1 regardless of `k_dec`, likely unreachable without moving `env_phys` (forbidden). Max-step
    saturation checked clean (0.0000 before and after).
 4. **Re-bank the market harness.** Youth pricing shifts. Read transfer volume explicitly (§4) but do
-   not fit toward it. A single post-W3/W4 `bin/market` run read every metric inside its per-seed
-   spread already; a full re-bank pass (matching `TRANSFER_MODEL.md` §9's discipline) is still open.
+   not fit toward it. A single `bin/market` run right after W3 landed (still at item 3's pre-refit
+   `k_dec = 0.30`) read every metric inside its per-seed spread; that reading predates item 3's own
+   knob movement, so a fresh run against the values banked there is still open, not yet superseded.
 
 **Resolve as part of this work:** the cohort admits `start_age ≤ 21`, mixing 16-year-olds (maturity
 ~0.55) with 21-year-olds (~0.91). Post-fix those populations have structurally different flop
