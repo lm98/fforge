@@ -640,6 +640,52 @@ clearing loop or the utility policy's surplus filter rather than in valuation in
 rather than fitted here — a re-bank pass records what the harness reads; it does not get to invent a
 mechanism.
 
+**Re-bank after `DEVELOPMENT_MODEL.md` §8's seeding invert + re-fit, and S1b's AI substitution
+policy (pooled, 24 seeds × 15 seasons, matching every reading above).** Both changes reach this
+harness — the seeding invert directly (youth CA now sits genuinely below PA rather than a few points
+off it, and `project_ca`'s valuation horizon runs through §8's re-fit `DevKnobs`, which project
+substantially more growth than before) and S1b indirectly (substitutions → `GameState.recent_ratings`
+→ `MarketContext.form`, T13's existing channel). This is a **re-bank, not a re-fit**: no knob moved.
+
+| Metric | T14 (banked) | **This re-bank** |
+|---|---|---|
+| Transfers / club / window | 1.805 (sd 0.250) | 1.880 (sd 0.148) |
+| Fee median | 1.237M (sd 157k) | **1.472M** (sd 156k) |
+| Fee p90 | 3.183M (sd 452k) | 3.101M (sd 376k) |
+| Points-Gini, early → late | 0.297 → 0.284 | 0.282 → **0.251** |
+| Season-to-season rank churn | 1.154 (sd 0.132) | 1.312 (sd 0.134) |
+| Top-3 share of top-20, early → late | 0.630 → 0.658 | 0.568 → **0.335** |
+| Median fee, last season / first season | 0.505 (sd 0.166) | **1.265** (sd 0.638) |
+| Clubs insolvent | 5.342 / 20 | **0.014 / 20** |
+| Clubs hoarding cash | 0.683 / 20 | **5.850 / 20** |
+| League mean age | 27.566 | 27.350 |
+| Squad size, min / max | 21.958 / 30 | 21.833 / 30 |
+| Role-coverage violations | 0.250 (sd 0.532) | **0.000** (sd 0.000) |
+| Squad-size snapshots below `squad_max` | 0.741 | 0.772 |
+| Share majority-pinned at `squad_max` | 0.079 | 0.058 |
+| Youth (`start_age ≤ 18`) mean value | — (new cut) | **765,954** (sd 91,821) |
+| Youth (`start_age ≤ 18`) median value | — (new cut) | **354,350** (sd 42,777) |
+| Youth headcount per season-end snapshot | — (new cut) | 37.700 (sd 1.679) |
+
+**Bolded rows moved well outside T14's own per-seed spread — attributed to the seeding invert's
+finance-side channel, not S1b.** Wages are set once, at contract signing, off `best_ca`
+(`worldgen::wage_for_quality`); the seeding invert now seeds young players genuinely beneath their
+ceiling rather than a few points below best-role CA, so a large, compounding share of every squad's
+wage bill is set lower than before. That is sufficient on its own to explain insolvency collapsing
+(5.34 → 0.01 clubs/league) and hoarding surging (0.68 → 5.85) — a pure wage-bill effect, no fee or
+valuation channel required. Fee median, fee-inflation ratio, and the top-3/Gini concentration rows are
+consistent with the *other* channel §8 opens: `value()`'s `ca_eff` integrates `project_ca` over an
+8-year horizon, and the re-fit `DevKnobs` (§6) project substantially more growth over that horizon
+than before, inflating projected — and therefore transacted — value for exactly the young, high-PA
+players concentration and fee-inflation statistics are most sensitive to. **S1b's channel
+(`MarketContext.form`) has no path to wages at all**, and T13 already measured it to wash out at this
+harness's pooling scale; it is not a plausible driver of rows this large. Transfer volume — the one
+metric with a live prediction (`BACKLOG.md` §4.1: roughly unchanged) — held at 1.880 (sd 0.148)
+against 1.805 (sd 0.250), squarely inside spread, even as the rest of the table moved sharply: a
+genuine corroboration of §4.1's surplus-collapse hypothesis over a cash-constraint one, since cash
+constraints eased dramatically here (insolvency near-vanished) with no corresponding rise in volume.
+No knob was fit toward any of this — it is what the harness reads.
+
 ---
 
 ## 10. Human transfer decisions — the pre-commitment model

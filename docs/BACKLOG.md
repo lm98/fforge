@@ -20,7 +20,7 @@ note is authoritative and the divergence is filed as a bug (§5 below is where t
 | 1 — Walking skeleton | complete |
 | 2a — Match core | complete, calibrated, guarded |
 | 2e — Match depth | complete except set pieces |
-| 3 — Player development | implemented, calibrated, guarded — **one open defect, §2** |
+| 3 — Player development | implemented, calibrated, guarded |
 | 4 — Transfer market | complete end to end, calibrated, guarded |
 | 5 — Agent layer | **not started** — the next frontier |
 | 6 — UI/UX & balancing | evidence gathered (`UI_TOOLKIT_EVIDENCE.md`), decision pending |
@@ -34,17 +34,17 @@ snapshot-tested screens, inbox, finances, tactics and substitution-plan editors)
 the `fforge-game` snapshot suite. Pooled goals/match reads **2.59** with all of 2e live and
 `AI_TACTICS_ENABLED = true`.
 
-**Most recent work.** W1 of the wonderkid investigation is merged — measurement only, no `worldgen`
-or knob changes. It confirmed the attainment floor, refuted the stronger "no knob can produce a
-flop" claim (5.1% of the cohort is born below 0.75, and a growth-disabled probe surfaces 2.7% of
-it), and landed the W1b projection machinery.
+**Most recent work.** The wonderkid seeding fix (§2) is fully landed and closed: W3 inverted
+`worldgen::gen_player`'s draw (PA first, attributes seeded on the envelope beneath it,
+`DEVELOPMENT_MODEL.md` §8.1), W4 re-fit `DevKnobs` to match (§6), and the market harness is
+re-banked against both that and S1b's AI substitution/bench policy (`TRANSFER_MODEL.md` §9). Phase 5
+is unblocked.
 
 ---
 
 ## 2. Critical path — the wonderkid seeding fix
 
-**This is the only thing blocking Phase 5, and it should be finished before `AGENT_MODEL.md` is
-written.**
+**[Closed — all four items below are done. Phase 5 is unblocked; `AGENT_MODEL.md` can be written.]**
 
 `worldgen::gen_player` derives `potential = best_ca + headroom` — CA first, PA bolted on — while
 `DEVELOPMENT_MODEL.md` §2.1 has always specified the opposite: seed a player on the age envelope
@@ -87,10 +87,20 @@ number gates everything below:
    slope, which — per a stage-1 finding, not a stage-2 fitting failure — reads a plateaued ~−2.0 to
    −2.1 regardless of `k_dec`, likely unreachable without moving `env_phys` (forbidden). Max-step
    saturation checked clean (0.0000 before and after).
-4. **Re-bank the market harness.** Youth pricing shifts. Read transfer volume explicitly (§4) but do
-   not fit toward it. A single `bin/market` run right after W3 landed (still at item 3's pre-refit
-   `k_dec = 0.30`) read every metric inside its per-seed spread; that reading predates item 3's own
-   knob movement, so a fresh run against the values banked there is still open, not yet superseded.
+4. **[Done — re-banked at 24 seeds × 15 seasons against the T14 table, `TRANSFER_MODEL.md` §9.]**
+   Several metrics moved well outside their T14 spread — fee median +19%, fee-inflation ratio
+   0.505→1.265, clubs insolvent 5.34/20→0.01/20, clubs hoarding 0.68/20→5.85/20, top-3 share of
+   top-20 (late) 0.658→0.335 — attributed to item 3's finance-side mechanism, not S1b's
+   substitutions: wages are set once at contract time off `best_ca`, and the seeding invert now
+   seeds young players genuinely below their ceiling rather than near it, so wage bills at signing
+   run lower across a large, compounding share of every squad — no knob was fit toward this, it is
+   the readout of item 2/3 reaching finance through a channel this pass did not touch. `ratings`
+   (S1b's own channel into the market, via `MarketContext.form`) has no causal path to wages at all,
+   and was already shown to wash out at population scale in the T13 re-bank. Transfer volume held at
+   1.880 (sd 0.148) against T14's 1.805 (sd 0.250) — unmoved despite the shock above, corroborating
+   §4.1's surplus-collapse hypothesis over a cash-constraint one (insolvency vanished; volume still
+   didn't rise). A new youth-valuation cut (`start_age ≤ 18`) is now printed and banked for the first
+   time. Full reading in `TRANSFER_MODEL.md` §9's new table.
 
 **Resolve as part of this work:** the cohort admits `start_age ≤ 21`, mixing 16-year-olds (maturity
 ~0.55) with 21-year-olds (~0.91). Post-fix those populations have structurally different flop
@@ -108,7 +118,9 @@ for.
 
 ## 3. Phase 5 — the agent layer
 
-Scoping in `BATCH5_SCOPING.md`. **Blocked on §2** for the fog-of-war dependency.
+Scoping in `BATCH5_SCOPING.md`. **Unblocked — §2 is closed.** The fog-of-war dependency (PA no
+longer trivially recoverable from `(CA, age)`, `DEVELOPMENT_MODEL.md` §8.1) is in place;
+`AGENT_MODEL.md` can be written next.
 
 Four seams already exist and have each been exercised once: `ClubPolicy`/`RecordedPolicy`,
 `NewsItem` provenance (`sources: Vec<EventRef>`), the Event/Trace split, and the pre-commitment
@@ -146,21 +158,34 @@ football-flavoured. Protect its scope explicitly.
 
 Each is filed with a reading, not a fix. None blocks Phase 5 on its own.
 
-**4.1 — Transfer volume: 1.805/club/window against a 2–5 target.** Survived two re-banks unchanged,
-which localises it upstream of both form and tactics — in the clearing loop or the utility policy's
-surplus filter. Working hypothesis: with `asking_markup` uniform and every club pricing off the same
-omniscient `value()`, the surplus term is a near-constant fraction of value for every candidate, so
-`utility = need · surplus` collapses toward `need · value` and clubs converge on the same targets.
-**Fog-of-war may fix this for free** by making valuations genuinely divergent — which is an argument
-for re-reading it after §2 and after B5.1 rather than fixing it blind.
+**4.1 — Transfer volume: 1.880/club/window against a 2–5 target** (BACKLOG.md §2 item 4's re-bank,
+24 seeds × 15 seasons — up from 1.805, well inside both readings' own spread). Survived three
+re-banks unchanged now — form, tactics, and this pass's seeding-invert-driven finance shock — which
+sharpens the localisation: the same clearing loop and utility policy left volume flat while fee
+levels, insolvency, hoarding, and talent concentration all moved sharply. Working hypothesis
+unrefuted, and now with a positive corroborating reading, not just an absence of movement: with
+`asking_markup` uniform and every club pricing off the same omniscient `value()`, the surplus term is
+a near-constant fraction of value for every candidate, so `utility = need · surplus` collapses toward
+`need · value` and clubs converge on the same targets — a structural cap independent of valuation
+*level*. If volume were cash-constrained instead, insolvency vanishing (5.34/20 → 0.01/20 clubs) and
+hoarding quintupling should have loosened it; it didn't move. **Fog-of-war may fix this for free** by
+making valuations genuinely divergent — which is an argument for re-reading it after B5.1 rather than
+fixing it blind.
 
 **4.2 — Mental plateau onset reads 26.4 against an early-30s target**, and the veteran mental slope
 reads ~+0.02 against ~+0.3. The same fact seen twice: the Mental envelope's late build and gentle
 decline are not surviving into the measured composite. Career-shape fidelity with no Phase 5
 consequence. Worth fitting deliberately at some point, not folded into a re-bank pass.
 
-**4.3 — Substitution effects are unmeasured against league play** (see §5.1). The predicted subs
-per match, late-match goal share, and gpm effect cannot be read until an AI plan exists.
+**[Answered — `bin/calibrate`, 24 seeds, post-seeding-invert.]** Subs/match **0.13** (sd 0.02,
+range 0.10–0.18) — far below `MATCH_MODEL.md` §16's +3 to +5/match prediction; late-match (75'+)
+goal share **16.6%** (sd 1.1) against a +1 to +3pt prediction; non-XI mean minutes **45.1** (sd 3.6)
+against a ~10–20 prediction, well above; pooled gpm **2.50** (sd 0.31) against the 2.59 baseline —
+inside a single seed's own spread, effectively unmoved. Read together: the S1b bench/plan policy
+fires far less often than predicted (`MATCH_MODEL.md` §16's forced-cover-only-on-injury design is
+conservative by construction), so its downstream match-shape effects (late goals, gpm) stayed inside
+noise while non-XI minutes rose more than predicted simply because *any* bench player now gets on the
+pitch at all, which was previously impossible. Not re-fit — a reading, not a target.
 
 ---
 
@@ -169,14 +194,11 @@ per match, late-match goal share, and gpm effect cannot be read until an AI plan
 Things the code does not do that a reader might reasonably assume it does. Recorded so nobody
 rediscovers them the hard way.
 
-**5.1 — No AI substitution plan or bench-selection policy.** `ai_pick_lineup` fields every
-AI-controlled side with an empty bench and an empty `sub_plan`. The mechanism is fully built and
-tested, but nothing generates a plan, so **no AI match in the entire league ever makes a
-substitution.** This is `ai_pick_tactics`'s sibling seam left unfilled, and it is probably the
-single largest realism gap in the sim right now: fatigue, condition, and the three-substitution cap
-are all live and none of them ever bites for nineteen of twenty clubs. It also blocks §4.3's
-measurements. Not hard — the rule vocabulary already expresses forced-cover, fatigue, and
-chase/hold plans.
+**[Closed — S1b, `MATCH_MODEL.md` §16.]** `ai_pick_lineup` now fills a real bench and default
+`sub_plan` for every AI-controlled side (forced-cover, fatigue, and chase/hold rules — the vocabulary
+already expressed all three). Measured in §4.3: substitutions fire far less often than the design
+note's own prediction (0.13/match against 3–5), so this closes the mechanism gap but the resulting
+match-shape effect is small in practice, not the "single largest realism gap" it was filed as.
 
 **5.2 — Concentration is designed but not implemented.** `MATCH_MODEL.md` §17 describes both halves
 of the `ATTRIBUTE_SCHEMA.md` §9 item 2 resolution (Consistency per-match, Concentration
@@ -186,8 +208,8 @@ reference anywhere in `fforge-core`. The "split holds" verdict is therefore half
 **5.3 — Set pieces.** The one item deferred past 2e. No downstream dependency; the worst
 calibration-cost-to-value ratio in the match model. Deferred deliberately, not forgotten.
 
-**5.4 — Stale note.** `MATCH_MODEL.md` §16 states the human side has no bench/plan UI. Batch 4's G3
-built one (`fforge-game/src/flows/subs.rs`). Correct the note.
+**[Closed — S1a.]** `MATCH_MODEL.md` §16's stale note (claiming the human side has no bench/plan UI)
+is corrected; Batch 4's G3 UI (`fforge-game/src/flows/subs.rs`) is acknowledged there.
 
 ---
 

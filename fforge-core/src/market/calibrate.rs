@@ -92,6 +92,12 @@ const SQUAD_MAX: usize = 30;
 /// the event stream (a window with zero completions emits no event at all).
 const WINDOWS_PER_SEASON: usize = 2;
 
+/// Max age counted in the "youth valuation" cut below — `pool::youth_cohort`'s
+/// own 16-18 intake band (`TRANSFER_MODEL.md` §8.1), the population the
+/// `DEVELOPMENT_MODEL.md` §8 seeding invert changes the CA/PA relationship
+/// for most directly.
+const YOUTH_MAX_AGE: i32 = 18;
+
 /// How many seasons at each end of a seed's run are averaged for the
 /// "early" / "late" reduction (Gini trajectory, concentration trend, fee
 /// inflation) — a few seasons smooths a single noisy season without washing
@@ -274,6 +280,13 @@ pub struct MarketTelemetry {
     rank_churns: Vec<f64>,
     role_coverage_violations: u32,
 
+    /// Youth-valuation cut (`start_age ≤ YOUTH_MAX_AGE`): mean/median value
+    /// and headcount at each season-end snapshot — its own read, not folded
+    /// into the league-wide fee/valuation numbers above.
+    youth_value_mean_by_season: Vec<f64>,
+    youth_value_median_by_season: Vec<f64>,
+    youth_count_by_season: Vec<f64>,
+
     /// Per-club squad size at each season-end snapshot — the individual-club
     /// counterpart to `squad_size_min_by_season`/`_max_by_season`'s
     /// league-wide extremes. §9's "squads pin at `squad_max` in every seed"
@@ -348,6 +361,19 @@ impl MarketTelemetry {
         self.concentration_by_season
             .push(top3_share_of_top20(world, &table, &valuations));
 
+        let youth_values: Vec<f64> = world
+            .clubs
+            .values()
+            .flat_map(|c| &c.players)
+            .filter(|&&pid| world.player(pid).age(today) <= YOUTH_MAX_AGE)
+            .filter_map(|pid| valuations.get(pid).map(|m| m.0 as f64))
+            .collect();
+        self.youth_value_mean_by_season
+            .push(mean_finite(&youth_values));
+        self.youth_value_median_by_season
+            .push(median(&youth_values));
+        self.youth_count_by_season.push(youth_values.len() as f64);
+
         self.mean_age_by_season
             .push(mean_finite(&squad_ages(world, today)));
 
@@ -417,6 +443,11 @@ pub struct MarketReport {
     squad_size_min: Vec<f64>,
     squad_size_max: Vec<f64>,
     role_coverage_violations: Vec<f64>,
+    /// Youth-valuation cut (`start_age ≤ YOUTH_MAX_AGE`): per-seed mean of
+    /// the season-by-season mean/median value and headcount.
+    youth_value_mean: Vec<f64>,
+    youth_value_median: Vec<f64>,
+    youth_count_mean: Vec<f64>,
     /// Per seed: the *worst-case single club's* fraction of season-end
     /// snapshots sitting at `SQUAD_MAX` — reported for visibility only. A max
     /// over ~20 clubs pooled across a handful of seeds is a noisy,
@@ -488,6 +519,12 @@ impl MarketReport {
         );
         self.role_coverage_violations
             .push(t.role_coverage_violations as f64);
+        self.youth_value_mean
+            .push(mean_finite(&t.youth_value_mean_by_season));
+        self.youth_value_median
+            .push(mean_finite(&t.youth_value_median_by_season));
+        self.youth_count_mean
+            .push(mean_finite(&t.youth_count_by_season));
 
         let mut worst_cap_fraction = 0.0f64;
         let mut below_cap = 0usize;
@@ -565,6 +602,15 @@ impl MarketReport {
     }
     pub fn role_coverage_violations(&self) -> SeedSpread {
         seed_spread(&self.role_coverage_violations)
+    }
+    pub fn youth_value_mean(&self) -> SeedSpread {
+        seed_spread(&self.youth_value_mean)
+    }
+    pub fn youth_value_median(&self) -> SeedSpread {
+        seed_spread(&self.youth_value_median)
+    }
+    pub fn youth_count_mean(&self) -> SeedSpread {
+        seed_spread(&self.youth_count_mean)
     }
     pub fn worst_club_cap_fraction(&self) -> SeedSpread {
         seed_spread(&self.worst_club_cap_fraction)
@@ -801,6 +847,25 @@ pub fn print_report(report: &MarketReport) {
         "Share of clubs majority-pinned at squad_max",
         &report.share_clubs_majority_pinned(),
         "well under 1.0 (not every club ratcheted to the ceiling)",
+    );
+    println!();
+    println!(
+        "--- Youth valuations (start_age <= {YOUTH_MAX_AGE}), its own cut (`DEVELOPMENT_MODEL.md` §8) ---"
+    );
+    row(
+        "Youth mean value",
+        &report.youth_value_mean(),
+        "new cut, no prior band",
+    );
+    row(
+        "Youth median value",
+        &report.youth_value_median(),
+        "new cut, no prior band",
+    );
+    row(
+        "Youth headcount per season-end snapshot",
+        &report.youth_count_mean(),
+        "new cut, no prior band",
     );
 }
 
