@@ -551,6 +551,18 @@ fixing, but a *low* flop rate with genuinely unrecoverable PA would not have blo
 *high* flop rate with trivially recoverable PA still would have. §8.4 makes this the primary success
 criterion explicitly, ahead of the flop rate.
 
+**A cheaper fix was considered and rejected for exactly this reason.** Widening the old `headroom`
+draw's range (e.g. `U(0, 24)` instead of `U(0, 8)`) would produce a non-zero flop rate in a handful of
+lines, no world-generation restructuring, no re-derivation of `youth_discount`. It is rejected because
+it does not touch the actual defect: PA would still be `CA` plus **structureless** flat noise — wider,
+but uncorrelated with anything real about the player, so an agent cannot get better at estimating it
+and the ablation gains variance without gaining a decision-quality axis. `φ`-driven uncertainty is
+categorically different: it is attached to a real per-player trait that also drives the player's actual
+trajectory, so inferring it is inferring something true, not sampling noise. The wider-window patch
+remains a legitimate *fallback* if §8.6's escalation clauses fire and the full inversion proves more
+disruptive than the project's appetite — but it is a deliberate fallback, never a default to slide
+into ahead of trying the real fix.
+
 ### 8.2 The divergence and its resolution — a pinned record
 
 `worldgen::gen_player` derives `potential = best_ca + headroom` (CA first, `headroom` a young/veteran-
@@ -634,7 +646,11 @@ material rise rather than a marginal one.
 **Falsifiable prediction: `residual_sd` should roughly double**, with the effect **strongest at age
 16** (`φ` has the most leverage there — the maturity curve is steepest, so a given phase shift moves
 `r0'` the most) and **weakest at age 21** (the curve is flattening toward its plateau, so the same
-`φ` shift moves `r0'` the least).
+`φ` shift moves `r0'` the least). (Provenance note: `WONDERKID_FLOP_DIAGNOSIS.md`'s original,
+pre-measurement diagnosis hand-waved "into the double digits" for this same number, before any real
+`r0'`/maturity-curve data existed to sharpen it. The `dr0'/dy`-based estimate above supersedes that
+guess with an actual sensitivity computed off the real envelope; the two are not in tension, one is
+just earlier and cruder than the other.)
 
 **If `residual_sd` does not rise, the fix has failed at its actual purpose regardless of what the flop
 rate reads, and that is an escalation to design, not a re-fit.** A flop rate that lands in band with

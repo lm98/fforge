@@ -374,6 +374,17 @@ stop, report, and the fix is a `DevKnobs` re-fit after all.
 
 ## W2 — Pin the seeding rule in the design note
 
+**[Done — `DEVELOPMENT_MODEL.md` §8.]** Envelope-consistent seeding, the divergence and its
+resolution (note wins, in the `MATCH_MODEL.md` §11 style this task asks for), the `k_dec`/
+`youth_discount` consequences, the cohort/headline split (§4's open question below, resolved:
+`start_age ≤ 18`), the primary success criterion (`residual_sd`, §3's inferability baseline, not
+the flop rate), and a fixed re-fit procedure/escalation clauses for W4 are all pinned there now.
+**One gap against this task's own deliverable list: `pa_sigma` (or an equivalently named knob for
+"how much talent varies within a club" at the PA draw) is not pinned as a specific named field** —
+§8.1 states the drawing rule in prose ("PA is a primary drawn quantity anchored on club quality")
+without committing to the knob's name or where it lives (`WorldGenConfig` vs. a new struct). Land
+that as part of W3, where the actual field gets added.
+
 **Goal.** Resolve the doc-vs-code divergence in the doc first, per design-note-first discipline.
 
 **Deliverable.** A new `DEVELOPMENT_MODEL.md` section (or a substantial §2.1 amendment) pinning:
