@@ -99,6 +99,10 @@ young-envelope in shape-finding, a pure artifact. Worldgen initializes a youth's
 curve (`(PA/NORM)·env_c(15)` + noise), so being advanced-for-age is itself the visible PA signal a
 scout reads, and development continues a consistent trajectory rather than fighting the initial state.
 
+**[Divergence, resolved at §8 — note wins.]** `worldgen::gen_player` has never actually implemented
+this: it derives `potential` from CA, not the other way around. §8 pins the resolution normatively
+and records why this is one of the rare reconciliations that goes against code.
+
 ### 2.2 PA-gating — decision: gate on **best-role peak CA**, not an attribute budget
 
 `ATTRIBUTE_SCHEMA.md` §4 leaves two options for how PA caps growth. We take its lean:
@@ -459,6 +463,13 @@ scratchpad assumed (`gen_player` shapes attributes around club quality, not `env
    the plasticity re-fit restored; a true <0.75 flop rate would require worldgen to seed prospects
    further below PA (a worldgen change, out of scope for this knob re-fit).
 
+   **[This is now the fix, not just a filed finding — see §8.]** The wonderkid investigation
+   (`BACKLOG.md` §2) picked this exact thread back up: seeding prospects on the envelope beneath a
+   drawn PA (rather than deriving PA from a seeded CA) is precisely "worldgen change" this note
+   said was out of scope for a knob re-fit. §8 pins it normatively, including a revised reading
+   methodology for the flop-rate row below (a `start_age ≤ 18` headline, not the full cohort this
+   table's targets were originally read against).
+
 These are banked exactly as the `K_DEC` note above: the design shape is unchanged; the numbers are the
 notebook's point, and the real distribution moved them — which is the whole reason §6 asked for the
 harness.
@@ -494,3 +505,203 @@ Deliberately unresolved, to settle during the Rust port or Phase 3/4 calibration
    Professionalism (§2.3). Whether that coupling is strong enough to make character a *visible*
    scouting signal without making it deterministic is a Phase-3 calibration call — the development
    analogue of the match model's support-term-weight question (`MATCH_MODEL.md` §10 item 2).
+
+## 8. The wonderkid seeding fix — normative record
+
+**Status: normative, pinning `BACKLOG.md` §2's critical-path item — the only thing blocking
+`AGENT_MODEL.md`.** Full measurement history in `WONDERKID_FLOP_DIAGNOSIS.md` and its W1 amendment:
+W1 (measurement-only) confirmed the attainment floor §6 already flagged and refuted the stronger
+"no knob can produce a flop" claim (5.1% of the wonderkid cohort is born below 0.75 PA-attainment;
+a growth-disabled probe surfaces 2.7% of it even with growth switched off); W1b added the arithmetic
+seeding-fix projection now implemented as `fforge-core::career_arc::{run_career_arc_with_projection,
+print_seeding_projection, fit_pa_from_ca_age_youth}` and exposed by `bin/career_arc`. This section is
+the destination those investigations were gated on reaching, and the reason §2.1's and §6's structural
+findings above are marked superseded rather than rewritten in place — the numbers they recorded are a
+real, banked reading of the *pre-fix* engine and stay true as that.
+
+### 8.1 The seeding rule
+
+**Envelope-consistent seeding is normative.** `worldgen::gen_player` (and `pool::youth_cohort`, which
+calls it) must draw **PA first**, anchored on club quality where CA-relative `base` is anchored today,
+and then seed every attribute **beneath that drawn ceiling**, on the envelope: `a_i ≈
+(PA/NORM)·env_c(age − φ)` plus the existing seeding noise, for a freshly-resolved per-player `φ` (§2.3's
+bloomer phase, drawn at generation time exactly as `resolve_dev_profile` already draws `E`/`φ` for the
+development trajectory — seeding and development read the *same* `φ`, not two independent draws).
+
+This is not new machinery to design: it is `target_i`'s own formula (§2), and the maturity ratio
+`env_c(y)/NORM` it needs is already built and load-bearing — `career_arc::role_maturity_ratio` (task
+4 of the W1 investigation, reused by W1b's projection itself) wraps the identical `EnvTables::env_at`
+/ `norms_by_role` machinery `development::tick_changes` computes `target_i` from. **The seeding fix is
+"call the growth engine's own ceiling function at generation time," not "encode the envelope a second
+way."** `youth_discount` and `headroom` both cease to exist — there is no separate youth-quality
+discount (PA already carries youth's headroom) and no separate CA-to-PA gap draw (the gap is now
+whatever the envelope says it should be at that age, not a free parameter).
+
+**This is what makes PA non-trivially inferable from `(CA, age)` — and the inferability, not the flop
+rate, is why the divergence was Phase-5-blocking.** Under the old CA-first rule, `PA = CA + U(0, 8ish)`
+is a small, near-uniform residual on top of an already-known quantity: a scout — human or agent — can
+read PA off `(CA, age)` to within a few points for free. Under the new rule, `(CA, age)` alone
+under-determines PA, because the same observed CA is consistent with many `(PA, φ)` pairs: a player
+who looks like this at this age could be an on-schedule player with a lower PA, or a late bloomer
+(`φ > 0`) with a higher one, still climbing. That ambiguity is the entire point — it is what Phase 5's
+scouting fog-of-war has to *have something to hide*, and what gives the agent ablation's
+decision-quality axis (a manager who reads form/character/underlying trajectory better than a naive
+CA-lookup) any range to score against. A near-zero flop rate is a symptom of the same bug and worth
+fixing, but a *low* flop rate with genuinely unrecoverable PA would not have blocked Phase 5; a
+*high* flop rate with trivially recoverable PA still would have. §8.4 makes this the primary success
+criterion explicitly, ahead of the flop rate.
+
+### 8.2 The divergence and its resolution — a pinned record
+
+`worldgen::gen_player` derives `potential = best_ca + headroom` (CA first, `headroom` a young/veteran-
+banded uniform draw) — while `DEVELOPMENT_MODEL.md` §2.1 has, since this note's first draft, specified
+the opposite: seed a player on the age envelope beneath a drawn ceiling (§2.1's own text: "Worldgen
+initializes a youth's attributes *on* this curve... so being advanced-for-age is itself the visible PA
+signal a scout reads"). The code has never implemented what the note describes.
+
+**This project has two prior doc-vs-code reconciliations on record, and both resolved *code*-wins —
+this one resolves *note*-wins, and the difference is worth stating rather than leaving implicit.**
+
+- `MATCH_MODEL.md` §16's T12 finding: the section drafted a 5-substitution cap; the batch-3 task spec
+  implemented 3 (`fforge_domain::MAX_SUBSTITUTIONS`); the note was corrected to 3, "the authoritative,
+  more specific instruction superseding this section's original '5'."
+- `MATCH_MODEL.md` §11's T14 correction: the section required every 2e draw to come from one shared
+  RNG stream; the implementation uses four independent ones; the note was corrected to require the
+  four-stream design, because the single-stream rule — if actually followed — would have made every
+  feature's identity setting non-local and the bit-for-bit invariant tests it was gating impossible to
+  write.
+
+Both of those were cases where the **code encoded a real, deliberate decision** — a newer, more
+specific task instruction in one case, a discovered architectural necessity in the other — and the
+note was simply stale. **This divergence is the opposite shape.** `gen_player`'s CA-first draw was
+never a deliberate decision recorded anywhere: no task spec asks for it, no comment defends it, and it
+silently drifted from what §2.1 said from the note's first draft. Whose version wins is decided by
+which one the actual, named downstream consumer needs — §8.1's inferability property, which Phase 5's
+fog-of-war and decision-quality axis structurally require and which only the note's version delivers.
+The tie-break criterion generalizes: a divergence resolves toward whichever side a real, identified
+consumer depends on, not toward whichever side happens to be already built.
+
+### 8.3 The cohort and the headline split
+
+The existing §6 table's cohort is `start_age ≤ 21` — attainment mean, the sub-0.80 tail, and
+attainment p10 keep reading that full cohort; nothing about those three metrics' population changes.
+
+**Wonderkid hit and flop rates narrow to the `start_age ≤ 18` pool**, reported **per start-age band
+(16, 17, 18) as well as pooled**, not only pooled. This is deliberate, not a tightening for its own
+sake: the original ~4% flop target (§6's table) was derived for 16–18-year-old prospects specifically
+— the population "scouting actually cares about," in `fit_pa_from_ca_age_youth`'s own words — and
+`start_age ≤ 21` silently mixes it with 19–21-year-olds who are most of the way up the maturity curve
+already (`role_maturity_ratio` reads ~0.80–0.92 of `NORM` by age 20–22, against ~0.55–0.70 at 16–18) and
+so have structurally lower flop probability by construction, not by having "made it." Pooling the two
+populations and re-tuning to hit 4% on the mixture would be fitting to a target the mixture was never
+derived against.
+
+**This makes the headline number harder, and that is recorded as a deliberate choice, not an
+oversight.** The W1b projection reads **0.191** on the `start_age ≤ 18` pool against **0.176** pooled
+across every traced band (16–20) — the `≤ 18` headline is the harder, more honest number, and is the
+one §8.5's re-fit targets.
+
+**The `≤ 18` headline needs `≥ 24` seeds to be readable.** The per-band wonderkid sub-population is
+small — a handful of seeds at the harness's default pooling puts `n_wk` per band in the low hundreds,
+and a rare-event rate (flop is a tail event even pre-fix) on a sample that size carries real sampling
+noise the way `MATCH_MODEL.md` §8 already warned every pooled aggregate does. Any report of the `≤ 18`
+flop rate — in a re-fit's own working notes or a future re-bank of this table — **must print
+`n_wk` alongside every rate it states**, per band and pooled, so a reader can tell a genuine reading
+from a small-sample artifact without re-running the harness themselves.
+
+### 8.4 The primary success criterion
+
+**`fit_pa_from_ca_age_youth`'s `residual_sd` is the headline measurement of this fix — not the flop
+rate.** §8.1 already states why: the divergence was blocking on inferability, and `residual_sd` is the
+direct, quantitative reading of how well `(CA, age)` alone determines PA. The flop rate is a derived,
+noisier, rare-event statistic of the same underlying fix; `residual_sd` is what to actually watch.
+
+**Current reading: 2.61.** This is essentially the uniform `headroom` draw's own standard deviation —
+`headroom ~ U(0, 8)`-ish, `sd = 8/√12 ≈ 2.31` — meaning today's entire residual is explained almost
+exactly by the one mechanism this fix deletes. Concretely: this fix removes the present, near-total
+source of PA-unrecoverability (a small, bounded, uniform draw with no hidden structure — the easiest
+kind of noise to invert) and replaces it with the spread of the hidden bloomer shift `φ`, which is not
+recoverable from `(CA, age)` without also knowing `φ`.
+
+**Sensitivity estimate.** `dr0'/dy ≈ 0.068/yr` at the youth bands (the `role_maturity_ratio` table's
+own slope across 16–22 — steepest near 16–18, flattening toward 21 as the curve nears its 24–27 peak),
+giving `dPA ≈ PA·(dr0'/r0') ≈ 9.6` per year of `φ` at a representative youth `r0'`. `φ`'s own spread
+(`σ_φ = 1.8` yr, §2.3) times a sensitivity of that order is a real, non-trivial swing in what PA a
+given `(CA, age)` is consistent with — not a tight derivation of the exact post-fix `residual_sd`
+(the two are order-of-magnitude corroboration, not the same calculation), but the reason to expect a
+material rise rather than a marginal one.
+
+**Falsifiable prediction: `residual_sd` should roughly double**, with the effect **strongest at age
+16** (`φ` has the most leverage there — the maturity curve is steepest, so a given phase shift moves
+`r0'` the most) and **weakest at age 21** (the curve is flattening toward its plateau, so the same
+`φ` shift moves `r0'` the least).
+
+**If `residual_sd` does not rise, the fix has failed at its actual purpose regardless of what the flop
+rate reads, and that is an escalation to design, not a re-fit.** A flop rate that lands in band with
+`residual_sd` still pinned near 2.6 would mean the mechanism intended to inject hidden variation isn't
+actually injecting it — the seeding change would be cosmetic (moving *where* the uniform draw sits in
+the formula, not removing what it does to PA's recoverability) rather than the structural fix §8.1
+requires.
+
+### 8.5 The re-fit procedure
+
+Fixed in advance because `BACKLOG.md` §2 item 3 correctly predicts the knobs below "trade against each
+other and fitting them singly will oscillate," and gives no procedure to stop that. This is the
+procedure.
+
+- **Primary — fit to this, and only this:** the `start_age ≤ 18` wonderkid flop rate. Target band
+  **0.02–0.08**.
+- **Accept-bands — must hold, but are never the fitting target:**
+  - `≤ 18` wonderkid hit rate `≥ 0.45`
+  - Attainment mean `0.85–0.92`
+  - Sub-0.80 attainment tail `0.10–0.20`
+  - Physical peak age `24–27`
+  - Veteran physical slope (30→35) `−2.2` to `−3.2` CA/yr
+- **Read-and-report only — explicitly not fitted:**
+  - `residual_sd` — must **not** fall back toward `2.6`. If it does, that is a **stop**, not a trade
+    against the primary metric (§8.4).
+  - Mental plateau onset and veteran mental slope (`BACKLOG.md` §4.2, already reading ~26.4 and ~+0.02
+    against targets of "early 30s" and ~+0.3). **Raising `k_dec` pushes the mental slope *further* from
+    its target**, because `k_dec` is the aging-tracking rate for every `DevCategory`'s decline branch,
+    not a physical-only knob — accelerating it to fix the physical/veteran crash (below) accelerates
+    mental decline too, on a category that is already too flat and plateauing too early. Do not chase
+    it in this pass; it is a pre-existing, separately-filed divergence, not this re-fit's job.
+- **Order, not a knob-at-a-time grid:**
+  1. **`k_dec` alone first** (`0.30` toward `1.0`), judged only against the veteran physical/mental
+     slopes (the accept-band and the read-and-report-only mental slope above) — §8.6's own correctness
+     check on the seeding change rides on this step.
+  2. **Then `plast_mid`/`plast_width`, `e_sigma`, `e_min` jointly** — a coarse grid or coordinate
+     descent against a *stated* objective (the primary metric, constrained by the accept-bands), never
+     one knob at a time. `DEVELOPMENT_MODEL.md` §6's own banked history is the precedent this generalizes
+     from: these three already traded against each other once, during the original real-`worldgen`
+     re-fit, and were fit jointly then for exactly this reason.
+- **Hard constraint: `env_*` shape does not move.** Peak ages and veteran slopes currently pass, and
+  the envelope (§2.1) is what produces *both* the aging character the accept-bands check *and* `r0'`
+  — the quantity every W1b projection number and the `residual_sd` prediction above are computed from.
+  Moving `env_*` during this re-fit would silently invalidate every number this section pins.
+
+### 8.6 Two escalation clauses
+
+**Max-step saturation.** The required gap-closure fraction on the `≤ 18` cohort rises from the current
+`f ≈ 0.412` to `f ≈ 0.62` (+50% relative) under the seeding fix — and the W1b projection's own
+documented caveat is that `max_step` quantization *suppresses* `f` at larger gaps, which is exactly the
+regime a lower `r0'` (a bigger `1 − r0'` gap to close) enters. **The re-fit must instrument the
+fraction of monthly attribute steps clipped at `max_step`, specifically for the 16-year-old-start-age
+band** (the band with the largest post-fix gap and the most exposure). If that fraction rises
+materially *and* the primary metric (the `≤ 18` flop rate) stalls short of its target band even after
+§8.5's procedure, **`max_step` is the binding constraint. It is not on the re-fit knob list above** —
+raising it is a structural change to the quantization scheme (§7 item 1), not a value in `DevKnobs`'
+existing re-fit surface — **and the task stops and reports** rather than reaching for it.
+
+**`k_dec` as a correctness check on the seeding change itself.** `k_dec = 0.30` exists, per §6's own
+banked history, "purely to stop non-envelope-consistent veterans crashing" — i.e. it is a compensating
+knob for the *same* CA-first seeding defect this section fixes, just showing up at the veteran end
+(worldgen seeds mid-career players near their plateau, above the envelope, rather than on it) instead
+of the youth end (the flop rate). **If seeding is genuinely envelope-consistent, veterans start on the
+envelope, the aging pull term `K_DEC·(target_i − a_i)` is small by construction (there is little gap to
+pull against), and raising `k_dec` toward `~1.0` should barely move the veteran slopes** — exactly
+`§8.5`'s first re-fit step, run before anything else, so its result gates the rest. **If raising `k_dec`
+still crashes the veteran slopes, the seeding change is incomplete** — some population (a start-age
+range, `pool::youth_cohort`'s own generation path, or a re-roll edge case) is not actually landing on
+the envelope — **and the re-fit stops** rather than compensating a second time with a suppressed
+`k_dec`, which is the exact trap that produced `0.30` in the first place.

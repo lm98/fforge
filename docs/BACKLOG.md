@@ -52,7 +52,10 @@ beneath a drawn ceiling. Two consequences: the wonderkid flop rate is structural
 **PA is recoverable from (CA, age) to within a few points**, which leaves Phase 5's scouting
 fog-of-war with nothing to hide and the agent ablation's decision-quality axis with no range.
 
-Full analysis in `WONDERKID_FLOP_DIAGNOSIS.md` and its W1 amendment.
+Full analysis in `WONDERKID_FLOP_DIAGNOSIS.md` and its W1 amendment. **The seeding rule, the
+divergence's resolution, the cohort/headline split, the primary success criterion, the re-fit
+procedure, and both escalation clauses are now pinned normatively in `DEVELOPMENT_MODEL.md` §8** —
+read that section before starting items 2–4 below; item 1 is done.
 
 **Immediate next action: read W1b's projection output.** The machinery is merged
 (`run_career_arc_with_projection`, `print_seeding_projection`) and prints its own decision rule. It
@@ -67,9 +70,11 @@ number gates everything below:
 
 **The work, once the gate clears:**
 
-1. **Pin the seeding rule** in `DEVELOPMENT_MODEL.md`: envelope-consistent seeding is normative; PA
-   is a primary drawn quantity anchored on club quality; seeding reads `env_c(age − φ)`, which is
-   what makes PA non-trivially inferable. Record the divergence and its resolution.
+1. **[Done — `DEVELOPMENT_MODEL.md` §8.]** Pin the seeding rule: envelope-consistent seeding is
+   normative; PA is a primary drawn quantity anchored on club quality; seeding reads
+   `env_c(age − φ)`, which is what makes PA non-trivially inferable. The divergence and its
+   resolution are recorded there too — this is a *note-wins* reconciliation, the first on record
+   (§8.2 explains why, against the project's two prior code-wins reconciliations).
 2. **Invert the draw** in `gen_player`, reusing `development`'s existing ceiling/`NORM` machinery
    rather than re-encoding the envelope. `youth_discount` and `headroom` both disappear.
    `pool::youth_cohort` inherits it. Expect a world re-roll and a re-pinned golden baseline; a
@@ -86,6 +91,13 @@ number gates everything below:
 ~0.55) with 21-year-olds (~0.91). Post-fix those populations have structurally different flop
 probabilities. Decide deliberately whether the headline metric tightens to `start_age ≤ 18` rather
 than retuning to hit 4% on a cohort whose composition the target never contemplated.
+
+**[Resolved — `DEVELOPMENT_MODEL.md` §8.3.]** Yes: the wonderkid hit/flop headline tightens to
+`start_age ≤ 18`, reported per band and pooled, `n_wk` printed with every rate. Attainment mean,
+the sub-0.80 tail, and attainment p10 stay on the full `≤ 21` cohort — only hit/flop narrow. This
+makes the headline harder (projected 0.191 on `≤ 18` vs. 0.176 pooled across all bands), which is
+the deliberate consequence of targeting the population the original ~4% figure was actually derived
+for.
 
 ---
 
