@@ -226,8 +226,16 @@ fn season_end_snapshot() {
 /// availability screen, and `Ok` costs no ink by design. Twelve matchdays is
 /// deep enough for real cards and layoffs to have accumulated.
 fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
-    let (session, telemetry) = fixture(12);
-    let news = news_fixture(12);
+    // S1b (`MATCH_MODEL.md` §16's bench-selection/default-plan policy):
+    // `ai_pick_lineup`'s bench-player Consistency/ambient-injury pre-rolls
+    // shift the per-fixture RNG draw sequence for every match, including
+    // the human's own auto-picked one — a real, documented consequence of
+    // the policy landing (see the crate's own S1b measurement notes), not a
+    // formatting regression. At the old matchday count (12) this fixed
+    // seed's availability screen flickered between colourable and not;
+    // 20 sits well inside the stably-colourable range.
+    let (session, telemetry) = fixture(20);
+    let news = news_fixture(20);
     let (finished, finished_telemetry) = finished_season();
     vec![
         ("squad", squad::render(&session, p)),

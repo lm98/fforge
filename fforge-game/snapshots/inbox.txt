@@ -1,23 +1,23 @@
 
 === Inbox — FC Nerana · 2026, day 255 (4 unread, 102 in all) ===
     Date
- *! 2026, day 248  FC Nerana 5 - 0 Real Bellemona
-  ! 2026, day 241  Olimpia Veraverde 0 - 2 FC Nerana
-  ! 2026, day 234  FC Nerana 1 - 0 Atlético Rivemona
+ *! 2026, day 248  FC Nerana 7 - 0 Real Bellemona
+  ! 2026, day 241  Olimpia Veraverde 0 - 1 FC Nerana
+  ! 2026, day 234  FC Nerana 3 - 1 Atlético Rivemona
   ! 2026, day 227  Real Pralora 0 - 0 FC Nerana
   ! 2026, day 220  FC Nerana 3 - 1 Real Valdisola
  *! 2026, day 248  Giorgio Sato is the game's outstanding performer, rated 10.0.
- *! 2026, day 241  João Moretti is the game's outstanding performer, rated 9.8.
+ *! 2026, day 241  João Moretti is the game's outstanding performer, rated 10.0.
   ! 2026, day 234  Petar Serra is the game's outstanding performer, rated 10.0.
   ! 2026, day 227  Petar Serra is the game's outstanding performer, rated 8.3.
   ! 2026, day 220  Petar Serra is the game's outstanding performer, rated 10.0.
   ! 2026, day 227  Advisory: nobody at FC Nerana rates Central Mid as his best role.
  *  2026, day 250  FC Nerana unveils 2 youth prospect(s).
-    2026, day 248  AC Veronte 0 - 2 FC Fiorisola
-    2026, day 248  US Bellessa 0 - 3 Dinamo Fioressa
-    2026, day 248  Virtus Castonte 3 - 0 Sporting Campetto
+    2026, day 248  AC Veronte 1 - 2 FC Fiorisola
+    2026, day 248  US Bellessa 0 - 0 Dinamo Fioressa
+    2026, day 248  Virtus Castonte 4 - 0 Sporting Campetto
     2026, day 248  FC Portaverde 3 - 0 Inter Ostetto
-    2026, day 248  Virtus Montaro 10 - 0 Olimpia Osturnia
-    2026, day 248  Union Montonte 0 - 0 Real Valdisola
+    2026, day 248  Virtus Montaro 13 - 0 Olimpia Osturnia
+    2026, day 248  Union Montonte 1 - 0 Real Valdisola
   ...and 84 lower-salience item(s) not shown.
   * unread   ! must-see

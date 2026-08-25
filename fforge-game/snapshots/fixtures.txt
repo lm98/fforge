@@ -12,13 +12,13 @@ Matchday 6 fixtures:
   Dinamo Fioressa        vs FC Fiorisola
 
 Matchday 5 results:
-> FC Nerana               5 - 0  Real Bellemona
-  Real Valdessa           2 - 0  Olimpia Veraverde
+> FC Nerana               7 - 0  Real Bellemona
+  Real Valdessa           3 - 0  Olimpia Veraverde
   Dinamo Bellora          0 - 2  Atlético Rivemona
   Dinamo Valdetto         6 - 0  Real Pralora
-  Union Montonte          0 - 0  Real Valdisola
-  Virtus Montaro         10 - 0  Olimpia Osturnia
+  Union Montonte          1 - 0  Real Valdisola
+  Virtus Montaro         13 - 0  Olimpia Osturnia
   FC Portaverde           3 - 0  Inter Ostetto
-  Virtus Castonte         3 - 0  Sporting Campetto
-  US Bellessa             0 - 3  Dinamo Fioressa
-  AC Veronte              0 - 2  FC Fiorisola
+  Virtus Castonte         4 - 0  Sporting Campetto
+  US Bellessa             0 - 0  Dinamo Fioressa
+  AC Veronte              1 - 2  FC Fiorisola
