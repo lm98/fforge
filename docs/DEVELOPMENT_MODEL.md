@@ -99,9 +99,12 @@ young-envelope in shape-finding, a pure artifact. Worldgen initializes a youth's
 curve (`(PA/NORM)·env_c(15)` + noise), so being advanced-for-age is itself the visible PA signal a
 scout reads, and development continues a consistent trajectory rather than fighting the initial state.
 
-**[Divergence, resolved at §8 — note wins.]** `worldgen::gen_player` has never actually implemented
-this: it derives `potential` from CA, not the other way around. §8 pins the resolution normatively
-and records why this is one of the rare reconciliations that goes against code.
+**[Divergence, resolved at §8 — note wins. Code now matches: the fix landed at W3.]**
+`worldgen::gen_player` did not implement this for most of the project's life — it derived
+`potential` from CA, not the other way around. §8 pins the resolution normatively and records why
+this is one of the rare reconciliations that goes against code; `gen_player` now draws PA first and
+seeds attributes on `env_c(age − φ)` beneath it, exactly as this section always specified, so the
+paragraph above describes live behaviour rather than an aspiration.
 
 ### 2.2 PA-gating — decision: gate on **best-role peak CA**, not an attribute budget
 
@@ -409,18 +412,24 @@ career-length integral. Recorded so the next person does not have to re-derive t
 not introduced by the re-bank.** The T14 run makes four of them explicit, all present in the banked
 readings too:
 
-| Metric | Target | Actually reads | Note |
-|---|---|---|---|
-| Mental plateau onset | early 30s | **26.4** | ~5 years early, and has been since the original re-fit (~26.7) |
-| Veteran mental slope | ~ +0.3 CA/yr | **+0.02** | flat rather than slightly positive; banked read +0.04 |
-| Wonderkid flop rate | ~4% | **0.00** | the harness produces essentially no flops |
-| PA attainment sub-0.80 tail | ~13% | **18%** | fatter than targeted |
+| Metric | Target | T14 read | **Post-§8 W3+W4 read (24 seeds)** | Status |
+|---|---|---|---|---|
+| Mental plateau onset | early 30s | 26.4 | **32.12** (sd 0.15) | **Resolved** |
+| Veteran mental slope | ~ +0.3 CA/yr | +0.02 | **+0.36** (sd 0.02) | **Resolved** |
+| Wonderkid flop rate | ~4% (now read on `start_age ≤ 18`, §8.3) | 0.00 | **0.036** (n_wk=723) | **Resolved** |
+| PA attainment sub-0.80 tail | ~13% | 18% | **18.9%** (sd 0.02) | Still fat, now in §8.5's 10–20% accept-band |
 
-The mental-onset and mental-slope rows are the same fact seen twice: the Mental envelope's late build
-and gentle decline (§2.2's `d = 32.5`, `w = 3.8`) are not surviving into the measured composite, so
-mental attributes plateau with the others in the mid-20s instead of holding into the 30s. That is a
-model-vs-target discrepancy worth a look on its own terms, not a calibration drift — it should be
-filed and fitted deliberately, not folded into a re-bank pass. Flagged here rather than fixed.
+**All four rows moved at the §8 seeding invert + re-fit, and three are closed.** The T14 text below
+is kept as the record of what was believed before that landed; it is superseded, not deleted.
+
+The mental-onset and mental-slope rows were the same fact seen twice: the Mental envelope's late build
+and gentle decline (§2.2's `d = 32.5`, `w = 3.8`) were not surviving into the measured composite, so
+mental attributes plateaued with the others in the mid-20s instead of holding into the 30s. **That
+resolved as a side effect of §8.5's stage-2 loosening, not by fitting it** — the much wider plasticity
+window keeps the mental composite climbing into the 30s, which is what the envelope always described;
+the pre-fix knobs were freezing it early. Recorded, per §8.5's read-and-report-only rule (that
+stage was explicitly forbidden from chasing these two rows), as an unfitted improvement.
+`BACKLOG.md` §4.2 is closed on the strength of it.
 
 **T9 checked, not re-fit: `aging_prof_weight = 0.5` against this table.** Re-running the same 8-seed
 ×16-season harness with the blend live (§3's `w = 0.5`) reads physical peak **26.00**, veteran physical
@@ -463,7 +472,10 @@ scratchpad assumed (`gen_player` shapes attributes around club quality, not `env
    the plasticity re-fit restored; a true <0.75 flop rate would require worldgen to seed prospects
    further below PA (a worldgen change, out of scope for this knob re-fit).
 
-   **[This is now the fix, not just a filed finding — see §8.]** The wonderkid investigation
+   **[This is now the fix, and it has landed — see §8. The paragraph above is the pre-fix record.]**
+   Post-W3/W4 the `start_age ≤ 18` flop rate reads **0.036** and the sub-0.80 tail **18.9%**; the
+   "attainment floor" this bullet describes is gone, because prospects are now seeded genuinely below
+   PA rather than near it. The wonderkid investigation
    (`BACKLOG.md` §2) picked this exact thread back up: seeding prospects on the envelope beneath a
    drawn PA (rather than deriving PA from a seeded CA) is precisely "worldgen change" this note
    said was out of scope for a knob re-fit. §8 pins it normatively, including a revised reading
@@ -575,8 +587,11 @@ Deliberately unresolved, to settle during the Rust port or Phase 3/4 calibration
 
 ## 8. The wonderkid seeding fix — normative record
 
-**Status: normative, pinning `BACKLOG.md` §2's critical-path item — the only thing blocking
-`AGENT_MODEL.md`.** Full measurement history in `WONDERKID_FLOP_DIAGNOSIS.md` and
+**Status: normative, and fully landed — W3 (the `worldgen` seeding invert, §8.1) and W4 (the
+`DevKnobs` re-fit, §8.5) shipped together per `WONDERKID_W1_AMENDMENT.md` §5's decision rule, and
+W5 re-banked the market harness (`TRANSFER_MODEL.md` §9). `BACKLOG.md` §2 is closed and Phase 5 is
+unblocked.** Banked readings live in §6; the escalation clauses in §8.6 were all checked and none
+fired. Full measurement history in `WONDERKID_FLOP_DIAGNOSIS.md` and
 `WONDERKID_W1_AMENDMENT.md`: W1 (measurement-only) confirmed the attainment floor §6 already flagged,
 and — the one place the original diagnosis's own prediction was wrong, per the amendment's own
 scorecard — the growth-disabled probe did **not** hold the flop rate at 0.00 as predicted; it measured

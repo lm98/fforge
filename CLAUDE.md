@@ -112,12 +112,29 @@ worth carrying forward: §3's effect table mixes two lever classes of very diffe
 (see `TACTICS_MODEL.md` §3), which left `Tempo::Direct` and then `Mentality::Attacking`
 strictly dominant. Both are fitted now — no instruction dominates, non-dominance is
 squad-conditional (§9 item 6), and `AI_TACTICS_ENABLED` is `true`, so every AI-controlled
-side picks real tactics. Pooled goals/match reads 2.59 with the whole of 2e live.
+side picks real tactics. Pooled goals/match reads **2.50** (sd 0.31, 24 seeds) with the whole of
+2e live, AI substitutions on, and the seeding fix below landed.
+
+**AI substitutions are live** (`MATCH_MODEL.md` §16's "v1 AI bench-selection and
+default-substitution-plan policy"): `ai_pick_lineup` fills a real bench and default `sub_plan` for
+every AI-controlled side, closing T12's last deferred seam. Measured, it fires far less than the
+design note predicted (0.13 subs/match against a predicted 3–5) — the refutations and their root
+causes are recorded in §16's own prediction block rather than fitted away.
 
 Phase 3 (player development, `DEVELOPMENT_MODEL.md`) is implemented in `fforge-core::development`
 — a monthly `DevelopmentTick` records resolved attribute deltas the fold integer-adds. Its
 harness (`fforge-core::career_arc`, `bin/career_arc`) drives real multi-season runs and has
 re-fit the knob table, guarded by `career_arcs_are_in_a_believable_ballpark`.
+
+**The wonderkid seeding fix is landed and Phase 5 is unblocked** (`DEVELOPMENT_MODEL.md` §8,
+`BACKLOG.md` §2 — closed). `worldgen::gen_player` used to derive `potential = best_ca + headroom`,
+CA first, while §2.1 had always specified the opposite; it now draws PA first and seeds attributes
+on the age envelope beneath it, reusing the growth engine's own ceiling machinery. **This is the
+project's first *note-wins* doc-vs-code reconciliation** — §8.2 records the tie-break criterion
+(resolve toward whichever side a real, identified downstream consumer depends on) against two prior
+code-wins precedents. `DevKnobs` was re-fit in the same change, since the old values were
+compensations for the bug. The point of it: PA is no longer trivially recoverable from `(CA, age)`
+(`residual_sd` 2.61 → 5.57), which is what Phase 5's scouting fog-of-war structurally needs.
 
 Phase 4 (transfer market, `TRANSFER_MODEL.md`) is implemented end to end: the centralized
 valuation function (`fforge-core::valuation`), club decision AI (`club_ai`), the simultaneous
@@ -137,3 +154,11 @@ and `Player.injured_until` (`MATCH_MODEL.md` §12). Note the one divergence from
 list: `Player.condition` was never added and should not be — condition is *derived* from
 `GameState::recent_appearances` rather than stored (`MATCH_MODEL.md` §13), the same
 "derive, don't store" rule CA already follows. Beyond these, not open-ended new features.
+
+**Next: Phase 5, the agent layer.** Its only blocker (§2 of `BACKLOG.md`) is closed, so
+`AGENT_MODEL.md` is the next thing to write — see `BACKLOG.md` §3 for what it must resolve. One
+finding from the seeding fix belongs in that conversation: the *naive* attack on PA (fit on
+`(CA, age)`) and the *competent* one (fit on the per-`DevCategory` composites plus age) are
+near-identical in accuracy at ages 16–18, and only diverge at 19–21. Fog now exists, but at the
+wonderkid ages there is little skill in seeing through it — which the ablation's
+decision-quality axis has to reckon with rather than assume.
