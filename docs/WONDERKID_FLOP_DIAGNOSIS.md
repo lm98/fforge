@@ -1,5 +1,20 @@
 # The wonderkid flop rate is 0.00, and no development knob can fix it
 
+> **[Historical — the investigation that led to the fix. All five tasks (W1–W5) are done and
+> `BACKLOG.md` §2 is closed; Phase 5 is unblocked.]** Two things in this document are known to be
+> wrong and are corrected elsewhere rather than edited out, so the record of what was believed
+> when stays readable:
+> 1. **The title's "no development knob can fix it" is too strong** — `WONDERKID_W1_AMENDMENT.md`
+>    §1 falsified it by measurement (a growth-disabled probe read 2.7%, not 0.00, because ~5% of the
+>    cohort is born below 0.75). The weaker, surviving claim is that flopping is arithmetically
+>    unreachable for the *median* wonderkid. Read the amendment before this document.
+> 2. **The flop rate is no longer 0.00.** Post-fix it reads **0.036** on the `start_age ≤ 18`
+>    headline cohort (`DEVELOPMENT_MODEL.md` §6, §8.3).
+>
+> The normative record of the fix — the seeding rule, the divergence's resolution, the cohort split,
+> the success criterion, the re-fit procedure, and the escalation clauses — is
+> `DEVELOPMENT_MODEL.md` §8, not this file.
+
 Investigation and proposed resolution for the first of the three model-vs-target gaps T14 filed
 (`DEVELOPMENT_MODEL.md` §6). Blocking for Batch 5 (`BATCH5_SCOPING.md` §1.1).
 
@@ -407,6 +422,15 @@ that as part of W3, where the actual field gets added.
 
 ## W3 — Invert the draw in `worldgen`
 
+**[Done — landed together with W4, per `WONDERKID_W1_AMENDMENT.md` §5's 10–30%-band decision rule.
+`DEVELOPMENT_MODEL.md` §8.1 pins the rule; §6 banks the readings.]** `youth_discount` and `headroom`
+are deleted; `gen_player` draws PA first (anchored on club quality) and seeds attributes on
+`(PA/NORM)·env_c(age − φ)`, reusing `development`'s own `EnvTables`/`norms_by_role`/
+`role_ceiling_consts` via a shared `worldgen::SeedTables` rather than re-encoding the envelope.
+`pool::youth_cohort` inherits it. Golden baselines re-pinned (a world re-roll, not a re-fit).
+The headline `residual_sd` rose 2.61 → **5.566** — a ~2.1× rise with the predicted per-band shape
+(steepest at 16, flattest at 21), confirming PA is no longer trivially inferable from `(CA, age)`.
+
 **Goal.** Implement W2's pinned rule.
 
 **Deliverable.** `gen_player` restructured per §5.1: dev profile resolved first; PA drawn from club
@@ -470,6 +494,15 @@ them makes it impossible to tell a seeding effect from a knob effect. Re-pin the
 
 ## W4 — Re-fit `DevKnobs` against the new distribution
 
+**[Done — landed with W3; procedure and banked readings in `DEVELOPMENT_MODEL.md` §8.5 and §6.]**
+`k_dec` 0.30 → 1.0 first (and it barely moved the veteran slopes, which is exactly the correctness
+check §8.6 wanted on W3); then `plast_mid`/`plast_width`/`e_sigma`/`e_min` jointly,
+`(23.5, 2.2)/(0.42, 0.15)` → `(31.25, 4.6)/(0.095, 0.61)` — **loosened**, as this document
+predicted. `start_age ≤ 18` flop rate **0.036** (target 0.02–0.08), hit rate 0.763, attainment mean
+0.871, sub-0.80 tail 0.189 — every accept-band met except the veteran physical slope (−2.01 against
+−2.2 to −3.2), which is plateaued regardless of `k_dec` and likely unreachable without moving
+`env_phys`; filed as an accepted exception. Max-step saturation checked clean (0.0000 both sides).
+
 **Goal.** The knobs were fitted against a floored distribution. Re-fit them against the real one.
 
 **Deliverable.** Re-run `career_arc` and re-fit toward the §6 targets, in this order:
@@ -500,6 +533,15 @@ the attainment mean below 0.85. That would mean the maturity curve gives too muc
 ---
 
 ## W5 — Re-bank the market harness
+
+**[Done — banked in `TRANSFER_MODEL.md` §9's post-§8 table.]** Re-run at 24 seeds × 15 seasons; no
+knob moved. This section's own prediction that "youth pricing shifts" held, and a new youth cut
+(`start_age ≤ 18`) is banked for the first time: mean value **765,954**, median **354,350**. The
+larger movers were finance-side — insolvency 5.34/20 → **0.01/20** and hoarding 0.68/20 → **5.85/20**
+— because wages are set once at signing off `best_ca`, which the seeding invert lowers for the whole
+youth band. Transfer volume held at **1.880** (sd 0.148) against 1.805, i.e. the §3 hypothesis quoted
+below was **not** refuted: cash constraints eased dramatically and volume still did not rise, which
+is positive corroboration for the surplus-collapse explanation over a cash-constraint one.
 
 **Goal.** The market prices off CA and projected CA; both distributions just changed.
 

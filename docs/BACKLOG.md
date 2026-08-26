@@ -31,8 +31,8 @@ snapshot-tested screens, inbox, finances, tactics and substitution-plan editors)
 
 **Harnesses.** Four, all pooled over many seeds and guarded by wide-band regression tripwires:
 `bin/calibrate` (match), `bin/career_arc` (development), `bin/market` (transfer pathologies), plus
-the `fforge-game` snapshot suite. Pooled goals/match reads **2.59** with all of 2e live and
-`AI_TACTICS_ENABLED = true`.
+the `fforge-game` snapshot suite. Pooled goals/match reads **2.50** (sd 0.31, 24 seeds) with all of
+2e live, `AI_TACTICS_ENABLED = true`, S1b's AI substitutions, and §2's seeding invert + re-fit.
 
 **Most recent work.** The wonderkid seeding fix (§2) is fully landed and closed: W3 inverted
 `worldgen::gen_player`'s draw (PA first, attributes seeded on the envelope beneath it,
@@ -172,10 +172,13 @@ hoarding quintupling should have loosened it; it didn't move. **Fog-of-war may f
 making valuations genuinely divergent — which is an argument for re-reading it after B5.1 rather than
 fixing it blind.
 
-**4.2 — Mental plateau onset reads 26.4 against an early-30s target**, and the veteran mental slope
-reads ~+0.02 against ~+0.3. The same fact seen twice: the Mental envelope's late build and gentle
-decline are not surviving into the measured composite. Career-shape fidelity with no Phase 5
-consequence. Worth fitting deliberately at some point, not folded into a re-bank pass.
+**[Closed — resolved as a side effect of §2 item 3's re-fit, not by fitting it.]** Mental plateau
+onset read 26.4 against an early-30s target and the veteran mental slope ~+0.02 against ~+0.3 — the
+same fact seen twice. Post-re-fit they read **32.12** (sd 0.15) and **+0.36** (sd 0.02), both on
+target. `DEVELOPMENT_MODEL.md` §8.5 explicitly forbade chasing these two rows (read-and-report-only),
+so this is an unfitted improvement: the much wider plasticity window the primary flop-rate target
+needed keeps the mental composite climbing into the 30s, which is what the envelope always described
+— the pre-fix knobs were freezing it early. Banked in `DEVELOPMENT_MODEL.md` §6's divergences table.
 
 **[Answered — `bin/calibrate`, 24 seeds, post-seeding-invert.]** Subs/match **0.13** (sd 0.02,
 range 0.10–0.18) — far below `MATCH_MODEL.md` §16's +3 to +5/match prediction; late-match (75'+)

@@ -584,7 +584,7 @@ aggregates, 24 seeds, `bin/calibrate`:
 
 | Aggregate | Tactics off (T5 baseline) | **Tactics live** | Note |
 |---|---|---|---|
-| goals/match | 2.84 | **2.59** | −8.8%; still inside the ballpark guard's `1.2–4.0` sanity band |
+| goals/match | 2.84 | **2.59** | −8.8%; still inside the ballpark guard's `1.2–4.0` sanity band. *This is the tactics A/B as measured at the flip; the engine's **current** pooled reading is 2.50 after S1b's AI substitutions and `DEVELOPMENT_MODEL.md` §8's seeding fix — see `MATCH_MODEL.md` §8's progression table* |
 | H / D / A | 43.0 / 25.7 / 31.3 | 42.7 / 26.8 / 30.6 | slightly more draws, as more sides play `Defensive` |
 | shots/match | 25.24 | 23.64 | |
 | shots on target | 33.9% | 33.8% | flat |
