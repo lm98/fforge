@@ -25,7 +25,7 @@
 use crate::development::DevKnobs;
 use crate::event::Event;
 use crate::rng::{Rng, derive_stream};
-use crate::worldgen::gen_player;
+use crate::worldgen::{SeedTables, gen_player};
 use fforge_domain::{
     GameDate, Player, PlayerId, ROLE_WEIGHTS, Role, World, best_role, date::DAYS_PER_YEAR,
 };
@@ -86,6 +86,7 @@ impl Default for PoolKnobs {
 /// well-coached academy turns out a better cohort than an
 /// identically-reputable club with a poor one. `next_id` is threaded through
 /// and advanced so consecutive clubs in the same window never collide.
+#[allow(clippy::too_many_arguments)]
 fn youth_cohort(
     rng: &mut Rng,
     reputation: u8,
@@ -94,6 +95,7 @@ fn youth_cohort(
     next_id: &mut u32,
     today: GameDate,
     dev_knobs: &DevKnobs,
+    seed_tables: &SeedTables,
 ) -> Vec<Player> {
     let quality = reputation as f64 * (coaching_milli as f64 / 1000.0);
     (0..cohort_size)
@@ -102,7 +104,7 @@ fn youth_cohort(
             let age = 16 + rng.below(3) as i32; // §8.1: a 16-18 age band
             let id = PlayerId(*next_id);
             *next_id += 1;
-            gen_player(rng, id, role, quality, age, today, dev_knobs)
+            gen_player(rng, id, role, quality, age, today, dev_knobs, seed_tables)
         })
         .collect()
 }
@@ -169,6 +171,7 @@ pub fn summer_pool_events(
 ) -> Vec<Event> {
     let mut rng = derive_stream(seed, YOUTH_STREAM_NS | window_index);
     let mut next_id = world.players.keys().next_back().map_or(0, |id| id.0 + 1);
+    let seed_tables = SeedTables::build(dev_knobs);
 
     let mut events = Vec::with_capacity(world.clubs.len() + 4);
     for (&club_id, club) in &world.clubs {
@@ -182,6 +185,7 @@ pub fn summer_pool_events(
             &mut next_id,
             today,
             dev_knobs,
+            &seed_tables,
         );
         if !players.is_empty() {
             events.push(Event::YouthIntake {

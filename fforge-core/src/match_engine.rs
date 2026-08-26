@@ -37,8 +37,9 @@ pub use zone::Zone;
 
 use crate::rng::Rng;
 use fforge_domain::{
-    Attribute, ClubId, FORMATIONS, GameDate, Lineup, Mentality, PlayerId, Pressing, ROLE_WEIGHTS,
-    Role, Tactics, Tempo, Width, World, XI, current_ability,
+    Attribute, BENCH_SIZE, ClubId, FORMATIONS, FormationDef, GameDate, Lineup, Mentality, PlayerId,
+    Pressing, ROLE_WEIGHTS, Role, ScoreState, SubAction, SubCondition, SubRule, Tactics, Tempo,
+    Width, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -232,7 +233,7 @@ pub fn ai_pick_lineup_available(
 /// `ai_pick_lineup_available` run, over whichever pool of candidates the
 /// caller has already decided is eligible.
 fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
-    let mut best: Option<(f64, Lineup)> = None;
+    let mut best: Option<(f64, u8, [PlayerId; XI], Vec<PlayerId>)> = None;
 
     for (fi, formation) in FORMATIONS.iter().enumerate() {
         let mut remaining = squad.clone();
@@ -244,26 +245,211 @@ fn pick_lineup_from(world: &World, squad: Vec<PlayerId>) -> Lineup {
             total += ca as f64;
         }
         let mean = total / XI as f64;
-        let candidate = Lineup {
-            formation: fi as u8,
-            players: chosen,
-            // Neutral here; ai_pick_tactics (below) is the sibling that
-            // fills this in against a known opponent — kept separate since
-            // this function doesn't know the opponent.
-            tactics: Tactics::neutral(),
-            // MATCH_MODEL.md §16, T12: no AI bench-selection/default-plan
-            // policy yet (the `ai_pick_tactics` sibling seam this leaves for
-            // later) — every AI-controlled side plays unsubstituted, the
-            // substitution identity, until that policy lands.
-            bench: Vec::new(),
-            sub_plan: Vec::new(),
-        };
         match &best {
-            Some((score, _)) if *score >= mean => {}
-            _ => best = Some((mean, candidate)),
+            Some((score, ..)) if *score >= mean => {}
+            _ => best = Some((mean, fi as u8, chosen, remaining)),
         }
     }
-    best.expect("at least one formation").1
+    let (_, fi, chosen, remaining) = best.expect("at least one formation");
+    let (bench, sub_plan) =
+        ai_pick_bench_and_plan(world, &FORMATIONS[fi as usize], &chosen, remaining);
+    Lineup {
+        formation: fi,
+        players: chosen,
+        // Neutral here; ai_pick_tactics (below) is the sibling that
+        // fills this in against a known opponent — kept separate since
+        // this function doesn't know the opponent.
+        tactics: Tactics::neutral(),
+        bench,
+        sub_plan,
+    }
+}
+
+/// The v1 AI bench-selection and default-substitution-plan policy
+/// (`MATCH_MODEL.md` §16, "The v1 AI bench-selection and default-
+/// substitution-plan policy"): a pure `(World, formation, XI, remaining) ->
+/// (bench, plan)` map, called once by `pick_lineup_from` after the winning
+/// formation is chosen — not once per candidate formation, which would
+/// compute four bench/plan pairs to throw three away. Zero RNG: every
+/// quantity read (CA-in-role, Stamina, Work Rate, `Knobs::fatigue_wr`) is
+/// already-resolved `World` state, so this runs entirely outside
+/// `play_match` and none of its four in-match streams are touched.
+fn ai_pick_bench_and_plan(
+    world: &World,
+    formation: &FormationDef,
+    xi: &[PlayerId; XI],
+    mut remaining: Vec<PlayerId>,
+) -> (Vec<PlayerId>, Vec<SubRule>) {
+    // --- 1/2. Bench composition & selection ---
+    //
+    // `bench[i]`'s entry in `covered_role` is the role it was picked *for*
+    // (via `pick_best`, the same CA-in-role query the XI itself was chosen
+    // with) — `Some(Gk)` for the reserved backup keeper, `Some(role)` for a
+    // first-pass role-spread pick, `None` for a second-pass depth pick with
+    // no specific role assignment. This tag, not natural role, is what the
+    // default plan below pairs a starter against — reusing `pick_best`
+    // "unchanged" per the design note's item 2.
+    let mut bench: Vec<PlayerId> = Vec::new();
+    let mut covered_role: Vec<Option<Role>> = Vec::new();
+
+    // Mandatory backup GK, reserved ahead of every other slot. Never a
+    // panic if `remaining` is somehow empty — the same defensive-floor
+    // discipline `ai_pick_lineup_available`'s own fallback uses.
+    if !remaining.is_empty() {
+        let (idx, _) = pick_best(world, &remaining, Role::Gk);
+        bench.push(remaining.remove(idx));
+        covered_role.push(Some(Role::Gk));
+    }
+
+    // First pass: spread across the outfield roles, one bench slot per
+    // role not yet covered, best-CA-in-role among what's left.
+    for &role in Role::ALL.iter().filter(|&&r| r != Role::Gk) {
+        if bench.len() >= BENCH_SIZE || remaining.is_empty() {
+            break;
+        }
+        let (idx, _) = pick_best(world, &remaining, role);
+        bench.push(remaining.remove(idx));
+        covered_role.push(Some(role));
+    }
+
+    // Second pass: best-of-the-rest by CA-in-natural-role, pure squad
+    // depth — no role tag, so no forced-cover rule ever pairs against one
+    // of these (an honest gap, not a padded one).
+    while bench.len() < BENCH_SIZE && !remaining.is_empty() {
+        let mut best_idx = 0;
+        let mut best_ca = 0u8;
+        let mut best_id = PlayerId(u32::MAX);
+        for (i, &pid) in remaining.iter().enumerate() {
+            let player = world.player(pid);
+            let ca = current_ability(&player.attributes, player.natural_role, &ROLE_WEIGHTS);
+            if ca > best_ca || (ca == best_ca && pid < best_id) {
+                best_idx = i;
+                best_ca = ca;
+                best_id = pid;
+            }
+        }
+        bench.push(remaining.remove(best_idx));
+        covered_role.push(None);
+    }
+
+    // --- 3. The default plan ---
+    let mut plan: Vec<SubRule> = Vec::new();
+
+    // Forced-cover: one PlayerInjured rule per formation-slot role that has
+    // both a fielded starter and a bench player tagged for that role. The
+    // weakest-CA-in-role starter is paired with the strongest-CA-in-role
+    // tagged backup — freeing the strongest starter in that role to keep
+    // playing, per the design note's "protect the weakest starter" rule.
+    let mut forced_pairs: Vec<(PlayerId, PlayerId)> = Vec::new();
+    let mut seen_roles: Vec<Role> = Vec::new();
+    for &role in formation.slots.iter() {
+        if seen_roles.contains(&role) {
+            continue;
+        }
+        seen_roles.push(role);
+
+        let mut weakest: Option<(PlayerId, u8)> = None;
+        for (i, &r) in formation.slots.iter().enumerate() {
+            if r != role {
+                continue;
+            }
+            let pid = xi[i];
+            let ca = current_ability(&world.player(pid).attributes, role, &ROLE_WEIGHTS);
+            weakest = Some(match weakest {
+                Some((wp, wca)) if wca < ca || (wca == ca && wp < pid) => (wp, wca),
+                _ => (pid, ca),
+            });
+        }
+        let Some((weakest_pid, _)) = weakest else {
+            continue;
+        };
+
+        let mut backup: Option<(PlayerId, u8)> = None;
+        for (i, &pid) in bench.iter().enumerate() {
+            if covered_role[i] != Some(role) {
+                continue;
+            }
+            let ca = current_ability(&world.player(pid).attributes, role, &ROLE_WEIGHTS);
+            backup = Some(match backup {
+                Some((bp, bca)) if bca > ca || (bca == ca && bp < pid) => (bp, bca),
+                _ => (pid, ca),
+            });
+        }
+        let Some((backup_pid, _)) = backup else {
+            continue;
+        };
+
+        forced_pairs.push((weakest_pid, backup_pid));
+        plan.push(SubRule {
+            conditions: vec![SubCondition::PlayerInjured(weakest_pid)],
+            action: SubAction::Substitute {
+                player_out: weakest_pid,
+                player_in: backup_pid,
+            },
+        });
+    }
+
+    // Fatigue: the two outfield starters with a forced-cover pair, ranked
+    // by `contest::fatigue_mult`'s own non-time, non-press factors — the
+    // same attribute-derived-score style `ai_pick_tactics` already uses.
+    // Threshold `80`: `PlayerConditionBelow` reads `fatigue_mult`'s live
+    // value, which never drops below a `0.7` floor even before the
+    // pre-match condition factor multiplies in, so the reachable range in
+    // a real match sits roughly `60-100` — a naive "below 60" would almost
+    // never fire.
+    let fatigue_wr = Knobs::default().fatigue_wr;
+    let mut proneness: Vec<(PlayerId, f64)> = Vec::new();
+    for (i, &role) in formation.slots.iter().enumerate() {
+        if role == Role::Gk {
+            continue;
+        }
+        let pid = xi[i];
+        if !forced_pairs.iter().any(|&(s, _)| s == pid) {
+            continue;
+        }
+        let attrs = &world.player(pid).attributes;
+        let stamina = attrs.get(Attribute::Stamina) as f64 / 100.0;
+        let work_rate = attrs.get(Attribute::WorkRate) as f64 / 100.0;
+        proneness.push((pid, (1.0 - stamina) * (1.0 + fatigue_wr * work_rate)));
+    }
+    proneness.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for &(pid, _) in proneness.iter().take(2) {
+        let backup = forced_pairs
+            .iter()
+            .find(|&&(s, _)| s == pid)
+            .expect("fatigue candidates are pre-filtered to have a forced-cover pair")
+            .1;
+        plan.push(SubRule {
+            conditions: vec![
+                SubCondition::MinuteAtLeast(70),
+                SubCondition::PlayerConditionBelow(pid, 80),
+            ],
+            action: SubAction::Substitute {
+                player_out: pid,
+                player_in: backup,
+            },
+        });
+    }
+
+    // Chase/hold: tactics only (§16's own vocabulary finding — a
+    // score-conditioned player pick isn't expressible). Costs nothing
+    // against the substitution cap.
+    plan.push(SubRule {
+        conditions: vec![
+            SubCondition::Score(ScoreState::Trailing),
+            SubCondition::MinuteAtLeast(70),
+        ],
+        action: SubAction::SetMentality(Mentality::Attacking),
+    });
+    plan.push(SubRule {
+        conditions: vec![
+            SubCondition::Score(ScoreState::Leading),
+            SubCondition::MinuteAtLeast(75),
+        ],
+        action: SubAction::SetMentality(Mentality::Defensive),
+    });
+
+    (bench, plan)
 }
 
 /// The AI tactics policy is gated off by default. `ai_pick_lineup_vs` (below)
@@ -953,6 +1139,216 @@ mod tests {
              ManDown-triggered substitution"
         );
     }
+
+    // --- S1b: ai_pick_lineup's bench-selection / default-plan policy
+    // (MATCH_MODEL.md §16's "The v1 AI bench-selection and
+    // default-substitution-plan policy") ---
+
+    /// A handful of freshly-worldgen'd clubs, each with a full-depth squad
+    /// (`worldgen::SQUAD_TEMPLATE` sums to 24, well above `XI + BENCH_SIZE`
+    /// = 18), so bench composition is never depth-starved in these tests.
+    fn bench_test_clubs() -> Vec<(World, ClubId)> {
+        let cfg = crate::worldgen::WorldGenConfig {
+            num_clubs: 6,
+            ..Default::default()
+        };
+        (0..3u64)
+            .map(|seed| {
+                let (world, _schedule, _start) = crate::worldgen::generate(seed, &cfg);
+                let clubs = world.competition.clubs.clone();
+                (world, clubs)
+            })
+            .flat_map(|(world, clubs)| clubs.into_iter().map(move |c| (world.clone(), c)))
+            .collect()
+    }
+
+    #[test]
+    fn bench_composition_invariants_hold() {
+        for (world, club) in bench_test_clubs() {
+            let lineup = ai_pick_lineup(&world, club);
+            let xi: std::collections::BTreeSet<_> = lineup.players.iter().copied().collect();
+
+            assert_eq!(
+                lineup.bench.len(),
+                fforge_domain::BENCH_SIZE,
+                "club {club:?}: a full-depth squad must fill the bench to capacity"
+            );
+
+            let bench_set: std::collections::BTreeSet<_> = lineup.bench.iter().copied().collect();
+            assert_eq!(
+                bench_set.len(),
+                lineup.bench.len(),
+                "club {club:?}: no duplicate players on the bench"
+            );
+            assert!(
+                xi.is_disjoint(&bench_set),
+                "club {club:?}: no player is both a starter and on the bench"
+            );
+
+            assert!(
+                lineup
+                    .bench
+                    .iter()
+                    .any(|&pid| world.player(pid).natural_role == Role::Gk),
+                "club {club:?}: the bench must reserve a backup goalkeeper"
+            );
+        }
+    }
+
+    #[test]
+    fn default_plan_only_names_dressed_players_in_valid_pairs() {
+        for (world, club) in bench_test_clubs() {
+            let lineup = ai_pick_lineup(&world, club);
+            let xi: std::collections::BTreeSet<_> = lineup.players.iter().copied().collect();
+            let bench: std::collections::BTreeSet<_> = lineup.bench.iter().copied().collect();
+            let dressed: std::collections::BTreeSet<_> = xi.union(&bench).copied().collect();
+
+            assert!(
+                !lineup.sub_plan.is_empty(),
+                "club {club:?}: a full-depth squad's default plan should not be empty"
+            );
+
+            let mut substitute_rules = 0;
+            let mut tactics_rules = 0;
+            for rule in &lineup.sub_plan {
+                match rule.action {
+                    SubAction::Substitute {
+                        player_out,
+                        player_in,
+                    } => {
+                        substitute_rules += 1;
+                        assert!(
+                            xi.contains(&player_out),
+                            "club {club:?}: a Substitute rule's player_out must be a starter"
+                        );
+                        assert!(
+                            bench.contains(&player_in),
+                            "club {club:?}: a Substitute rule's player_in must be on the bench"
+                        );
+                        assert_ne!(
+                            player_out, player_in,
+                            "club {club:?}: a rule can't substitute a player for himself"
+                        );
+                    }
+                    SubAction::SetMentality(_)
+                    | SubAction::SetTempo(_)
+                    | SubAction::SetWidth(_)
+                    | SubAction::SetPressing(_) => tactics_rules += 1,
+                }
+                for cond in &rule.conditions {
+                    if let SubCondition::PlayerInjured(pid)
+                    | SubCondition::PlayerConditionBelow(pid, _) = *cond
+                    {
+                        assert!(
+                            dressed.contains(&pid),
+                            "club {club:?}: a condition may only name a dressed player"
+                        );
+                    }
+                }
+            }
+            // Authoring-time bound, not the runtime MAX_SUBSTITUTIONS firing
+            // cap: at most one forced-cover rule per Role variant (8) plus
+            // at most two fatigue rules (§16.3's own cap).
+            assert!(
+                substitute_rules <= Role::ALL.len() + 2,
+                "club {club:?}: {substitute_rules} Substitute rules exceeds the authoring-time \
+                 bound of one forced-cover rule per role plus two fatigue rules"
+            );
+            let fatigue_rules = lineup
+                .sub_plan
+                .iter()
+                .filter(|r| {
+                    matches!(r.action, SubAction::Substitute { .. })
+                        && r.conditions.contains(&SubCondition::MinuteAtLeast(70))
+                        && r.conditions
+                            .iter()
+                            .any(|c| matches!(c, SubCondition::PlayerConditionBelow(_, 80)))
+                })
+                .count();
+            assert!(
+                fatigue_rules <= 2,
+                "club {club:?}: at most two fatigue rules, found {fatigue_rules}"
+            );
+            // The chase/hold rules (§16.3): tactics-only, per the vocabulary
+            // finding — always exactly two, unconditional on squad depth.
+            assert_eq!(
+                tactics_rules, 2,
+                "club {club:?}: chase/hold contributes exactly two tactics-change rules"
+            );
+
+            // A bench player may be the designated backup for more than one
+            // rule (a forced-cover rule and a fatigue rule reuse the same
+            // pair, §16.3), but never for two *different* starters — each
+            // bench slot covers at most one role.
+            let mut backup_for: std::collections::BTreeMap<PlayerId, PlayerId> =
+                std::collections::BTreeMap::new();
+            for rule in &lineup.sub_plan {
+                if let SubAction::Substitute {
+                    player_out,
+                    player_in,
+                } = rule.action
+                {
+                    if let Some(&existing) = backup_for.get(&player_in) {
+                        assert_eq!(
+                            existing, player_out,
+                            "club {club:?}: bench player {player_in:?} is designated as the \
+                             backup for two different starters ({existing:?} and {player_out:?})"
+                        );
+                    } else {
+                        backup_for.insert(player_in, player_out);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bench_and_plan_are_deterministic() {
+        for (world, club) in bench_test_clubs() {
+            let a = ai_pick_lineup(&world, club);
+            let b = ai_pick_lineup(&world, club);
+            assert_eq!(
+                a.bench, b.bench,
+                "club {club:?}: bench selection must be a pure function of world state"
+            );
+            assert_eq!(
+                a.sub_plan, b.sub_plan,
+                "club {club:?}: default plan generation must be a pure function of world state"
+            );
+        }
+    }
+
+    #[test]
+    fn chase_and_hold_rules_are_tactics_only_as_the_vocabulary_finding_requires() {
+        // §16's own finding: a score-conditioned player pick isn't
+        // expressible, so v1's chase/hold is SetMentality-only. Pin the
+        // exact rules so a future change to this shape is a deliberate
+        // decision, not a silent drift.
+        let (world, club) = bench_test_clubs().into_iter().next().unwrap();
+        let lineup = ai_pick_lineup(&world, club);
+        let chase = SubRule {
+            conditions: vec![
+                SubCondition::Score(fforge_domain::ScoreState::Trailing),
+                SubCondition::MinuteAtLeast(70),
+            ],
+            action: SubAction::SetMentality(Mentality::Attacking),
+        };
+        let hold = SubRule {
+            conditions: vec![
+                SubCondition::Score(fforge_domain::ScoreState::Leading),
+                SubCondition::MinuteAtLeast(75),
+            ],
+            action: SubAction::SetMentality(Mentality::Defensive),
+        };
+        assert!(
+            lineup.sub_plan.contains(&chase),
+            "the plan must contain the chase rule verbatim"
+        );
+        assert!(
+            lineup.sub_plan.contains(&hold),
+            "the plan must contain the hold rule verbatim"
+        );
+    }
 }
 
 /// The pinned Phase-2a golden baseline (batch-3 handoff T5): the reference
@@ -993,39 +1389,47 @@ pub(crate) mod golden {
     /// two clubs), so every match is a lopsided home win — irrelevant here,
     /// since this table exists to catch *any* movement, not to be a
     /// representative match.
+    // Re-pinned by `DEVELOPMENT_MODEL.md` §8's worldgen seeding invert
+    // (`worldgen::gen_player` now draws PA first and seeds attributes on the
+    // envelope beneath it — §8.1): the pinned world at seed 7 is a real
+    // `worldgen::generate` output, so a change to how players are generated
+    // moves this table exactly the way a world re-roll is expected to (§8.2/
+    // `BACKLOG.md` §2 item 2: "a re-roll is not a re-fit") — nothing about
+    // `play_match` itself changed, and both golden tests below still agree
+    // with each other bit-for-bit, which is what this table actually guards.
     pub(crate) const PHASE_2A_SEEDS_0_32: [(u8, u8, usize); 32] = [
-        (16, 0, 869),
-        (20, 0, 873),
-        (14, 0, 866),
-        (13, 0, 867),
-        (14, 0, 857),
-        (18, 0, 882),
-        (18, 0, 870),
-        (9, 0, 862),
-        (10, 0, 861),
-        (20, 0, 877),
-        (20, 0, 865),
-        (12, 0, 879),
-        (18, 0, 865),
-        (10, 0, 862),
-        (14, 0, 852),
-        (15, 0, 870),
-        (11, 0, 859),
-        (14, 0, 869),
-        (18, 0, 860),
-        (14, 0, 869),
-        (12, 0, 860),
-        (12, 0, 872),
-        (8, 0, 860),
-        (16, 0, 871),
-        (20, 0, 858),
-        (12, 0, 877),
-        (20, 0, 864),
-        (15, 0, 868),
-        (12, 0, 857),
-        (12, 0, 856),
-        (23, 0, 881),
-        (19, 0, 863),
+        (11, 0, 870),
+        (17, 0, 871),
+        (13, 0, 866),
+        (13, 0, 868),
+        (16, 0, 868),
+        (12, 0, 884),
+        (17, 0, 864),
+        (9, 0, 858),
+        (7, 0, 873),
+        (14, 0, 876),
+        (13, 0, 880),
+        (14, 0, 870),
+        (14, 0, 876),
+        (16, 0, 876),
+        (11, 0, 862),
+        (16, 0, 876),
+        (10, 0, 859),
+        (15, 0, 877),
+        (17, 0, 872),
+        (12, 0, 865),
+        (11, 0, 857),
+        (13, 0, 872),
+        (12, 0, 870),
+        (17, 0, 876),
+        (18, 0, 874),
+        (12, 0, 870),
+        (16, 0, 876),
+        (11, 0, 868),
+        (11, 0, 877),
+        (9, 0, 863),
+        (14, 0, 886),
+        (14, 0, 874),
     ];
 
     /// The T5/T6 identity tests below pin `consistency_sigma_max: 0.0`,
@@ -1050,7 +1454,20 @@ pub(crate) mod golden {
         // `ai_pick_tactics`, at which point this reading is expected to move
         // and gets re-pinned deliberately (§8's rollout discipline), same as
         // `favourite_discrimination_regression_guard`.
-        let (world, home, away) = phase_2a_world_and_lineups();
+        //
+        // S1b (`MATCH_MODEL.md` §16's bench-selection/default-plan policy):
+        // `ai_pick_lineup` now also fills a real `bench`/`sub_plan`, which
+        // is a Rust wiring change, not a tracked "current AI behaviour"
+        // drift the way tactics is meant to be — this test's job is to pin
+        // the pre-substitution engine, so bench/plan are forced to the
+        // identity (empty) explicitly, the same discipline
+        // `neutral_tactics_reproduce_phase_2a_bit_for_bit` already applies
+        // to tactics below.
+        let (world, mut home, mut away) = phase_2a_world_and_lineups();
+        home.bench.clear();
+        home.sub_plan.clear();
+        away.bench.clear();
+        away.sub_plan.clear();
         let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);
@@ -1084,10 +1501,17 @@ pub(crate) mod golden {
         // `Tactics::neutral()` on both sides — independent of whatever
         // `ai_pick_lineup` defaults to (today neutral, but T7 changes that)
         // — so this stays a permanent bit-identity guardrail rather than
-        // tracking the AI policy's evolving choice.
+        // tracking the AI policy's evolving choice. S1b: also force
+        // bench/sub_plan to empty for the same reason — this is the
+        // "policy disabled" identity case the bench/plan policy's own
+        // T5/T6-style guardrail needs.
         let (world, mut home, mut away) = phase_2a_world_and_lineups();
         home.tactics = fforge_domain::Tactics::neutral();
         away.tactics = fforge_domain::Tactics::neutral();
+        home.bench.clear();
+        home.sub_plan.clear();
+        away.bench.clear();
+        away.sub_plan.clear();
         let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
             let mut rng = derive_stream(seed, 1);

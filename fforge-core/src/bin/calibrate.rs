@@ -15,32 +15,63 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, PROFILE_SHIFT, SQUAD_PROFILES,
-    StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, probe_tactics,
-    run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
+    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, MatchEventKind, PROFILE_SHIFT,
+    SQUAD_PROFILES, ShotOutcome, StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match,
+    probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
 use fforge_core::rng::derive_stream;
 use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
 use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
 
 struct CalibReport {
-    per_seed_gpm: Vec<f64>,
+    per_seed: Vec<SeedReading>,
     pooled: StreamTelemetry,
+}
+
+/// One seed's derived readings — the existing pooled aggregates re-read per
+/// seed (not just pooled), plus S1b's substitution-policy measurement
+/// (`MATCH_MODEL.md` §16's prediction block). BACKLOG.md §7 item 5: "pool
+/// over seeds and report per-seed spread, never just the pooled mean."
+#[derive(Debug, Clone, Copy)]
+struct SeedReading {
+    gpm: f64,
+    home_win_rate: f64,
+    draw_rate: f64,
+    away_win_rate: f64,
+    fouls_per_match: f64,
+    yellows_per_team_per_match: f64,
+    reds_per_team_per_match: f64,
+    /// S1b: substitutions per match, pooled both sides.
+    subs_per_match: f64,
+    /// S1b: share of goals scored at minute 75 or later.
+    late_goal_share: f64,
+    /// S1b: mean minutes played by a squad member who was *not* in the
+    /// starting XI (i.e. entered as a substitute) — `DEVELOPMENT_MODEL.md`
+    /// §3's minutes-share signal actually reaching non-XI players in
+    /// AI-vs-AI play, previously always exactly zero appearances.
+    non_xi_mean_minutes: f64,
 }
 
 /// Whatever `ai_pick_lineup_vs` actually does. Since T7-R2 flipped
 /// `match_engine::AI_TACTICS_ENABLED` to `true`, that means real
 /// `ai_pick_tactics` choices on both sides of every fixture — so this
 /// harness now pools the tactics-live engine, and the numbers it reports are
-/// the ones `TACTICS_MODEL.md` §8's re-bank records.
+/// the ones `TACTICS_MODEL.md` §8's re-bank records. Since S1b,
+/// `ai_pick_lineup_vs` also fills a real bench/plan (`MATCH_MODEL.md` §16),
+/// so every AI-controlled match here now substitutes too.
 fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
     let mut pooled = StreamTelemetry::default();
-    let mut per_seed_gpm = Vec::with_capacity(seeds.len());
+    let mut per_seed = Vec::with_capacity(seeds.len());
 
     for &seed in seeds {
         let (world, schedule, start) = worldgen::generate(seed, cfg);
         let mut seed_goals = 0u32;
         let mut seed_matches = 0u32;
+        let mut seed_tel = StreamTelemetry::default();
+        let mut seed_subs = 0u32;
+        let mut seed_goals_75_plus = 0u32;
+        let mut seed_non_xi_minutes_sum = 0u64;
+        let mut seed_non_xi_apps = 0u32;
 
         let suspended = std::collections::BTreeSet::new();
         for fixture in &schedule {
@@ -76,15 +107,61 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                 home_strength,
                 away_strength,
             );
+            seed_tel.record(
+                &outcome,
+                home_lineup.formation,
+                away_lineup.formation,
+                home_strength,
+                away_strength,
+            );
+
+            for event in &outcome.stream {
+                match event.kind {
+                    MatchEventKind::Substitution { .. } => seed_subs += 1,
+                    MatchEventKind::Shot {
+                        outcome: ShotOutcome::Goal,
+                        ..
+                    } if event.minute >= 75 => seed_goals_75_plus += 1,
+                    _ => {}
+                }
+            }
+            let dressed_xi: std::collections::BTreeSet<_> = home_lineup
+                .players
+                .iter()
+                .chain(away_lineup.players.iter())
+                .copied()
+                .collect();
+            for &(pid, mins) in &outcome.minutes {
+                if !dressed_xi.contains(&pid) {
+                    seed_non_xi_minutes_sum += mins as u64;
+                    seed_non_xi_apps += 1;
+                }
+            }
         }
 
-        per_seed_gpm.push(seed_goals as f64 / seed_matches as f64);
+        per_seed.push(SeedReading {
+            gpm: seed_goals as f64 / seed_matches as f64,
+            home_win_rate: seed_tel.home_win_rate(),
+            draw_rate: seed_tel.draw_rate(),
+            away_win_rate: seed_tel.away_win_rate(),
+            fouls_per_match: seed_tel.fouls_per_match(),
+            yellows_per_team_per_match: seed_tel.yellows_per_team_per_match(),
+            reds_per_team_per_match: seed_tel.reds_per_team_per_match(),
+            subs_per_match: seed_subs as f64 / seed_matches as f64,
+            late_goal_share: if seed_goals == 0 {
+                0.0
+            } else {
+                seed_goals_75_plus as f64 / seed_goals as f64
+            },
+            non_xi_mean_minutes: if seed_non_xi_apps == 0 {
+                0.0
+            } else {
+                seed_non_xi_minutes_sum as f64 / seed_non_xi_apps as f64
+            },
+        });
     }
 
-    CalibReport {
-        per_seed_gpm,
-        pooled,
-    }
+    CalibReport { per_seed, pooled }
 }
 
 fn mean(xs: &[f64]) -> f64 {
@@ -99,24 +176,24 @@ fn stdev(xs: &[f64], mean: f64) -> f64 {
     var.sqrt()
 }
 
+/// Mean/sd/min/max of `f` across every seed's reading — the per-seed spread
+/// BACKLOG.md §7 item 5 asks every pooled figure to carry.
+fn spread(readings: &[SeedReading], f: impl Fn(&SeedReading) -> f64) -> (f64, f64, f64, f64) {
+    let vals: Vec<f64> = readings.iter().map(f).collect();
+    let m = mean(&vals);
+    let sd = stdev(&vals, m);
+    let lo = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    (m, sd, lo, hi)
+}
+
 fn print_report(report: &CalibReport) {
     let p = &report.pooled;
-    let gpm_mean = mean(&report.per_seed_gpm);
-    let gpm_sd = stdev(&report.per_seed_gpm, gpm_mean);
-    let gpm_min = report
-        .per_seed_gpm
-        .iter()
-        .cloned()
-        .fold(f64::INFINITY, f64::min);
-    let gpm_max = report
-        .per_seed_gpm
-        .iter()
-        .cloned()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let (gpm_mean, gpm_sd, gpm_min, gpm_max) = spread(&report.per_seed, |s| s.gpm);
 
     println!(
         "=== Calibration report ({} seeds pooled, {} matches) ===",
-        report.per_seed_gpm.len(),
+        report.per_seed.len(),
         p.matches
     );
     println!();
@@ -153,6 +230,36 @@ fn print_report(report: &CalibReport) {
         "reds/team/match   : {:.3}  (target well under 0.1)",
         p.reds_per_team_per_match()
     );
+    println!();
+    println!(
+        "=== S1b: substitution-policy measurement (`MATCH_MODEL.md` §16 prediction block, {} seeds) ===",
+        report.per_seed.len()
+    );
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.subs_per_match);
+    println!(
+        "subs/match (pooled)  : {m:.2}  (sd {sd:.2}, range {lo:.2}-{hi:.2})  [predicted +3 to +5/match]"
+    );
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.late_goal_share * 100.0);
+    println!(
+        "late goals (75'+)    : {m:.1}%  (sd {sd:.1}, range {lo:.1}-{hi:.1})  [predicted +1 to +3 pts]"
+    );
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.non_xi_mean_minutes);
+    println!(
+        "non-XI mean minutes  : {m:.1}  (sd {sd:.1}, range {lo:.1}-{hi:.1})  [predicted ~10-20]"
+    );
+    let (hm, hsd, hlo, hhi) = spread(&report.per_seed, |s| s.home_win_rate * 100.0);
+    let (dm, dsd, dlo, dhi) = spread(&report.per_seed, |s| s.draw_rate * 100.0);
+    let (am, asd, alo, ahi) = spread(&report.per_seed, |s| s.away_win_rate * 100.0);
+    println!(
+        "H/D/A per-seed spread: {hm:.1}%(sd{hsd:.1},{hlo:.1}-{hhi:.1}) / \
+         {dm:.1}%(sd{dsd:.1},{dlo:.1}-{dhi:.1}) / {am:.1}%(sd{asd:.1},{alo:.1}-{ahi:.1})"
+    );
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.fouls_per_match);
+    println!("fouls/match spread   : {m:.1}  (sd {sd:.1}, range {lo:.1}-{hi:.1})");
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.yellows_per_team_per_match);
+    println!("yellows/team spread  : {m:.2}  (sd {sd:.2}, range {lo:.2}-{hi:.2})");
+    let (m, sd, lo, hi) = spread(&report.per_seed, |s| s.reds_per_team_per_match);
+    println!("reds/team spread     : {m:.3}  (sd {sd:.3}, range {lo:.3}-{hi:.3})");
     println!();
     println!("=== Expected points vs strength gap (bookmaker-baseline axis) ===");
     println!(
@@ -228,6 +335,144 @@ fn parse_seeds_arg(args: impl Iterator<Item = String>) -> u64 {
         }
     }
     DEFAULT_SEEDS
+}
+
+/// S1b diagnostic: isolates whether a pooled-aggregate movement comes from
+/// substitutions actually firing, or merely from a populated bench
+/// consuming extra Consistency/ambient-injury draws in `build_bench`
+/// (`MATCH_MODEL.md` §12/§16: an empty bench draws zero, so this stream
+/// consumption is new) — a shift that can reach a match's outcome even when
+/// no substitution in it ever fires, the same "symmetric perturbation ≠
+/// preserved mean" shape `MATCH_MODEL.md` §17 already diagnosed for
+/// Consistency's own landing. Three configurations, same fixtures/XIs, each
+/// played with its own independently-derived streams: (A) identity — bench
+/// and `sub_plan` both cleared, reproducing the pre-S1b engine exactly; (B)
+/// bench populated, `sub_plan` cleared — the extra draws fire, but no
+/// substitution ever can; (C) the real policy, unmodified.
+fn run_bench_isolation_report(num_seeds: u64) {
+    let seeds: Vec<u64> = (0..num_seeds).collect();
+    let cfg = WorldGenConfig::default();
+
+    let mut identity_pooled = StreamTelemetry::default();
+    let (mut identity_goals, mut identity_matches) = (0u64, 0u64);
+    let mut bench_only_pooled = StreamTelemetry::default();
+    let (mut bench_only_goals, mut bench_only_matches) = (0u64, 0u64);
+    let mut full_pooled = StreamTelemetry::default();
+    let (mut full_goals, mut full_matches) = (0u64, 0u64);
+
+    for &seed in &seeds {
+        let (world, schedule, start) = worldgen::generate(seed, &cfg);
+        let suspended = std::collections::BTreeSet::new();
+        for fixture in &schedule {
+            let home_full =
+                ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start, &suspended);
+            let away_full =
+                ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
+            let home_strength = lineup_strength(&world, &home_full);
+            let away_strength = lineup_strength(&world, &away_full);
+
+            let mut home_identity = home_full.clone();
+            home_identity.bench.clear();
+            home_identity.sub_plan.clear();
+            let mut away_identity = away_full.clone();
+            away_identity.bench.clear();
+            away_identity.sub_plan.clear();
+
+            let mut home_bench_only = home_full.clone();
+            home_bench_only.sub_plan.clear();
+            let mut away_bench_only = away_full.clone();
+            away_bench_only.sub_plan.clear();
+
+            for (home, away, goals_acc, matches_acc, pooled_acc) in [
+                (
+                    &home_identity,
+                    &away_identity,
+                    &mut identity_goals,
+                    &mut identity_matches,
+                    &mut identity_pooled,
+                ),
+                (
+                    &home_bench_only,
+                    &away_bench_only,
+                    &mut bench_only_goals,
+                    &mut bench_only_matches,
+                    &mut bench_only_pooled,
+                ),
+                (
+                    &home_full,
+                    &away_full,
+                    &mut full_goals,
+                    &mut full_matches,
+                    &mut full_pooled,
+                ),
+            ] {
+                let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
+                let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
+                let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
+                let mut foul_rng = derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
+                let outcome = play_match(
+                    &world,
+                    home,
+                    away,
+                    &mut rng,
+                    &mut consistency_rng,
+                    &mut injury_rng,
+                    &mut foul_rng,
+                    &Knobs::default(),
+                    &std::collections::BTreeMap::new(),
+                    start,
+                );
+                *goals_acc += outcome.home_goals as u64 + outcome.away_goals as u64;
+                *matches_acc += 1;
+                pooled_acc.record(
+                    &outcome,
+                    home.formation,
+                    away.formation,
+                    home_strength,
+                    away_strength,
+                );
+            }
+        }
+    }
+
+    println!("=== S1b bench-isolation diagnostic ({num_seeds} seeds) ===");
+    println!(
+        "Same fixtures/XIs, three lineup configurations, each played with its own \
+         independently-derived streams."
+    );
+    println!();
+    for (label, goals, matches, pooled) in [
+        (
+            "A) identity (empty bench+plan)   ",
+            identity_goals,
+            identity_matches,
+            &identity_pooled,
+        ),
+        (
+            "B) bench populated, plan empty   ",
+            bench_only_goals,
+            bench_only_matches,
+            &bench_only_pooled,
+        ),
+        (
+            "C) full policy (bench+plan, live)",
+            full_goals,
+            full_matches,
+            &full_pooled,
+        ),
+    ] {
+        println!(
+            "{label}: gpm {:.3}  H/D/A {:5.1}/{:4.1}/{:4.1}%  fouls/match {:5.1}  \
+             yellows/team {:.2}  reds/team {:.3}",
+            goals as f64 / matches as f64,
+            pooled.home_win_rate() * 100.0,
+            pooled.draw_rate() * 100.0,
+            pooled.away_win_rate() * 100.0,
+            pooled.fouls_per_match(),
+            pooled.yellows_per_team_per_match(),
+            pooled.reds_per_team_per_match(),
+        );
+    }
 }
 
 /// `TACTICS_MODEL.md` §7's head-to-head mode: the v1 AI never counter-picks
@@ -512,6 +757,11 @@ fn main() {
     if args.iter().any(|a| a == "--head-to-head") {
         let num_seeds = parse_seeds_arg(args.into_iter());
         run_head_to_head_report(num_seeds.max(50));
+        return;
+    }
+    if args.iter().any(|a| a == "--bench-isolation") {
+        let num_seeds = parse_seeds_arg(args.into_iter());
+        run_bench_isolation_report(num_seeds);
         return;
     }
 

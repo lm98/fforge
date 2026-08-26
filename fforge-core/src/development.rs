@@ -328,36 +328,67 @@ impl Default for DevKnobs {
                 w: 4.5,
             },
             k: 0.55,
-            // Gentler than the scratchpad's 1.0: `worldgen` seeds veterans
-            // *above* their aging envelope (it is not env-consistent), so a
-            // proportional pull that fast would crash their physicals ~20 pts in
-            // a few seasons. 0.30 gives a believable early-30s decline from a
-            // mid-career start; a from-youth env-consistent career declines
-            // gentler still. (A harness re-fit target, DEVELOPMENT_MODEL.md §6.)
-            k_dec: 0.30,
-            // Plasticity window re-fit against real `worldgen` (career-arc
-            // harness, §6): the scratchpad's (24.5, 2.5) never closes hard enough
-            // — at age 30 `plast` is still ~0.10, so over a decade+ even a
-            // low-`E` prospect crawls to PA and *nobody* falls short. Tightening
-            // to (23.5, 2.2) freezes an unrealized gap past the mid-20s, giving
-            // the real sub-0.80 attainment tail (~11%, p10 ~0.80) the flat
-            // notebook cohort produced from-youth. (Hard flops <0.75 stay ~0 on
-            // real worldgen — an attainment *floor*, not a knob; see §6.)
-            plast_mid: 23.5,
-            plast_width: 2.2,
+            // §8.5/§8.6 re-fit (post W3 seeding-invert), stage 1: moved
+            // 0.30 -> the scratchpad's 1.0 (BACKLOG.md §2 item 3). 0.30 only
+            // ever existed to stop the *pre-fix* CA-first seeding's
+            // non-envelope-consistent veterans from crashing; that was a bug
+            // compensation, not a fitted value. This stage doubled as a
+            // correctness check on W3: with seeding genuinely
+            // envelope-consistent, veterans start ON the envelope, so the
+            // pull term K_DEC·(target−a_cur) has little gap to act on and
+            // raising k_dec 0.30→1.0 barely moved the veteran physical slope
+            // (banked: -2.11 -> -2.05, 24-seed pool, both within noise of
+            // each other) — confirming W3 landed correctly rather than
+            // leaving some population off the envelope. One residual finding
+            // from this stage, reported rather than chased further: even at
+            // k_dec 2.5 the 30->35 physical slope does not reach the -2.2..
+            // -3.2 accept-band (it got *shallower*, -1.83, not steeper) —
+            // by the time k_dec is large enough to snap players onto the
+            // envelope well before 30, the 30->35 window sits past
+            // `env_phys`'s d=27 aging-logistic inflection, where the
+            // envelope's own decline rate is already decelerating. That
+            // band was calibrated against the old non-envelope-consistent
+            // population and is very likely unreachable now without moving
+            // `env_phys` itself, which stage 2's hard constraint forbids.
+            k_dec: 1.0,
+            // §8.5 re-fit, stage 2 (jointly with e_sigma/e_min below — never
+            // one at a time, `BACKLOG.md` §2 item 3): loosened hard, in the
+            // direction §8.5 predicted ("expect the knobs to loosen — the
+            // reverse of the re-fit that compensated for the bug"). The
+            // required gap-closure fraction rose from f≈0.412 to f≈0.62
+            // once seeding stopped handing veterans a head start, so hitting
+            // the primary target (`start_age<=18` wonderkid flop rate,
+            // 0.02-0.08) needed substantially more growth capacity than the
+            // pre-fix (23.5, 2.2) — which was itself only tight to manufacture
+            // a flop tail the old CA-first seeding couldn't produce on its
+            // own. Banked at (31.25, 4.6) after a coarse joint search (24-seed
+            // confirmation: <=18 flop 0.036, hit 0.763, attainment mean 0.871,
+            // sub-0.80 tail 0.189 — all four accept-bands in range). Pushing
+            // further tightens the primary metric's margin without moving
+            // the veteran physical slope (that branch of `attr_rate` never
+            // reads `plast`/`e`), so this is where the search stopped, not
+            // where it plateaued.
+            plast_mid: 31.25,
+            plast_width: 4.6,
             ceil_spread: 4.5,
             ceil_floor: 8.0,
             e_base: 0.72,
             e_det: 0.011,
             e_prof: 0.008,
-            // E spread widened (0.34→0.42) and floor deepened (0.20→0.15) in the
-            // real-`worldgen` re-fit (career-arc harness, §6): the scratchpad's
-            // narrower spread realized potential too uniformly (wonderkid hit
-            // rate ~0.75 vs the ~0.56 target, no shortfall tail). A fatter low
-            // tail of `E`, together with the tighter plasticity window above,
-            // spreads prospect outcomes into the believable §6 range.
-            e_sigma: 0.42,
-            e_min: 0.15,
+            // Reverses the pre-fix re-fit's fattened low tail (0.42/0.15,
+            // which existed to manufacture a flop rate the old CA-first
+            // seeding otherwise couldn't produce): narrowed and raised hard,
+            // jointly with `plast_*` above, §8.5 stage 2. A wide low-E tail
+            // now overshoots the flop target badly given the post-fix f≈0.62
+            // requirement — the sub-0.75 birth tail (~80-83% of the
+            // PA>=80 cohort is already born below r0=0.75, W1 amendment §2)
+            // needs most of its members to actually close most of their gap
+            // to land near the 4% flop target, which needs a *tight*, high
+            // efficiency distribution, not a fat low tail. Banked at
+            // (0.095, 0.61) — see `plast_mid`'s comment for the joint
+            // 24-seed confirmation numbers.
+            e_sigma: 0.095,
+            e_min: 0.61,
             e_max: 1.9,
             prof_aging_coeff: 0.3,
             // §2.4's "Start at w = 0.5": Professionalism and Natural Fitness
@@ -564,14 +595,26 @@ fn minutes_multiplier(
     }
 }
 
+/// Resolve just the bloomer phase φ (§2.3), split out of `resolve_dev_profile`
+/// so `worldgen::gen_player` can draw it *before* the rest of the profile
+/// (`DEVELOPMENT_MODEL.md` §8.1): seeding needs φ to place a youth on the same
+/// envelope shift the growth engine will later grow him against, and it must
+/// be the same φ `resolve_dev_profile` records, not a second independent
+/// draw.
+pub fn resolve_bloomer_phase(rng: &mut Rng, knobs: &DevKnobs) -> f64 {
+    rng.normal(0.0, knobs.phi_sigma).clamp(-6.0, 6.0)
+}
+
 /// Resolve a player's once-only development trajectory (§2.3) at worldgen from
-/// their character + seeded noise. Called from `worldgen`; the result is stored
+/// their character + seeded noise, plus an already-resolved `phi` (see
+/// `resolve_bloomer_phase`). Called from `worldgen`; the result is stored
 /// in `Player::development` and recorded in the `World` snapshot — never
 /// re-derived.
 pub fn resolve_dev_profile(
     rng: &mut Rng,
     determination: u8,
     professionalism: u8,
+    phi: f64,
     knobs: &DevKnobs,
 ) -> fforge_domain::DevProfile {
     let mean = knobs.e_base
@@ -580,7 +623,6 @@ pub fn resolve_dev_profile(
     let e = rng
         .normal(mean, knobs.e_sigma)
         .clamp(knobs.e_min, knobs.e_max);
-    let phi = rng.normal(0.0, knobs.phi_sigma).clamp(-6.0, 6.0);
     fforge_domain::DevProfile {
         efficiency_milli: (e * 1000.0).round() as u16,
         bloomer_phase_centi: (phi * 100.0).round() as i16,
@@ -611,6 +653,18 @@ pub fn apply_attr_step(world: &mut World, step: &AttrStep) {
     }
 }
 
+/// Per-player instrumentation of the `max_step` clamp
+/// (`DEVELOPMENT_MODEL.md` §8.6's max-step-saturation escalation clause):
+/// how many weighted-attribute steps a tick attempted for this player, and
+/// how many were clipped. A read-only side channel — `tick_changes_inner`
+/// computes it alongside the real growth law with zero effect on the
+/// returned `Vec<AttrStep>`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClipStats {
+    pub attempted: u32,
+    pub clipped: u32,
+}
+
 /// Produce one development tick's resolved changes (§2, §5): the sparse set of
 /// integer attribute steps that crossed a boundary this month. Reads world
 /// attributes + the once-resolved per-player `E`/`φ` + coaching + the window's
@@ -626,6 +680,33 @@ pub fn tick_changes(
     club_matches: &BTreeMap<ClubId, u32>,
     knobs: &DevKnobs,
 ) -> Vec<AttrStep> {
+    tick_changes_inner(world, seed, period, tick_date, minutes, club_matches, knobs).0
+}
+
+/// `tick_changes`'s instrumented sibling (`DEVELOPMENT_MODEL.md` §8.6):
+/// identical output, plus per-player `ClipStats` for the harness's max-step
+/// saturation measurement (`career_arc`). `pub(crate)` — harness-only.
+pub(crate) fn tick_changes_with_clip_stats(
+    world: &World,
+    seed: u64,
+    period: i64,
+    tick_date: GameDate,
+    minutes: &BTreeMap<PlayerId, u32>,
+    club_matches: &BTreeMap<ClubId, u32>,
+    knobs: &DevKnobs,
+) -> (Vec<AttrStep>, BTreeMap<PlayerId, ClipStats>) {
+    tick_changes_inner(world, seed, period, tick_date, minutes, club_matches, knobs)
+}
+
+fn tick_changes_inner(
+    world: &World,
+    seed: u64,
+    period: i64,
+    tick_date: GameDate,
+    minutes: &BTreeMap<PlayerId, u32>,
+    club_matches: &BTreeMap<ClubId, u32>,
+    knobs: &DevKnobs,
+) -> (Vec<AttrStep>, BTreeMap<PlayerId, ClipStats>) {
     let mut rng = derive_stream(seed, DEV_STREAM_NS | (period as u64));
     let envs = EnvTables::new(knobs);
     let norms = norms_by_role(&envs);
@@ -642,6 +723,7 @@ pub fn tick_changes(
     }
 
     let mut changes = Vec::new();
+    let mut clip_stats: BTreeMap<PlayerId, ClipStats> = BTreeMap::new();
     // BTreeMap iteration is id order — the determinism the fold relies on.
     for (&pid, player) in &world.players {
         let e = player.development.efficiency();
@@ -692,8 +774,11 @@ pub fn tick_changes(
             let whole = mag.floor();
             let frac = mag - whole;
             let mut steps = whole as i64 + if u < frac { 1 } else { 0 };
+            let stat = clip_stats.entry(pid).or_default();
+            stat.attempted += 1;
             if steps > knobs.max_step as i64 {
                 steps = knobs.max_step as i64;
+                stat.clipped += 1;
             }
             let raw = if monthly >= 0.0 { steps } else { -steps };
             if raw == 0 {
@@ -712,7 +797,7 @@ pub fn tick_changes(
             }
         }
     }
-    changes
+    (changes, clip_stats)
 }
 
 #[cfg(test)]
@@ -878,10 +963,24 @@ mod tests {
         // No panic reaching past these two calls is itself the primary
         // assertion (§8.3): `world_clubless` has `pid` in `World.players`
         // but on no club's roster at all.
-        let rostered_changes =
-            tick_changes(&world_rostered, 1, 0, start, &empty_apps, &empty_matches, &knobs);
-        let clubless_changes =
-            tick_changes(&world_clubless, 1, 0, start, &empty_apps, &empty_matches, &knobs);
+        let rostered_changes = tick_changes(
+            &world_rostered,
+            1,
+            0,
+            start,
+            &empty_apps,
+            &empty_matches,
+            &knobs,
+        );
+        let clubless_changes = tick_changes(
+            &world_clubless,
+            1,
+            0,
+            start,
+            &empty_apps,
+            &empty_matches,
+            &knobs,
+        );
 
         assert!(
             !rostered_changes.is_empty(),

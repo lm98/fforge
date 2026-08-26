@@ -730,9 +730,15 @@ than silently building to the newer number without a record of the change.
   calibration guard reads unchanged). This mirrors `ai_pick_tactics`'s own seam
   (`TACTICS_MODEL.md` §7) and is left for a follow-on task, not silently dropped — T12's own
   deliverable and test list never actually required it (only that a *submitted* plan, human or
-  hand-built, is honoured). The human side has no bench/plan UI yet either (`fforge-game`
-  submits an empty bench/plan, same as its tactics picker), for the same reason
-  `TACTICS_MODEL.md`'s own tactics UI is deferred.
+  hand-built, is honoured). **Correction (`BACKLOG.md` §5.4) — the human side does have a
+  bench/plan UI.** This paragraph originally said the human side had none either, matching
+  the state at T12 landing; Batch 4's G3 has since built one
+  (`fforge-game/src/flows/subs.rs` — a condition→action rule-list editor with bench
+  pick/auto-fill, live/stale rule colouring, and a cap-overflow warning), and `flows::tactics`
+  covers the tactics picker this paragraph also assumed was deferred. A human-managed club
+  submits a real bench and plan today; it is only the AI clubs' `ai_pick_lineup`/
+  `ai_pick_lineup_vs` that still submit empty ones, which is the actual, still-open gap this
+  section's finding above is about (and the sibling policy the next subsection pins).
 - **No new persisted `MatchOutcome`/`MatchPlayed` field.** Unlike injuries/cards, a
   substitution has no derived `GameState` consequence beyond minutes — there is no
   "substitutions history" field anything downstream reads. `MatchEventKind::Substitution`
@@ -776,6 +782,186 @@ the 3-substitution cap, reacts to forced triggers (injury, red card) ahead of th
 checkpoint, and produces the non-degenerate partial minutes `DEVELOPMENT_MODEL.md` §3 needed
 (`match_engine`'s own test suite, plus a `commands::step`-level integration test proving the
 minutes reach `GameState.appearances_since_tick`).
+
+### The v1 AI bench-selection and default-substitution-plan policy
+
+**Status: drafted, pre-implementation.** `BACKLOG.md` §5.1 names the gap this closes:
+`ai_pick_lineup`/`ai_pick_lineup_vs` field every AI-controlled side with an empty `bench`
+and an empty `sub_plan`, so fatigue, condition, and the three-substitution cap — all live —
+never bite for nineteen of twenty clubs in the league. This is `ai_pick_tactics`'s sibling
+seam (`TACTICS_MODEL.md` §7), pinned here at the same level of detail; it is a design note
+only — no Rust changes ride with it.
+
+**Where it hooks in — and one divergence from tactics' own call-site.** Tactics needs the
+opponent (`lineup_strength`'s gap term), so `ai_pick_tactics` is applied at
+`ai_pick_lineup_vs`, one layer above plain `ai_pick_lineup`. Bench/plan selection needs no
+opponent at all — it is a pure function of `(world, the chosen XI, its formation, the rest
+of the squad)`, every one of which `pick_lineup_from` (`match_engine.rs`) already has in
+hand the moment a formation's XI is picked. Concretely: `pick_lineup_from` computes a fresh
+`remaining: Vec<PlayerId>` (squad minus XI) *per candidate formation* inside its `for (fi,
+formation) in FORMATIONS.iter()` loop, and today discards it the instant that formation's
+`candidate: Lineup` is built — only `candidate` (never `remaining`) is compared against
+`best`. Hooking a policy in means widening `best` to carry `remaining` alongside `candidate`
+(a one-line tuple change) and calling the new policy once, after the loop picks its winning
+formation — not once per candidate formation, which would compute four bench/plan pairs to
+throw three away. So this policy's natural home is `ai_pick_lineup` itself, one level lower
+than `ai_pick_tactics`'s.
+
+**1. Bench composition.**
+
+- **Size:** `BENCH_SIZE` (7) — the same cap the human UI enforces
+  (`commands::validate_lineup`'s `CommandError::BenchTooLarge`). Filled to capacity whenever
+  the squad has the depth (`remaining.len() >= BENCH_SIZE`, which `XI = 11` plus the
+  market's own `squad_min = 18` stabilizer guarantees outside the same small-squad edge
+  cases `ai_pick_lineup_available`'s own defensive floor already exists for); short of that,
+  the bench is simply whatever remains — never padded, never a panic.
+- **Role coverage — mandatory backup GK, and it is a *separate* constraint from
+  `market::filter_affordable`'s, not the same one reused.** `filter_affordable`'s
+  `min_goalkeepers = 2` (`club_ai::UtilityKnobs`) is a transfer-*window* stabilizer: it stops
+  a club's whole squad falling below 2 GK via a sale, checked when `List` decisions clear.
+  It is never consulted at matchday selection — `pick_lineup_from`/`ai_pick_lineup` call
+  neither `market` nor `club_ai`. So the bench policy states its own rule, independently:
+  **reserve the first bench slot for the best-CA-in-`Gk` player in `remaining`,
+  unconditionally, ahead of every other slot.** In practice this can never fail — the XI
+  takes exactly one of the squad's GKs, `worldgen`'s `SQUAD_TEMPLATE` starts every squad at
+  3, and `filter_affordable` never lets the whole-squad count below 2 — but it is stated as
+  its own rule rather than assumed, the same "a real bug elsewhere should never turn into a
+  panic here" discipline `ai_pick_lineup_available`'s own fallback comment already states:
+  skip the reservation, don't panic, if `remaining` genuinely has no `Gk`.
+- **The other 6 slots — spread by role, then by CA** — mirrors
+  `fforge-game::flows::subs::auto_fill_bench`'s own two-pass shape rather than inventing a
+  second algorithm: first pass, the best-CA-in-natural-role `remaining` player for every
+  outfield role not yet on the bench (a squad with two backup CBs and no backup winger is a
+  worse bench than one CB short and a winger deep); second pass, best-of-the-rest by CA once
+  every role is covered or `remaining` is exhausted.
+
+**2. Which players go on the bench, given the XI is already chosen.**
+
+Entirely in terms of `pick_lineup_from`'s own quantities, no second candidate pool: the pool
+is `remaining` (squad minus the winning formation's XI), and the comparison is `pick_best(world,
+&remaining, role)` — the exact CA-in-role query the XI selection itself just ran per slot,
+reused unchanged for both bench passes above.
+
+**3. The default plan — forced-cover, fatigue, chase/hold, and one vocabulary finding.**
+
+Every action below is an existing `SubAction::Substitute` or `SetMentality`; no new
+`SubCondition`/`SubAction` variant is proposed. One instinctive rule is explicitly **not
+expressible** in today's vocabulary and is dropped rather than faked:
+
+- **Finding: a score-conditioned "bring on a more attacking player" rule cannot be
+  expressed, and shouldn't be worked around.** The standard real-world chase move — swap a
+  covering midfielder for an out-and-out forward once behind — needs the engine to *pick*
+  which bench player comes on based on live match state. `SubAction::Substitute` names
+  `player_out`/`player_in` explicitly at plan-authoring time, before kickoff, and §16's own
+  design line ("never resolved by an in-match `best fit` search") forbids exactly this kind
+  of live selection — the same rule that keeps `evaluate_decision_point` RNG- and
+  I/O-free. The only chase/hold lever this vocabulary actually offers is a **tactics
+  change** (`SetMentality`, already the model's primary risk axis, `TACTICS_MODEL.md` §5),
+  so v1's chase/hold is tactics-only below; fresh legs are supplied by the fatigue rules,
+  not folded into the chase rule itself. This is the policy the existing vocabulary *can*
+  express; a score-conditioned player pick would need a new rule kind, out of scope here.
+
+- **Forced-cover** — one `PlayerInjured` rule per outfield role that has both a fielded
+  starter and a bench player sharing it: pair the **weakest**-CA-in-role starter of that
+  role (not the strongest — the substitution a rational manager makes protects his weakest
+  starter in a position, freeing the strongest to keep playing) with the **strongest**-CA
+  bench player of the same role (ties broken the way `pick_best` already breaks them, lower
+  `PlayerId`):
+
+  ```
+  SubRule { conditions: [PlayerInjured(weakest_starter_in_role)],
+            action: Substitute { player_out: weakest_starter_in_role,
+                                  player_in: strongest_bench_in_role } }
+  ```
+
+  Applies to `Gk` too, pairing the starting keeper with the reserved backup-GK slot from
+  item 1 above. A role with starters but no bench player sharing it gets no forced-cover rule — an
+  honest gap the finite bench leaves, not silently padded by the cross-role search the
+  vocabulary forbids.
+
+- **Fatigue** — up to two rules, reusing a forced-cover pair where one exists: rank the
+  XI's outfield starters by `(1 − Stamina/100) × (1 + fatigue_wr × WorkRate/100)` —
+  literally `contest::fatigue_mult`'s own non-time, non-press factors (`Knobs::fatigue_wr`),
+  an attribute-derived score in the same style `ai_pick_tactics` already computes (e.g. its
+  `pass_atk_mean`). Take the top two who also have a forced-cover pair, and add:
+
+  ```
+  SubRule { conditions: [MinuteAtLeast(70), PlayerConditionBelow(pid, 80)],
+            action: Substitute { player_out: pid, player_in: paired_backup } }
+  ```
+
+  **Threshold finding.** `PlayerConditionBelow`'s percentage reads `contest::fatigue_mult`'s
+  *live* value (`condition_holds`, `resolve.rs`), and that function clamps its drop so the
+  multiplier never reads below `0.7` even before the pre-match `condition` factor is applied
+  (`(1.0 - drop).clamp(0.7, 1.0)`, `contest.rs`). At a typical weekly-calendar `condition` in
+  the `0.85–1.0` band (§13's own honesty note), the live percentage a real match ever
+  produces sits roughly in `60–100`, reaching the low end only for a genuinely low-Stamina,
+  high-Work-Rate player deep into a `Pressing::High` match. A naive round-number pick like
+  "below 60" would sit at the very edge of what the formula can ever produce and starve the
+  rule of firing almost entirely; `80` is chosen instead, inside the reachable band, as this
+  note's own plausibility-picked fit target (the `AiTacticKnobs`/`ValueKnobs` discipline — a
+  number for a future calibration pass to firm up, not a finished one).
+
+  Capped at two so forced-cover always keeps at least one substitution's headroom under
+  `MAX_SUBSTITUTIONS = 3`, even in a match where both fatigue rules fire.
+
+- **Chase/hold** — tactics only, per the finding above; costs nothing against the
+  substitution cap:
+
+  ```
+  SubRule { conditions: [Score(Trailing), MinuteAtLeast(70)], action: SetMentality(Attacking) }
+  SubRule { conditions: [Score(Leading),  MinuteAtLeast(75)], action: SetMentality(Defensive) }
+  ```
+
+- **Plan order:** forced-cover rules first, then fatigue, then chase/hold. Order only
+  matters among `Substitute` rules competing for the shared cap headroom
+  (`evaluate_decision_point` walks the list in order and short-circuits once `subs_used >=
+  MAX_SUBSTITUTIONS`); forced-cover first means a genuine injury always outranks a merely
+  tired leg for the last available slot. Tactics rules never compete for that cap, so their
+  position in the list is cosmetic.
+
+**4. Determinism.**
+
+Zero RNG, by construction. `ai_pick_bench_and_plan`-shaped logic reads only `World`
+(already-resolved attributes) and the just-chosen `xi`/`remaining` — the same purity
+`ai_pick_tactics` already has, and for the same reason: it runs at lineup-selection time,
+entirely outside `play_match`, so none of `MATCH_MODEL.md` §11's four in-match streams
+(`FIXTURE_STREAM_NS`, `CONSISTENCY_NS`, `INJURY_NS`, `FOUL_NS`) are touched. §11's
+separate-stream rule is satisfied *vacuously* here — there is no fifth stream to reserve
+because there is no draw to make. Every quantity the policy reads (CA-in-role, Stamina,
+Work Rate, `fatigue_wr`) is already-resolved world state at the moment `ai_pick_lineup`
+runs, so the function is a pure `(World, formation, XI) -> (bench, plan)` map, replay-safe
+by the same argument `ai_pick_tactics`'s own doc comment already makes for tactics.
+
+**5. The Phase-5 seam.**
+
+This policy is the substitution-axis utility baseline exactly as `ai_pick_tactics` is
+tactics' — the ablation `DESIGN.md` §5 wants (LLM manager vs. utility policy) needs a
+substitution policy to swap the LLM against, and this is it. The resolved `bench`/`sub_plan`
+ride the same `Lineup` decision value `TACTICS_MODEL.md` §6/§7 already established rides the
+`LineupSubmitted` seam: an LLM manager emits a constrained `SubRule` list — small enough to
+enumerate (`MAX_SUBSTITUTIONS = 3` slots, a handful of named starter/bench pairs, five
+`SubCondition` variants), structurally-validatable output in the same shape tactics' 81
+legal values already are — and `commands::validate_lineup`'s existing `BenchTooLarge`/
+`UnknownSubPlanPlayer` checks gate it regardless of which policy produced it, the same
+propose-then-validate pattern `TACTICS_MODEL.md` §7 already names. No new event, no new
+seam — this is the mechanism §7's own "the substitution seam this becomes" paragraph already
+promised, now with a filled-in utility baseline on the other side of it.
+
+**§8-style prediction block** (`TACTICS_MODEL.md` §8's style: state in advance which pooled
+aggregates move and by roughly how much, so a future measurement checks a prediction instead
+of explaining a surprise):
+
+| Aggregate | Prediction |
+|---|---|
+| Substitutions/match (both sides pooled) | **+3 to +5/match, pooled (≈1.5–2.5/club)** — below full 3-cap utilization most matches, since forced-cover needs a visible injury (~every 4-6 matches, §14) and fatigue is deliberately capped to 2 rules/side at a threshold picked to be reachable but not generous. This is lower than the original §16 draft's unscoped "~4-5" guess; a future check should treat that number as superseded by this more conservative, vocabulary-constrained design, not as the thing being confirmed |
+| Late-match (75'+) goal share | **+1 to +3 points**, small and second-order — bench replacements are CA-comparable to the starters they cover (picked by the same greedy CA rule, not a downgrade), so the effect is fresher legs reducing the *existing* fatigue-driven contest drop late, not a new quality mismatch |
+| Pooled goals/match | **≈ unchanged, within noise (< ±0.05)** — the same reasoning §14's own §8 note used for injuries: substitutions redistribute *who* is on the pitch late, not the contest math itself |
+| Cards (yellows/reds, both sides) | **≈ unchanged to slightly down (< 0.05/team/match)** — fresher legs lower the foul contest's `1 − fatigue_mult` term (§15) for the substituted player's remaining minutes, but only for the ~2 players/match the fatigue rules actually cover, a small slice of total pitch-minutes |
+| Mean minutes played by non-XI squad members | **from ~0 to roughly 10-20 minutes/appearance** for a bench player who enters — checkpoints are fixed at 70'/80' (plus half-time on a forced trigger), so a fatigue or forced-cover substitute typically plays the last 10-20 minutes; this is the mechanical fix to `DEVELOPMENT_MODEL.md` §3's minutes-share signal actually reaching non-XI squad members in AI-vs-AI play, previously always exactly zero |
+
+Every row is a plausibility-picked prediction in the same discipline as `TACTICS_MODEL.md`
+§8's own table — a target a future harness run confirms or refutes, not a guarantee.
 
 ## 17. Character activation — Consistency & Concentration, and the schema §9 item 2 verdict
 

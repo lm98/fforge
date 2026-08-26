@@ -3,16 +3,43 @@
 //! fold never re-derives it, so worldgen can evolve freely without breaking
 //! saves (the record-resolved-values principle).
 
-use crate::development::{resolve_coaching, resolve_dev_profile, DevKnobs};
-use crate::rng::{derive_stream, Rng};
-use crate::schedule::double_round_robin;
-use fforge_domain::{
-    best_role, Attribute, Attributes, Character, Club, ClubId, Competition, CompetitionId,
-    Contract, Finances, Fixture, GameDate, Money, Player, PlayerId, Role, Staff, StaffId,
-    StaffRole, World, NUM_ATTRIBUTES, ROLE_WEIGHTS,
+use crate::development::{
+    DevKnobs, EnvTables, norms_by_role, resolve_bloomer_phase, resolve_coaching,
+    resolve_dev_profile, role_ceiling_consts,
 };
+use crate::rng::{Rng, derive_stream};
+use crate::schedule::double_round_robin;
 use fforge_domain::date::DAYS_PER_YEAR;
+use fforge_domain::{
+    Attribute, Attributes, Character, Club, ClubId, Competition, CompetitionId, Contract, Finances,
+    Fixture, GameDate, Money, NUM_ATTRIBUTES, NUM_ROLES, Player, PlayerId, ROLE_WEIGHTS, Role,
+    Staff, StaffId, StaffRole, World, best_role,
+};
 use std::collections::BTreeMap;
+
+/// Bundles the three development-engine tables `gen_player`'s seeding formula
+/// needs (`DEVELOPMENT_MODEL.md` §8.1) — built once per world/cohort
+/// generation call and shared across every player, the same "build once,
+/// share across every player/attribute" discipline `development::tick_changes`
+/// already follows for the identical tables.
+pub(crate) struct SeedTables {
+    envs: EnvTables,
+    norms: [f64; NUM_ROLES],
+    ceiling_consts: [f64; NUM_ROLES],
+}
+
+impl SeedTables {
+    pub(crate) fn build(knobs: &DevKnobs) -> Self {
+        let envs = EnvTables::new(knobs);
+        let norms = norms_by_role(&envs);
+        let ceiling_consts = role_ceiling_consts();
+        SeedTables {
+            envs,
+            norms,
+            ceiling_consts,
+        }
+    }
+}
 
 pub struct WorldGenConfig {
     pub num_clubs: usize,
@@ -54,6 +81,7 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
     assert!(cfg.num_clubs >= 2 && cfg.num_clubs.is_multiple_of(2));
     let mut rng = derive_stream(seed, WORLDGEN_STREAM);
     let dev_knobs = DevKnobs::default();
+    let seed_tables = SeedTables::build(&dev_knobs);
     let start_date = GameDate::from_year_day(cfg.start_year, 220); // late-summer kickoff
 
     // Club quality anchors, evenly spread then shuffled: a league with a
@@ -82,7 +110,16 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
                 next_player += 1;
                 // Age ~ triangular 16..=36, centered mid-20s.
                 let age = 16 + ((rng.f64() + rng.f64()) * 10.0) as i32;
-                let player = gen_player(&mut rng, id, role, quality, age, start_date, &dev_knobs);
+                let player = gen_player(
+                    &mut rng,
+                    id,
+                    role,
+                    quality,
+                    age,
+                    start_date,
+                    &dev_knobs,
+                    &seed_tables,
+                );
                 squad.push(id);
                 players.insert(id, player);
             }
@@ -151,6 +188,7 @@ pub fn generate(seed: u64, cfg: &WorldGenConfig) -> (World, Vec<Fixture>, GameDa
 /// (`TRANSFER_MODEL.md` §8.1) reuses this same function with a tight 16-18
 /// band, the second genuine consumer of `coaching_milli` alongside
 /// `resolve_coaching`. `pub(crate)` so `pool` can call it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn gen_player(
     rng: &mut Rng,
     id: PlayerId,
@@ -159,38 +197,52 @@ pub(crate) fn gen_player(
     age: i32,
     today: GameDate,
     dev_knobs: &DevKnobs,
+    seed_tables: &SeedTables,
 ) -> Player {
     let birth = today
         .add_days(-(age as i64) * fforge_domain::date::DAYS_PER_YEAR)
         .add_days(-(rng.below(365) as i64));
 
-    // Player quality center around the club's anchor; youth discounted a bit
-    // (their headroom lives in PA instead).
-    let youth_discount = if age < 21 { (21 - age) as f64 * 2.0 } else { 0.0 };
-    let base = rng.normal(club_quality - youth_discount, 5.0).clamp(28.0, 92.0);
+    // PA drawn first, anchored on club quality (`DEVELOPMENT_MODEL.md` §8.1) —
+    // the same anchoring scheme (mean = club_quality, noise sigma 5.0) the
+    // pre-fix CA-first `base` draw used, now applied to the ceiling instead
+    // of to current ability. `youth_discount` and `headroom` both disappear:
+    // a young player's headroom now lives entirely in how far below PA the
+    // envelope licenses him to be at his age (below), not in a second,
+    // structureless discount/bonus pair.
+    let potential = rng.normal(club_quality, 5.0).clamp(28.0, 99.0).round() as u8;
 
-    // Shape attributes by the role-weighting table: weight 5 ⇒ well above the
-    // player's base, weight 1 ⇒ well below, weight 0 ⇒ untrained floor.
+    // The bloomer phase φ (§2.3) is drawn once, here, and reused below to
+    // seed attributes *and* recorded verbatim into `DevProfile` — seeding and
+    // development read the same φ, not two independent draws (§8.1).
+    let phi = resolve_bloomer_phase(rng, dev_knobs);
+    let y = age as f64 - phi;
+
+    // Seed every attribute beneath the drawn ceiling, on the envelope:
+    // a_i ≈ (PA/NORM)·env_c(age−φ) + noise (§8.1) — calling the growth
+    // engine's own ceiling function (`development::attr_rate`'s `target`) at
+    // generation time rather than encoding the envelope a second way. The
+    // noise sigma (4.5) is unchanged from the pre-fix draw; only the level
+    // being perturbed moved, not its spread.
+    let norm = seed_tables.norms[role.index()];
+    let pa_base =
+        potential as f64 - dev_knobs.ceil_spread * seed_tables.ceiling_consts[role.index()];
     let mut values = [0u8; NUM_ATTRIBUTES];
     for attr in Attribute::ALL {
         let w = ROLE_WEIGHTS.weight(role, attr);
         let v = if w == 0 {
             rng.range_i32(3, 18) as f64
         } else {
-            rng.normal(base + (w as f64 - 3.0) * 4.5, 4.5)
+            let ceiling = (pa_base + (w as f64 - 3.0) * dev_knobs.ceil_spread)
+                .clamp(dev_knobs.ceil_floor, 100.0);
+            let e_env = seed_tables.envs.env_at(attr.dev_category(), y);
+            let target = (ceiling / norm) * e_env;
+            rng.normal(target, 4.5)
         };
         values[attr.index()] = v.clamp(1.0, 96.0) as u8;
     }
     let attributes = Attributes::new(values);
-
-    // PA: young players get real headroom; veterans are what they are.
     let (_, best_ca) = best_role(&attributes, &ROLE_WEIGHTS);
-    let headroom = if age < 24 {
-        (24 - age) * 2 + rng.range_i32(0, 8)
-    } else {
-        rng.range_i32(0, 3)
-    };
-    let potential = (best_ca as i32 + headroom).clamp(best_ca as i32, 97) as u8;
 
     let determination = rng.range_i32(20, 95) as u8;
     let professionalism = rng.range_i32(20, 95) as u8;
@@ -217,9 +269,15 @@ pub(crate) fn gen_player(
     };
 
     // Once-resolved development trajectory (DEVELOPMENT_MODEL.md §2.3), derived
-    // from character + seeded noise and recorded in the World snapshot.
-    let development =
-        resolve_dev_profile(rng, character.determination, character.professionalism, dev_knobs);
+    // from character + seeded noise and recorded in the World snapshot. `phi`
+    // is the same bloomer phase already used to seed attributes above.
+    let development = resolve_dev_profile(
+        rng,
+        character.determination,
+        character.professionalism,
+        phi,
+        dev_knobs,
+    );
 
     // Employment terms (TRANSFER_MODEL.md §3.1): every t=0 player is contracted
     // (no free agents at kickoff). Wage scales with quality; the expiry spreads
@@ -329,8 +387,18 @@ fn person_name(rng: &mut Rng) -> String {
 }
 
 const CLUB_PREFIXES: &[&str] = &[
-    "AC", "FC", "US", "Real", "Sporting", "Atlético", "Union", "Inter", "Olimpia", "Racing",
-    "Dinamo", "Virtus",
+    "AC",
+    "FC",
+    "US",
+    "Real",
+    "Sporting",
+    "Atlético",
+    "Union",
+    "Inter",
+    "Olimpia",
+    "Racing",
+    "Dinamo",
+    "Virtus",
 ];
 
 const CITY_STEMS: &[&str] = &[

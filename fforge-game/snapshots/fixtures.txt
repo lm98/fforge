@@ -1,24 +1,24 @@
 
 Matchday 6 fixtures:
-  Real Valdessa          vs FC Nerana              <— your match
-  Real Bellemona         vs Dinamo Bellora
-  Olimpia Veraverde      vs Dinamo Valdetto
-  Atlético Rivemona      vs Union Montonte
-  Real Pralora           vs Virtus Montaro
-  Real Valdisola         vs FC Portaverde
-  Olimpia Osturnia       vs Virtus Castonte
-  Inter Ostetto          vs US Bellessa
-  Sporting Campetto      vs AC Veronte
-  Dinamo Fioressa        vs FC Fiorisola
+  Sporting Pralana       vs FC Nerana              <— your match
+  Olimpia Nerurnia       vs FC Portaverde
+  Olimpia Lavora         vs Inter Sorora
+  Sporting Campentino    vs US Sorisola
+  Sporting Saldetto      vs Real Torrana
+  US Rivana              vs Dinamo Valdessa
+  Olimpia Valdurnia      vs Virtus Belletto
+  Atlético Valdaro       vs Racing Veressa
+  US Portetto            vs AC Fioraverde
+  US Castonte            vs Dinamo Bellana
 
 Matchday 5 results:
-> FC Nerana               5 - 0  Real Bellemona
-  Real Valdessa           2 - 0  Olimpia Veraverde
-  Dinamo Bellora          0 - 2  Atlético Rivemona
-  Dinamo Valdetto         6 - 0  Real Pralora
-  Union Montonte          0 - 0  Real Valdisola
-  Virtus Montaro         10 - 0  Olimpia Osturnia
-  FC Portaverde           3 - 0  Inter Ostetto
-  Virtus Castonte         3 - 0  Sporting Campetto
-  US Bellessa             0 - 3  Dinamo Fioressa
-  AC Veronte              0 - 2  FC Fiorisola
+> FC Nerana               8 - 0  Olimpia Nerurnia
+  Sporting Pralana        1 - 0  Olimpia Lavora
+  FC Portaverde           0 - 0  Sporting Campentino
+  Inter Sorora            4 - 0  Sporting Saldetto
+  US Sorisola             2 - 0  US Rivana
+  Real Torrana            7 - 0  Olimpia Valdurnia
+  Dinamo Valdessa         0 - 0  Atlético Valdaro
+  Virtus Belletto         0 - 0  US Portetto
+  Racing Veressa          0 - 0  US Castonte
+  AC Fioraverde           3 - 0  Dinamo Bellana

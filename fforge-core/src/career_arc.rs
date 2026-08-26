@@ -27,10 +27,11 @@
 //! re-fit is a human reading these numbers and editing `DevKnobs::default`.
 
 use crate::development::{self, DevKnobs, EnvTables, norms_by_role};
+use crate::event::Event;
 use crate::{Command, Session, WorldGenConfig, new_game, worldgen};
 use fforge_domain::{
-    Attribute, ClubId, DevCategory, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
-    date::DAYS_PER_YEAR,
+    Attribute, ClubId, DevCategory, Fixture, GameDate, PlayerId, ROLE_WEIGHTS, Role, World,
+    best_role, date::DAYS_PER_YEAR,
 };
 use std::collections::BTreeMap;
 
@@ -262,6 +263,162 @@ fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> Vec<Arc> {
     arcs.into_iter().map(|(_, a)| a).collect()
 }
 
+/// Record the age of every player seen for the first time — `Arc`'s "start
+/// age" definition (age at worldgen or, later, youth intake) applied to a
+/// plain `PlayerId -> age` map instead of a full traced arc, for the
+/// clip-stats measurement below.
+fn record_new_start_ages(world: &World, date: GameDate, start_age: &mut BTreeMap<PlayerId, f64>) {
+    for (&pid, player) in &world.players {
+        start_age
+            .entry(pid)
+            .or_insert_with(|| (date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64);
+    }
+}
+
+/// The `[16, 17)` start-age cohort's `max_step`-clamp exposure
+/// (`DEVELOPMENT_MODEL.md` §8.6's max-step-saturation escalation clause):
+/// pools `(attempted, clipped)` weighted-attribute steps across every such
+/// player's whole traced career.
+///
+/// Reconstructs, from the real per-matchday `MatchPlayed`/`DevelopmentTick`
+/// events a real `Session` produces, the exact `(world, minutes,
+/// club_matches)` triple `commands::dev_ticks_between` fed to
+/// `development::tick_changes` for that matchday's boundary — then re-derives
+/// the identical changes via `tick_changes_with_clip_stats` and
+/// `debug_assert_eq!`s the result against the real recorded
+/// `DevelopmentTick.changes`, so a reconstruction bug fails loudly rather
+/// than silently mismeasuring. Limited to the single-tick case
+/// `commands::advance_matchday`'s own doc comment describes ("at most one
+/// [boundary], since a matchday step is 7 days") — a multi-tick
+/// `StartNextSeason` offseason span is skipped for this diagnostic only (the
+/// large majority of ticks are the single-tick case: ~37 matchdays/season
+/// vs. one season transition).
+fn trace_seed_clip_stats_16_band(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> (u64, u64) {
+    // The real `Session`/`commands::dev_ticks_between` pipeline this function
+    // reconstructs against hardcodes `DevKnobs::default()` internally (it has
+    // no seam to take a substituted table) — so the reconstruction must use
+    // the identical table, not a caller-supplied one, or the
+    // `debug_assert_eq!` below would fail on a currently-committed knob
+    // table it was never actually measuring against.
+    let knobs = DevKnobs::default();
+    let log = new_game(seed, cfg, ClubId(0));
+    let mut session = Session::from_events(log, &mut []);
+
+    let mut start_age: BTreeMap<PlayerId, f64> = BTreeMap::new();
+    record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+
+    let mut attempted_16 = 0u64;
+    let mut clipped_16 = 0u64;
+
+    for s in 0..seasons {
+        while !session.state.season_over() {
+            let fixtures: Vec<Fixture> = session
+                .state
+                .fixtures_of_matchday(session.state.current_matchday)
+                .cloned()
+                .collect();
+            let pre_world = session.state.world.clone();
+            let pre_apps = session.state.appearances_since_tick.clone();
+            let pre_club_matches = session.state.club_matches_since_tick.clone();
+            let log_before = session.log.len();
+
+            session
+                .execute(Command::AdvanceMatchday, &mut [])
+                .expect("advance matchday");
+
+            record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+
+            let mut this_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
+            let mut tick: Option<(GameDate, Vec<crate::event::AttrStep>)> = None;
+            for ev in &session.log[log_before..] {
+                match ev {
+                    Event::MatchPlayed { minutes, .. } => {
+                        for &(pid, mins) in minutes {
+                            *this_apps.entry(pid).or_default() += mins as u32;
+                        }
+                    }
+                    Event::DevelopmentTick { date, changes } => {
+                        tick = Some((*date, changes.clone()));
+                    }
+                    _ => {}
+                }
+            }
+
+            let Some((tick_date, real_changes)) = tick else {
+                continue; // no 30-day boundary crossed this matchday
+            };
+
+            let mut window_apps = pre_apps;
+            for (pid, mins) in this_apps {
+                *window_apps.entry(pid).or_default() += mins;
+            }
+            let mut window_club_matches = pre_club_matches;
+            for f in &fixtures {
+                *window_club_matches.entry(f.home).or_default() += 1;
+                *window_club_matches.entry(f.away).or_default() += 1;
+            }
+
+            let period = development::period_index(tick_date);
+            let (recomputed, clip_map) = development::tick_changes_with_clip_stats(
+                &pre_world,
+                session.state.seed,
+                period,
+                tick_date,
+                &window_apps,
+                &window_club_matches,
+                &knobs,
+            );
+            debug_assert_eq!(
+                recomputed, real_changes,
+                "clip-stats reconstruction diverged from the real recorded tick \
+                 — the window/world reconstruction above is not faithful"
+            );
+
+            for (pid, stats) in clip_map {
+                if let Some(&sa) = start_age.get(&pid)
+                    && (16.0..17.0).contains(&sa)
+                {
+                    attempted_16 += stats.attempted as u64;
+                    clipped_16 += stats.clipped as u64;
+                }
+            }
+        }
+        if s + 1 < seasons {
+            session
+                .execute(Command::StartNextSeason, &mut [])
+                .expect("start next season");
+            record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
+        }
+    }
+
+    (attempted_16, clipped_16)
+}
+
+/// Pool `trace_seed_clip_stats_16_band` over `seeds`: the max-step-saturation
+/// escalation clause's own reading (`DEVELOPMENT_MODEL.md` §8.6) — the
+/// clipped fraction of monthly attribute steps for the `[16, 17)` start-age
+/// cohort, read before fitting and again after each re-fit stage. Returns
+/// `(attempted, clipped, fraction)`.
+pub fn max_step_saturation_16_band(
+    seeds: &[u64],
+    seasons: usize,
+    cfg: &WorldGenConfig,
+) -> (u64, u64, f64) {
+    let mut attempted = 0u64;
+    let mut clipped = 0u64;
+    for &seed in seeds {
+        let (a, c) = trace_seed_clip_stats_16_band(seed, seasons, cfg);
+        attempted += a;
+        clipped += c;
+    }
+    let frac = if attempted > 0 {
+        clipped as f64 / attempted as f64
+    } else {
+        f64::NAN
+    };
+    (attempted, clipped, frac)
+}
+
 /// Trace one world seed with growth **effectively disabled** — the
 /// wonderkid-flop-analysis decisive test (task 2): if the flop rate and
 /// attainment distribution are unchanged from the normal run even with no
@@ -402,6 +559,14 @@ pub fn fit_pa_from_ca_age_youth(seeds: &[u64], cfg: &WorldGenConfig) -> PaFit {
     fit_pa_from_ca_age_filtered(seeds, cfg, |age| age < 24.0)
 }
 
+/// The same fit restricted to one single-year age band `[lo, hi)`
+/// (`DEVELOPMENT_MODEL.md` §8.4: the `residual_sd` rise is predicted
+/// strongest at 16, weakest at 21) — the per-band decomposition `fit_youth`'s
+/// pooled 16-23 read cannot show on its own.
+pub fn fit_pa_from_ca_age_band(seeds: &[u64], cfg: &WorldGenConfig, lo: f64, hi: f64) -> PaFit {
+    fit_pa_from_ca_age_filtered(seeds, cfg, move |age| age >= lo && age < hi)
+}
+
 fn fit_pa_from_ca_age_filtered(
     seeds: &[u64],
     cfg: &WorldGenConfig,
@@ -460,6 +625,139 @@ fn fit_pa_from_ca_age_filtered(
         residual_sd,
         n: rows.len(),
     }
+}
+
+/// Solve an `n x n` linear system by Gaussian elimination with partial
+/// pivoting — `solve3`'s generalization for the COMPETENT fit's 5 unknowns
+/// (`fit_pa_from_composites_age_filtered`). One-off measurement code; not
+/// worth a linear-algebra dependency for a handful of small, dense solves.
+#[allow(clippy::needless_range_loop)]
+fn solve_n(mut m: Vec<Vec<f64>>, mut rhs: Vec<f64>) -> Vec<f64> {
+    let n = rhs.len();
+    for col in 0..n {
+        let pivot = (col..n)
+            .max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))
+            .unwrap();
+        m.swap(col, pivot);
+        rhs.swap(col, pivot);
+        for row in (col + 1)..n {
+            let factor = m[row][col] / m[col][col];
+            for k in col..n {
+                m[row][k] -= factor * m[col][k];
+            }
+            rhs[row] -= factor * rhs[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let sum: f64 = (row + 1..n).map(|k| m[row][k] * x[k]).sum();
+        x[row] = (rhs[row] - sum) / m[row][row];
+    }
+    x
+}
+
+/// Result of the COMPETENT attack's `PA ~ a*phys + b*tech + c*ment + d*age +
+/// e` ordinary-least-squares fit (`DEVELOPMENT_MODEL.md` §8.4's two-attack
+/// measurement): `coeffs` is `[phys, tech, ment, age, intercept]`.
+pub struct PaFitMulti {
+    pub coeffs: [f64; 5],
+    pub residual_sd: f64,
+    pub n: usize,
+}
+
+/// The COMPETENT attack on PA: fit `PA` on the per-`DevCategory` composites
+/// (physical/technical/mental — `category_composite`, the same aggregation
+/// `career_arc`'s own arc-tracing already uses) plus age, instead of on raw
+/// best-role CA alone. Under envelope-consistent seeding the composite
+/// *ratios* partially decode the hidden bloomer phase φ (φ shifts the whole
+/// envelope, but each category's envelope has a different shape, so a
+/// φ-shifted player's phys/tech/ment mix differs from an on-schedule player's
+/// even at matched CA) — this is the skilled-observer attack the NAIVE
+/// `fit_pa_from_ca_age*` fits cannot make. The gap between the two residuals
+/// is the headroom a real scouting signal could close.
+fn fit_pa_from_composites_age_filtered(
+    seeds: &[u64],
+    cfg: &WorldGenConfig,
+    age_filter: impl Fn(f64) -> bool,
+) -> PaFitMulti {
+    // rows: (phys, tech, ment, age, pa)
+    let mut rows: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
+    for &seed in seeds {
+        let (world, _fixtures, start_date) = worldgen::generate(seed, cfg);
+        for player in world.players.values() {
+            let age = (start_date.days - player.birth.days) as f64 / DAYS_PER_YEAR as f64;
+            if !age_filter(age) {
+                continue;
+            }
+            let role = player.natural_role;
+            let phys = category_composite(role, &player.attributes, DevCategory::Physical);
+            let tech = category_composite(role, &player.attributes, DevCategory::Technical);
+            let ment = category_composite(role, &player.attributes, DevCategory::Mental);
+            let pa = player.character.potential as f64;
+            rows.push((phys, tech, ment, age, pa));
+        }
+    }
+
+    // Design-matrix predictors, in `coeffs`' order, plus a constant 1 for the
+    // intercept — build the 5x5 normal-equations system X'X x = X'y directly
+    // rather than materializing X.
+    let n = rows.len();
+    let mut xtx = vec![vec![0.0; 5]; 5];
+    let mut xty = vec![0.0; 5];
+    for &(phys, tech, ment, age, pa) in &rows {
+        let x = [phys, tech, ment, age, 1.0];
+        for i in 0..5 {
+            xty[i] += x[i] * pa;
+            for j in 0..5 {
+                xtx[i][j] += x[i] * x[j];
+            }
+        }
+    }
+    let coeffs_vec = solve_n(xtx, xty);
+    let coeffs: [f64; 5] = coeffs_vec.try_into().unwrap();
+
+    let sse: f64 = rows
+        .iter()
+        .map(|&(phys, tech, ment, age, pa)| {
+            let pred = coeffs[0] * phys
+                + coeffs[1] * tech
+                + coeffs[2] * ment
+                + coeffs[3] * age
+                + coeffs[4];
+            (pa - pred).powi(2)
+        })
+        .sum();
+    let residual_sd = (sse / (n as f64 - 5.0)).sqrt();
+
+    PaFitMulti {
+        coeffs,
+        residual_sd,
+        n,
+    }
+}
+
+/// The COMPETENT fit over every `worldgen`-generated player, all ages —
+/// `fit_pa_from_ca_age`'s sibling.
+pub fn fit_pa_from_composites_age(seeds: &[u64], cfg: &WorldGenConfig) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, |_age| true)
+}
+
+/// The COMPETENT fit restricted to `age < 24` — `fit_pa_from_ca_age_youth`'s
+/// sibling, same population.
+pub fn fit_pa_from_composites_age_youth(seeds: &[u64], cfg: &WorldGenConfig) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, |age| age < 24.0)
+}
+
+/// The COMPETENT fit restricted to one single-year age band `[lo, hi)` —
+/// `fit_pa_from_ca_age_band`'s sibling, so the NAIVE/COMPETENT gap can be
+/// read per band, not just pooled.
+pub fn fit_pa_from_composites_age_band(
+    seeds: &[u64],
+    cfg: &WorldGenConfig,
+    lo: f64,
+    hi: f64,
+) -> PaFitMulti {
+    fit_pa_from_composites_age_filtered(seeds, cfg, move |age| age >= lo && age < hi)
 }
 
 /// Task 4: the maturity ratio `env_c(y) / NORM` at a given age, for a given
@@ -657,6 +955,18 @@ impl SeedingProjectionReport {
         let rows: Vec<&ProjRow> = self.rows.iter().collect();
         summarize_band(-1, &rows)
     }
+
+    /// `start_age_band <= 18` pooled (§8.3: the headline wonderkid hit/flop
+    /// population, narrower than `overall()`'s full `<= 21` pool) —
+    /// `start_age_band` is `-2` as a distinct marker from `overall()`'s `-1`.
+    pub fn le18(&self) -> ProjectionBandStats {
+        let rows: Vec<&ProjRow> = self
+            .rows
+            .iter()
+            .filter(|r| r.start_age_band <= 18)
+            .collect();
+        summarize_band(-2, &rows)
+    }
 }
 
 /// Run the career-arc harness and the W1b projection together off the same
@@ -698,8 +1008,19 @@ pub fn print_seeding_projection(report: &SeedingProjectionReport) {
     println!();
     println!(
         "{:>4} {:>5} {:>5} {:>6} {:>6} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "band", "n", "n_wk", "r0", "r0'", "attain", "attain'", "sub80", "sub80'", "hit", "hit'",
-        "flop", "flop'"
+        "band",
+        "n",
+        "n_wk",
+        "r0",
+        "r0'",
+        "attain",
+        "attain'",
+        "sub80",
+        "sub80'",
+        "hit",
+        "hit'",
+        "flop",
+        "flop'"
     );
     for b in report.bands() {
         println!(
@@ -1223,6 +1544,25 @@ pub fn print_report(report: &CareerArcReport) {
 mod tests {
     use super::*;
 
+    /// `max_step_saturation_16_band`'s reconstruction is validated by its own
+    /// internal `debug_assert_eq!` against the real recorded
+    /// `DevelopmentTick.changes` on every single-tick boundary it processes
+    /// (`DEVELOPMENT_MODEL.md` §8.6) — this test just needs to run that path,
+    /// in a debug build, across enough matchdays to cross at least one
+    /// 30-day boundary, and confirm it returns a sane (non-NaN, in-range)
+    /// fraction rather than panicking.
+    #[test]
+    fn max_step_saturation_reconstruction_matches_the_real_recorded_ticks() {
+        let cfg = WorldGenConfig {
+            num_clubs: 4,
+            ..Default::default()
+        };
+        let (attempted, clipped, frac) = max_step_saturation_16_band(&[1, 2], 2, &cfg);
+        assert!(attempted > 0, "expected at least one attempted step");
+        assert!(clipped <= attempted);
+        assert!((0.0..=1.0).contains(&frac), "frac {frac} out of range");
+    }
+
     /// The career-arc regression guard (`DEVELOPMENT_MODEL.md` §6): the
     /// development sibling of `aggregates_are_in_a_believable_ballpark`
     /// (`lib.rs`) and of `match_engine::calibrate`'s
@@ -1280,14 +1620,22 @@ mod tests {
             tech.mean
         );
         let ment = report.ment_onset_age();
+        // Widened 34.0 -> 36.0 for the same reason as `ca_peak` below: the
+        // §8 W3/W4 re-fit's looser plast_*/e_min pushed the banked reading to
+        // ~32.1, leaving too little margin on the old ceiling.
         assert!(
-            (24.0..=34.0).contains(&ment.mean),
+            (24.0..=36.0).contains(&ment.mean),
             "mental plateau onset {:.2} outside believable band",
             ment.mean
         );
         let ca_peak = report.ca_peak_age();
+        // Widened 32.0 -> 34.0 after the §8 seeding-invert + re-fit (W3/W4):
+        // the looser plast_*/e_min the primary flop-rate target needed also
+        // pushed CA peak age later (banked reading ~31.4) — still a loose
+        // tripwire, just re-centered on where the fixed engine actually
+        // lands rather than the pre-fix reading's margin.
         assert!(
-            (25.0..=32.0).contains(&ca_peak.mean),
+            (25.0..=34.0).contains(&ca_peak.mean),
             "overall CA peak age {:.2} outside believable band",
             ca_peak.mean
         );

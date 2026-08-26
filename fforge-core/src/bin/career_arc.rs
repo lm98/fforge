@@ -10,8 +10,10 @@
 use fforge_core::DevKnobs;
 use fforge_core::WorldGenConfig;
 use fforge_core::career_arc::{
-    fit_pa_from_ca_age, fit_pa_from_ca_age_youth, print_maturity_ratios, print_report,
-    print_seeding_projection, run_career_arc_with_projection, run_growth_disabled_probe,
+    fit_pa_from_ca_age, fit_pa_from_ca_age_band, fit_pa_from_ca_age_youth,
+    fit_pa_from_composites_age, fit_pa_from_composites_age_band, fit_pa_from_composites_age_youth,
+    max_step_saturation_16_band, print_maturity_ratios, print_report, print_seeding_projection,
+    run_career_arc_with_projection, run_growth_disabled_probe,
 };
 
 fn parse_usize_arg(args: &[String], flag: &str, default: usize) -> usize {
@@ -30,6 +32,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let num_seeds = parse_usize_arg(&args, "--seeds", 8);
     let seasons = parse_usize_arg(&args, "--seasons", 16);
+
+    if args.iter().any(|a| a == "--max-step-saturation") {
+        let cfg = WorldGenConfig::default();
+        let seeds: Vec<u64> = (0..num_seeds as u64).collect();
+        let (attempted, clipped, frac) = max_step_saturation_16_band(&seeds, seasons, &cfg);
+        println!(
+            "max_step clip fraction, [16,17) start-age cohort: {clipped}/{attempted} = {frac:.4} \
+             ({num_seeds} seeds x {seasons} seasons, DevKnobs::default() as currently compiled)"
+        );
+        return;
+    }
 
     let seeds: Vec<u64> = (0..num_seeds as u64).collect();
     let cfg = WorldGenConfig::default();
@@ -89,5 +102,69 @@ fn main() {
     println!();
 
     print_maturity_ratios(&DevKnobs::default());
+    println!();
+
+    // --- DEVELOPMENT_MODEL.md §8: post-seeding-invert measurement ---
+    println!("=== §8 seeding-fix measurement: NAIVE vs COMPETENT PA recoverability ===");
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "band", "naive_sd", "n", "compt_sd", "n", "gap"
+    );
+    for band in 16..=21i64 {
+        let (lo, hi) = (band as f64, band as f64 + 1.0);
+        let naive = fit_pa_from_ca_age_band(&seeds, &cfg, lo, hi);
+        let compt = fit_pa_from_composites_age_band(&seeds, &cfg, lo, hi);
+        println!(
+            "{:>6} {:>8.3} {:>8} {:>8.3} {:>8} {:>8.3}",
+            band,
+            naive.residual_sd,
+            naive.n,
+            compt.residual_sd,
+            compt.n,
+            naive.residual_sd - compt.residual_sd
+        );
+    }
+    println!();
+    let naive_youth = fit_pa_from_ca_age_youth(&seeds, &cfg);
+    let compt_youth = fit_pa_from_composites_age_youth(&seeds, &cfg);
+    println!(
+        "youth (age<24) pooled: naive_sd={:.3} (n={})  competent_sd={:.3} (n={})  gap={:.3}",
+        naive_youth.residual_sd,
+        naive_youth.n,
+        compt_youth.residual_sd,
+        compt_youth.n,
+        naive_youth.residual_sd - compt_youth.residual_sd
+    );
+    let naive_all = fit_pa_from_ca_age(&seeds, &cfg);
+    let compt_all = fit_pa_from_composites_age(&seeds, &cfg);
+    println!(
+        "all ages pooled:       naive_sd={:.3} (n={})  competent_sd={:.3} (n={})  gap={:.3}",
+        naive_all.residual_sd, naive_all.n, compt_all.residual_sd, compt_all.n,
+        naive_all.residual_sd - compt_all.residual_sd
+    );
+    println!();
+
+    println!("--- §8.3 headline: start_age<=18 wonderkid hit/flop, real post-fix arcs ---");
+    for b in projection.bands() {
+        if b.start_age_band <= 18 {
+            println!(
+                "band {:>3}: n={:>4} n_wk={:>4}  attainment {:.3}  sub80 {:.3}  hit {:.3}  flop {:.3}",
+                b.start_age_band, b.n, b.n_wonderkid, b.attainment_mean, b.sub80_frac, b.hit_rate,
+                b.flop_rate
+            );
+        }
+    }
+    let le18 = projection.le18();
+    println!(
+        "<=18 pooled: n={} n_wk={}  attainment {:.3}  sub80 {:.3}  hit {:.3}  flop {:.3}  (target flop 0.02-0.08, hit >=0.45)",
+        le18.n, le18.n_wonderkid, le18.attainment_mean, le18.sub80_frac, le18.hit_rate,
+        le18.flop_rate
+    );
+    let overall = projection.overall();
+    println!(
+        "<=21 pooled (attainment mean/sub80 tail stay on this cohort per §8.3): n={} n_wk={}  attainment {:.3} (target 0.85-0.92)  sub80 {:.3} (target 0.10-0.20)",
+        overall.n, overall.n_wonderkid, overall.attainment_mean, overall.sub80_frac
+    );
     println!();
 }
