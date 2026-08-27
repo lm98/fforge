@@ -155,6 +155,18 @@ list: `Player.condition` was never added and should not be — condition is *der
 `GameState::recent_appearances` rather than stored (`MATCH_MODEL.md` §13), the same
 "derive, don't store" rule CA already follows. Beyond these, not open-ended new features.
 
+**A slice of Phase 6 (UI/UX) has been pulled forward, ahead of Phase 5.** It touches
+`fforge-game` only — no simulation change, no new domain or core types. The match view is
+now three tellings of the same `MatchOutcome` (a highlight reel by default, `DESIGN.md`
+§9's full humble text view behind a key, or straight to the result), with match statistics
+counted off the same stream; the status header is a framed panel carrying position, points,
+next opponent and recent form; dates read `9 Aug 2026` rather than `2026, day 220` (a
+layer-5 presentation function — `GameDate` is unchanged and should stay monthless); and
+there is a title screen and a real club picker. `docs/UI_TOOLKIT_EVIDENCE.md` §6 records
+what the slice taught, including the one finding that sharpens an earlier conclusion: it is
+*continuous* columns that exhaust a terminal's single colour channel, not columns in
+general.
+
 **Next: Phase 5, the agent layer.** Its only blocker (§2 of `BACKLOG.md`) is closed, so
 `AGENT_MODEL.md` is the next thing to write — see `BACKLOG.md` §3 for what it must resolve. One
 finding from the seeding fix belongs in that conversation: the *naive* attack on PA (fit on

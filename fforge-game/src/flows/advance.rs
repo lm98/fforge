@@ -3,7 +3,7 @@
 //! the advance closed.
 
 use crate::Observers;
-use crate::flows::match_view::print_humble_text_view;
+use crate::flows::match_view::present_match;
 use crate::render::sem::Palette;
 use crate::render::{money, ordinal, result_line, table_position};
 use fforge_core::{Command, Event, Session, player_match_preview};
@@ -28,7 +28,7 @@ pub fn advance_flow(session: &mut Session, o: &mut Observers, p: Palette) {
             .fixtures_of_matchday(md)
             .find(|f| f.home == s.player_club || f.away == s.player_club)
     {
-        print_humble_text_view(
+        present_match(
             &s.world,
             &s.world.club(f.home).name,
             &s.world.club(f.away).name,

@@ -25,7 +25,7 @@
 //! exactly the kind of quiet failure a manager should be told about. Stale
 //! rules read `Warn` and are labelled `(stale)`; live ones read plain.
 
-use crate::input::{prompt_choice, prompt_number, read_line};
+use crate::input::{prompt_choice, prompt_number, read_line_or_abort};
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use fforge_core::match_engine::SUB_CHECKPOINTS;
@@ -58,7 +58,7 @@ pub fn edit(
         println!(
             "  [b] pick bench   [a] auto-fill bench   [n] new rule\n  [d N] drop rule N   [u N] move rule N up   [c] clear rules   [k] done   [q] abort"
         );
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         let mut parts = input.split_whitespace();
         let cmd = parts.next().unwrap_or("");
         let idx = parts.next().and_then(|n| n.parse::<usize>().ok());
@@ -269,7 +269,7 @@ fn pick_bench(world: &World, eligible: &[PlayerId], plan: &mut Plan) {
             );
         }
         println!("  [q] done");
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         if input.trim() == "q" {
             return;
         }

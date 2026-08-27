@@ -15,9 +15,9 @@
 //! resolved per-club deltas, so nothing here re-derives revenue or the wage
 //! bill. `finance::finance_deltas` is the only place that arithmetic lives.
 
-use crate::render::money;
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Align, Cell, Col, Table, pad};
+use crate::render::{date, money};
 use fforge_core::{Event, Session, UtilityKnobs};
 use fforge_domain::Money;
 use std::fmt::Write as _;
@@ -41,7 +41,7 @@ pub fn render(session: &Session, p: Palette) -> String {
         out,
         "\n{}",
         p.paint(
-            &format!("=== Finances — {} · {} ===", club.name, s.date),
+            &format!("=== Finances — {} · {} ===", club.name, date(s.date)),
             Sem::Emphasis
         )
     );

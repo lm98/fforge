@@ -13,7 +13,7 @@
 //! `input::prompt_seed`). There is no `Event`, so there is nothing for a replay
 //! to have to reproduce.
 
-use crate::flows::match_view::print_humble_text_view;
+use crate::flows::match_view::present_match;
 use crate::flows::tactics;
 use crate::input::prompt_number;
 use crate::render::sem::Palette;
@@ -96,7 +96,7 @@ pub fn watch_friendly_flow(session: &Session, p: Palette) {
         tactics::summary(chosen),
         tactics::summary(away_lineup.tactics)
     );
-    print_humble_text_view(
+    present_match(
         world,
         &world.club(mine).name,
         &world.club(opponent).name,

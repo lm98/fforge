@@ -1,24 +1,24 @@
 
-=== Inbox — FC Nerana · 2026, day 255 (4 unread, 103 in all) ===
+=== Inbox — FC Nerana · 13 Sep 2026 (4 unread, 103 in all) ===
     Date
- *! 2026, day 248  FC Nerana 8 - 0 Olimpia Nerurnia
-  ! 2026, day 241  Olimpia Lavora 0 - 1 FC Nerana
-  ! 2026, day 234  FC Nerana 2 - 0 Sporting Campentino
-  ! 2026, day 227  Sporting Saldetto 0 - 1 FC Nerana
-  ! 2026, day 220  FC Nerana 1 - 0 US Rivana
- *! 2026, day 248  Tommaso Vitale is the game's outstanding performer, rated 10.0.
- *! 2026, day 241  Sandro Mensah is the game's outstanding performer, rated 10.0.
-  ! 2026, day 234  Sandro Mensah is the game's outstanding performer, rated 9.8.
-  ! 2026, day 227  Tommaso Vitale is the game's outstanding performer, rated 9.3.
-  ! 2026, day 220  Ousmane Mensah is the game's outstanding performer, rated 9.3.
-  ! 2026, day 227  Advisory: nobody at FC Nerana rates Striker as his best role.
-  ! 2026, day 227  Advisory: nobody at FC Nerana rates Central Mid as his best role.
- *  2026, day 250  FC Nerana unveils 2 youth prospect(s).
-    2026, day 248  AC Fioraverde 3 - 0 Dinamo Bellana
-    2026, day 248  Racing Veressa 0 - 0 US Castonte
-    2026, day 248  Virtus Belletto 0 - 0 US Portetto
-    2026, day 248  Dinamo Valdessa 0 - 0 Atlético Valdaro
-    2026, day 248  Real Torrana 7 - 0 Olimpia Valdurnia
-    2026, day 248  US Sorisola 2 - 0 US Rivana
+ *! 6 Sep 2026   FC Nerana 8 - 0 Olimpia Nerurnia
+  ! 30 Aug 2026  Olimpia Lavora 0 - 1 FC Nerana
+  ! 23 Aug 2026  FC Nerana 2 - 0 Sporting Campentino
+  ! 16 Aug 2026  Sporting Saldetto 0 - 1 FC Nerana
+  ! 9 Aug 2026   FC Nerana 1 - 0 US Rivana
+ *! 6 Sep 2026   Tommaso Vitale is the game's outstanding performer, rated 10.0.
+ *! 30 Aug 2026  Sandro Mensah is the game's outstanding performer, rated 10.0.
+  ! 23 Aug 2026  Sandro Mensah is the game's outstanding performer, rated 9.8.
+  ! 16 Aug 2026  Tommaso Vitale is the game's outstanding performer, rated 9.3.
+  ! 9 Aug 2026   Ousmane Mensah is the game's outstanding performer, rated 9.3.
+  ! 16 Aug 2026  Advisory: nobody at FC Nerana rates Striker as his best role.
+  ! 16 Aug 2026  Advisory: nobody at FC Nerana rates Central Mid as his best role.
+ *  8 Sep 2026   FC Nerana unveils 2 youth prospect(s).
+    6 Sep 2026   AC Fioraverde 3 - 0 Dinamo Bellana
+    6 Sep 2026   Racing Veressa 0 - 0 US Castonte
+    6 Sep 2026   Virtus Belletto 0 - 0 US Portetto
+    6 Sep 2026   Dinamo Valdessa 0 - 0 Atlético Valdaro
+    6 Sep 2026   Real Torrana 7 - 0 Olimpia Valdurnia
+    6 Sep 2026   US Sorisola 2 - 0 US Rivana
   ...and 84 lower-salience item(s) not shown.
   * unread   ! must-see

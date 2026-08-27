@@ -7,10 +7,14 @@
 //!
 //! The `<— your match` tag and the results' `>` marker carry it without colour.
 
-use crate::render::result_line;
 use crate::render::sem::{Palette, Sem};
+use crate::render::{result_line, results_so_far};
 use fforge_core::Session;
 use std::fmt::Write as _;
+
+/// How far back the personal record block looks. Six is a season's worth of
+/// context without turning the screen into a scrolling ledger by matchday 30.
+const RECORD_WINDOW: usize = 6;
 
 pub fn render(session: &Session, p: Palette) -> String {
     let s = &session.state;
@@ -44,6 +48,37 @@ pub fn render(session: &Session, p: Palette) -> String {
                 );
             }
         }
+    }
+    out.push_str(&record_block(session, p));
+    out
+}
+
+/// Your own last few results, newest first — the run of form the table's
+/// single position number flattens away. Every row is one of yours, so this
+/// block is uniformly `Mine`: the axis does not change, it just stops
+/// distinguishing.
+fn record_block(session: &Session, p: Palette) -> String {
+    let s = &session.state;
+    let all = results_so_far(session, s.player_club);
+    if all.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\nYour last {} — newest first:",
+        RECORD_WINDOW.min(all.len())
+    );
+    for r in all.iter().rev().take(RECORD_WINDOW) {
+        let line = format!(
+            "  {}  {}  {:<22} {}-{}",
+            r.letter,
+            if r.home { "(H)" } else { "(A)" },
+            s.world.club(r.opponent).name,
+            r.scored,
+            r.conceded
+        );
+        let _ = writeln!(out, "{}", p.paint(line.trim_end(), Sem::Mine));
     }
     out
 }

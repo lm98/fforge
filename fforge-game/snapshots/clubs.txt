@@ -1,0 +1,24 @@
+
+=== Prima Divisione — pick your club ===
+      Club                   Squad  Rep  Balance    Wages Expectation
+  [1] Virtus Belletto           68   73     5.2M      43M Title contender
+  [2] Real Torrana              67   75     5.0M      42M Title contender
+  [3] US Portetto               66   69     4.7M      35M Title contender
+  [4] US Castonte               65   74     5.6M      37M Title contender
+  [5] Racing Veressa            63   66     3.6M      34M Title contender
+  [6] FC Nerana                 62   63     4.0M      31M Europe, on a good year
+  [7] Inter Sorora              61   63     3.9M      28M Europe, on a good year
+  [8] Dinamo Valdessa           60   59     3.5M      30M Europe, on a good year
+  [9] US Rivana                 59   68     4.2M      29M Europe, on a good year
+ [10] US Sorisola               58   63     4.2M      26M Europe, on a good year
+ [11] Atlético Valdaro          57   58     2.7M      25M Mid-table
+ [12] Sporting Pralana          54   54     2.7M      20M Mid-table
+ [13] AC Fioraverde             53   55     2.9M      20M Mid-table
+ [14] Sporting Campentino       52   61     3.1M      20M Mid-table
+ [15] FC Portaverde             50   50     2.4M      17M Mid-table
+ [16] Olimpia Lavora            49   49     2.7M      17M Relegation fight
+ [17] Sporting Saldetto         48   47     2.6M      17M Relegation fight
+ [18] Dinamo Bellana            47   56     3.2M      16M Relegation fight
+ [19] Olimpia Nerurnia          43   49     2.0M      12M Relegation fight
+ [20] Olimpia Valdurnia         43   46     1.9M      11M Relegation fight
+  Squad = mean ability · Rep = club standing, 0–100 · Wages = annual wage-bill ceiling

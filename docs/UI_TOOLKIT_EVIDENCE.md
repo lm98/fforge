@@ -238,3 +238,92 @@ highest-value affordance; G4 is the second independent argument for the same con
 | ...but the terminal's deficit there is in *authoring*, not *display* | Moderate (counter) | §4 |
 | One colour channel is not enough for the squad screen; sortable columns are the fix | **Strong** | §4b |
 | The `Sem` vocabulary and pure-render discipline should survive any rewrite | Strong | §3 |
+
+---
+
+## 6. What the highlight reel taught (a Phase 6 slice, pulled forward)
+
+**Scope note, so the phase ordering is not read as a mistake.** `DESIGN.md` §9 puts UI/UX
+at Phase 6, after the agent layer. The batch recorded here is a deliberate early slice of
+it — the match view, the status header, the club picker, the title screen — taken because
+the project is a *game* and the thing being built had stopped looking like one. Nothing in
+the simulation changed. What follows is what the slice taught, in the same register as the
+rest of this document: evidence, not a decision.
+
+### 6.1 The strongest finding: the stream is not the telling
+
+The humble text match view printed **867 events** for a 90-minute match, the overwhelming
+majority of them "picks a pass in midfield". It is a faithful rendering of the stream and
+an unwatchable rendering of a football match, and the two facts are not in tension —
+`DESIGN.md` §9 asked for a proof that the stream *can* carry the story, and it does.
+
+What the slice added is a second consumer at a different altitude: a **highlight reel**
+(`flows::match_view::highlights`) that keeps shots, goals, cards, injuries and
+substitutions, drops the three kinds of duplicate beat (a `Save` the shot line already
+narrates, a `Cross` the header narrates one line later, a long shot that misses), and
+carries a running scoreline in a gutter. Same match, same `MatchOutcome`, ~27 lines instead
+of 867.
+
+**The finding worth carrying into Phase 6 is the ratio.** 867 → 27 is a filter doing 97% of
+the work of making the same data legible, and it needed no new state, no engine change, and
+no schema change — only a predicate over `MatchEventKind`. That is the payoff §9 predicted
+when it insisted the stream be designed for narratability rather than for outcomes, and it
+is the first time the prediction has been *cashed*. Any future viewer — graphical,
+journalist-agent, or otherwise — is another predicate over the same alphabet, not another
+engine.
+
+The corollary is a warning: **the alphabet is now load-bearing in a way it was not before.**
+`is_highlight` is a rule that lives in the presentation layer and is stated once, and every
+new `MatchEventKind` has to be classified by it or it silently vanishes from what a player
+sees. That is a maintenance cost the raw view never had.
+
+### 6.2 Match statistics are free, and they were the missing altitude
+
+Possession, shots, shots on target, fouls and cards are all countable off the stream with
+no new state at all (`flows::match_view::stats`). They fill the gap between the reel (what
+happened) and the scoreline (what it came to) — and the one non-obvious detail is worth
+recording, because getting it wrong would have been invisible: a `Foul` beat's `side` is
+the **fouled** side (`MATCH_MODEL.md` §15), so the discipline columns are counted against
+the *other* side's beats. Two columns that read plausibly either way is exactly the sort of
+bug a snapshot cannot catch, so it has its own test.
+
+### 6.3 A terminal *can* do drama, if the pacing is a function of match time
+
+§2.2 recorded that pacing is "the only dynamic thing the terminal does well". The reel
+sharpens that: pacing at a fixed delay per line reads as a machine printing; pacing
+*proportionally to the match minutes between beats* reads as a match. A goalmouth scramble
+arrives in a burst and a quiet twenty minutes is a pause, from the same data, with a clamp
+at each end so neither degenerates. This is the one place in the game where the terminal
+does something a naive GUI would not do better for free, and it is worth keeping whatever
+Phase 6 decides.
+
+### 6.4 A framed panel resolved §4b's pressure without spending a colour
+
+The status header now carries five readings — competition, matchday, position, points,
+next opponent, recent form — in a fixed-width box. **Form is deliberately uncoloured**,
+which is the third instance of the pattern §4b named: a real signal pushed off colour and
+onto its own glyph column because the screen's one channel is already spoken for.
+
+But the panel is also the first counter-evidence in this document to §4b's conclusion.
+`W W W W L` in a fixed column, aligned under the same frame every turn, is *legible without
+colour at all* — the letters are the encoding. Where §4b's squad screen wanted a per-column
+colour scale because its columns are continuous quantities (ability, wage, value), the
+header's are categorical and short, and categorical-and-short does not need a hue. **The
+sharpened claim: it is continuous columns that exhaust a terminal's one channel, not
+columns in general.** Phase 6 should read §4b with that qualifier attached.
+
+### 6.5 Two things that were not UI problems at all
+
+Both found while curating, both worth naming because a GUI would not have fixed either:
+
+- **Dates.** `GameDate`'s `Display` is `2026, day 220`. Nothing about that is wrong for a
+  log line and everything about it is wrong for a football screen. The fix was a
+  presentation function in layer 5 (`render::date` → `9 Aug 2026`) rather than a change to
+  the domain type, because the sim genuinely has no months and should not acquire any. The
+  flat 365-day year happens to be tiled *exactly* by the twelve non-leap month lengths, so
+  the mapping is total and lossless — a piece of luck, but a checkable one.
+- **End of input hung the game.** Every prompt looped until it liked its input, and EOF
+  reads as an empty line forever, so a redirected run played out the rest of the season and
+  then span. `input::read_line` now returns `Option`, and the convention is stated once: a
+  prompt's *last* allowed option is its way out, and EOF takes it. That is a robustness bug
+  a windowed toolkit would never have surfaced, because a window has no EOF.
