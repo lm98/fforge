@@ -22,6 +22,26 @@ simulation resolves now has somewhere to be seen:
 Not built, and deliberately: set pieces (deferred beyond 2e, `MATCH_MODEL.md` §11), and
 anything Phase 5 owns (agents, scouting fog-of-war, the journalist renderer).
 
+**A slice of Phase 6 has been pulled forward** (`DESIGN.md` §9 puts UI/UX after the agent
+layer; this was taken early, deliberately, because the project is a game and had stopped
+looking like one). Nothing in the simulation changed. What landed:
+
+- **the match view is three modes, not one.** Highlights (default) narrates the ~27 beats
+  that changed something, with a running scoreline and a half-time break, paced by match
+  time rather than by a fixed tick; the full humble text view of `DESIGN.md` §9 is intact
+  behind `[f]`; `[s]` goes straight to full time. All three read the same `MatchOutcome`.
+- **match statistics** — possession, shots, on target, fouls, cards — counted off the same
+  stream with no new state.
+- **a framed status panel** carrying position, points, next opponent and recent form.
+- **human-readable dates** (`9 Aug 2026`, not `2026, day 220`) — a layer-5 presentation
+  function, not a change to `GameDate`.
+- **a title screen and a real club picker** (squad strength, reputation, money, a
+  league-relative expectation label, ordered strongest first).
+- **prompts that terminate at EOF.** A redirected run used to play out the season and then
+  spin; see hard constraint 10.
+
+What each of those taught is recorded in `docs/UI_TOOLKIT_EVIDENCE.md` §6.
+
 The `[r] Reports` screen is still just `SeasonTelemetry` — accurate, but thin, and now
 cumulative across seasons rather than per-season. It is the obvious next thing to grow.
 
@@ -46,7 +66,9 @@ prints screens with `print!`, since every screen's string already ends in a newl
 | Module | Holds |
 |---|---|
 | `main` | the entry menu, `game_loop`, R14's grouped menu, `SAVE_PATH`, and `Observers` |
-| `screens::header` | club, matchday, date, position, and what is still outstanding (unset lineup, unread inbox, pending transfer plan) |
+| `screens::title` | the title banner and the entry menu; the menu greys out "Continue" when there is no save on disk |
+| `screens::clubs` | the new-game club picker: squad strength, reputation, balance, wage ceiling and a league-relative expectation label, ordered strongest first |
+| `screens::header` | the framed status panel — club, date, competition, matchday, position, points, next opponent, recent form, and what is still outstanding (unset team sheet, unread inbox, pending transfer plan) |
 | `screens::squad` | the squad list with wage/contract/valuation/rating/form columns, plus depth against `SQUAD_TEMPLATE` and the market's hard stabilizers |
 | `screens::availability` | condition, injuries with return dates, suspensions, card tallies — ordered unavailable-first |
 | `screens::finances` | balance, reserve floor, wage ceiling, committed wages, headroom, and the monthly `FinanceTick` trend read straight off the log |
@@ -59,13 +81,13 @@ prints screens with `print!`, since every screen's string already ends in a newl
 | `flows::season` | the season boundary: roll over via `Command::StartNextSeason` and report the summer's development, or stop |
 | `flows::transfers` | the `TRANSFER_MODEL.md` §10 pre-commitment UI: a local `Vec<TransferDecision>` draft against one frozen `observe`/`value_all` snapshot, submitted in one shot |
 | `flows::advance` | `player_match_preview` → `Command::AdvanceMatchday` → match view, results, and any transfer window this advance closed |
-| `flows::match_view` | `DESIGN.md` §9's humble text match view plus the full-time aftermath (cards, injuries, man of the match); `commentary_lines`/`aftermath` are pure, `print_humble_text_view` adds pacing and skip-on-keypress |
+| `flows::match_view` | the three tellings of a match — highlights (default), `DESIGN.md` §9's full humble text view, and straight-to-the-result — plus match statistics and the full-time aftermath (cards, injuries, man of the match). `commentary_lines`/`highlights`/`stats`/`stats_block`/`aftermath` are pure; `present_match` adds the mode prompt, pacing and skip-on-keypress |
 | `flows::friendly` | the tactics sandbox: your club, an opponent you choose, any shape you like, nothing recorded |
 | `flows::save` | `do_save` — saving is literally "serialize the event log" |
 | `render::sem` | `Sem` and the **one and only** mapping from it to a colour |
 | `render::table` | column layout — pads before it paints |
-| `render` (root) | `money`, `ordinal`, `result_line`, `headline_ca`, `club_avg_ca`, `table_position` |
-| `input` | `read_line`, `prompt_choice`, `prompt_menu`, `prompt_number`, `prompt_money`, `prompt_seed` |
+| `render` (root) | `money`, `ordinal`, `date`/`date_long`, `result_line`, `headline_ca`, `club_avg_ca`, `table_position`, `table_row`, `results_so_far`, `form_strip`, `next_fixture` |
+| `input` | `read_line`, `read_line_or_abort`, `prompt_choice`, `prompt_menu`, `prompt_number`, `prompt_money`, `prompt_seed` |
 
 ## Hard constraints — never violate these
 
@@ -119,6 +141,13 @@ prints screens with `print!`, since every screen's string already ends in a newl
    copy free to disagree with the one that decides — and the player will believe the one on
    screen.
 
+10. **Every prompt must terminate at end of input.** `input::read_line` returns `Option`,
+    and `None` means stdin is closed — which happens on *every* subsequent read, so a
+    prompt that loops until it likes its input loops forever. The convention, enforced in
+    one place: **a prompt's last allowed option is its way out**, and EOF takes it
+    (`prompt_choice(.., &["y", "n"])` declines, `&[.., "q"]` quits). Flow loops call
+    `read_line_or_abort`, which delivers EOF as the `"q"` they already handle.
+
 ## Colour axes in force
 
 | Screen | Axis |
@@ -130,7 +159,10 @@ prints screens with `print!`, since every screen's string already ends in a newl
 | Finances | headroom — comfortable / tight / breached |
 | Inbox | salience |
 | Table, Fixtures, Season end | `Mine` and nothing else |
-| Header | outstanding decisions |
+| Header | outstanding decisions (position, points, form and next opponent are deliberately **uncoloured**) |
+| Title screen | availability of the choice (`Muted` = you cannot take it yet) |
+| Club picker | squad strength relative to this league — the same `Good`/`Ok`/`Muted` vocabulary the squad screen uses one level down |
+| Match stream | consequence severity, extended over the reel; goals and period markers are `Emphasis`, which is structural rather than a value on the axis |
 | Transfers | affordability against cash and wage headroom |
 | Tactics picker | departure from neutral (deliberately *not* good/bad — non-dominance is squad-conditional, `TACTICS_MODEL.md` §9) |
 | League stats | none, deliberately — raw readings with no direction to act on |
@@ -175,5 +207,6 @@ affected flow.
 
 - `docs/UI_TOOLKIT_EVIDENCE.md` — R18's record of what these screens taught, the input
   `DESIGN.md` §10's toolkit question has been waiting on. Complete as of Batch 4, including
-  the G3 measurement it was written to wait for. Add to it when a new screen teaches
-  something.
+  the G3 measurement it was written to wait for; §6 adds what the early Phase-6 slice
+  taught (the 867 → 27 highlight filter, pacing by match time, and the qualifier §6.4 puts
+  on §4b's one-colour-channel conclusion). Add to it when a new screen teaches something.

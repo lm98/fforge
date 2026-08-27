@@ -15,6 +15,7 @@
 //! Phase-5 journalist renderer is a *peer* implementation of `NewsRenderer`
 //! authoring from the same structure, not a patch over someone else's strings.
 
+use crate::render::date;
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use fforge_core::Session;
@@ -71,7 +72,7 @@ pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette)
             &format!(
                 "=== Inbox — {} · {} ({} unread, {} in all) ===",
                 s.world.club(s.player_club).name,
-                s.date,
+                date(s.date),
                 unread,
                 newest_first.len()
             ),
@@ -104,7 +105,7 @@ pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette)
     let renderer = TemplateRenderer;
     let mut t = Table::new(vec![
         Col::left("", 2),
-        Col::left("Date", 14),
+        Col::left("Date", 12),
         Col::left("", 0),
     ]);
     for item in &shown {
@@ -118,7 +119,7 @@ pub fn render(session: &Session, news: &NewsObserver, unread: usize, p: Palette)
         t.row_all(
             vec![
                 Cell::new(marker),
-                Cell::new(item.date.to_string()),
+                Cell::new(date(item.date)),
                 // The one and only place a `NewsKind` becomes a string.
                 Cell::new(renderer.render(item, &s.world)),
             ],

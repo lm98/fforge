@@ -14,6 +14,7 @@
 //! print it with `print!`, not `println!`.
 
 pub mod availability;
+pub mod clubs;
 pub mod finances;
 pub mod fixtures;
 pub mod header;
@@ -22,6 +23,7 @@ pub mod season_end;
 pub mod squad;
 pub mod stats;
 pub mod table;
+pub mod title;
 
 #[cfg(test)]
 mod tests;

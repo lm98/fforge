@@ -13,10 +13,10 @@
 //! (`ok`, `fee`, `wage`, `both`), which colour alone could not say anyway.
 
 use crate::Observers;
-use crate::input::{prompt_choice, prompt_money, prompt_number, read_line};
-use crate::render::money;
+use crate::input::{prompt_choice, prompt_money, prompt_number, read_line_or_abort};
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
+use crate::render::{date, money};
 use fforge_core::{
     ClubObservation, Command, DevKnobs, MarketContext, Session, TransferDecision, UtilityKnobs,
     ValueKnobs,
@@ -165,7 +165,11 @@ fn print_transfer_header(
     let club = s.world.club(s.player_club);
     let spendable = ctx.spendable();
     let wage_room = ctx.wage_room();
-    println!("\n=== Transfer market — {} · {} ===", club.name, s.date);
+    println!(
+        "\n=== Transfer market — {} · {} ===",
+        club.name,
+        date(s.date)
+    );
     // The two headroom figures are the axis itself, so they carry its extreme:
     // a negative one means every row below is `both`-blocked until you sell.
     let headroom_sem = |room: i64| if room > 0 { Sem::Ok } else { Sem::Bad };
@@ -280,7 +284,7 @@ fn browse_targets_screen(
             );
         }
         println!("  [#] bid on a listed player   [f] change role filter   [q] back");
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         match input.trim() {
             "q" => return,
             "f" => role_filter = prompt_role_filter(),
@@ -381,7 +385,7 @@ fn squad_transfer_screen(
         }
         print!("{}", t.render(palette));
         println!("  [#] toggle list-for-sale   [q] back");
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         match input.trim() {
             "q" => return,
             n => match n.parse::<usize>() {
@@ -419,7 +423,7 @@ fn shortlist_screen(world: &World, draft: &mut Vec<TransferDecision>) {
             }
         }
         println!("  [d N] drop entry N   [u N] move entry N up   [c] clear all   [q] back");
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         match input.trim() {
             "q" => return,
             "c" => {

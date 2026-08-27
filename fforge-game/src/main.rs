@@ -66,14 +66,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let palette = Palette::from_environment(&args);
 
-    println!("==========================================");
-    println!("   FOOTBALL FORGE");
-    println!("==========================================");
+    print!("{}", screens::title::banner(palette));
     loop {
-        println!("\n[1] New game   [2] Load game   [q] Quit");
-        match prompt_choice("> ", &["1", "2", "q"]).as_str() {
+        let save_present = std::path::Path::new(SAVE_PATH).exists();
+        print!("{}", screens::title::menu(save_present, SAVE_PATH, palette));
+        match prompt_choice("  > ", &["1", "2", "q"]).as_str() {
             "1" => {
-                if let Some((session, observers)) = new_game_flow() {
+                if let Some((session, observers)) = new_game_flow(palette) {
                     game_loop(session, observers, palette);
                 }
             }

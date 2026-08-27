@@ -12,7 +12,7 @@
 //! next calibration pass; and a manager wants to know *what a shape does*, not
 //! what multiplier it applies.
 
-use crate::input::read_line;
+use crate::input::read_line_or_abort;
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use fforge_core::{Session, match_engine};
@@ -49,7 +49,7 @@ pub fn pick(start: Tactics, suggested: Option<Tactics>, p: Palette) -> Option<Ta
         println!(
             "  [m] mentality  [t] tempo  [w] width  [r] pressing   (each cycles)\n  [a] assistant's pick   [n] all balanced   [d] done   [q] abort"
         );
-        match read_line("> ").as_str() {
+        match read_line_or_abort("> ").as_str() {
             "m" => t.mentality = cycle_mentality(t.mentality),
             "t" => t.tempo = cycle_tempo(t.tempo),
             "w" => t.width = cycle_width(t.width),

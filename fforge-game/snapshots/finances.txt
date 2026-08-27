@@ -1,5 +1,5 @@
 
-=== Finances — FC Nerana · 2026, day 360 ===
+=== Finances — FC Nerana · 27 Dec 2026 ===
   Cash balance                   6.0M
     less reserve floor           250k held back by the affordability gate
     spendable on fees            5.8M

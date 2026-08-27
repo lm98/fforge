@@ -1,0 +1,15 @@
+
+  ╔══════════════════════════════════════════════════════╗
+  ║                                                      ║
+  ║    F O O T B A L L   F O R G E                       ║
+  ║    a football management simulation                  ║
+  ║                                                      ║
+  ╚══════════════════════════════════════════════════════╝
+
+  [1] New game
+  [2] Continue — savegame.fml
+  [q] Quit
+
+  [1] New game
+  [2] Continue — no save at ./savegame.fml
+  [q] Quit

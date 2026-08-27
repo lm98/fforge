@@ -18,12 +18,16 @@
 //! and every result are reproducible: that is the same determinism guarantee
 //! the core's own test suite leans on.
 
+use crate::flows::match_view::{highlights, stats, stats_block};
 use crate::render::sem::Palette;
 use crate::screens::{
-    availability, finances, fixtures, header, inbox, season_end, squad, stats, table,
+    availability, clubs, finances, fixtures, header, inbox, season_end, squad, stats, table, title,
 };
 use fforge_core::news::NewsObserver;
-use fforge_core::{Command, EventObserver, SeasonTelemetry, Session, WorldGenConfig, new_game};
+use fforge_core::{
+    Command, EventObserver, SeasonTelemetry, Session, WorldGenConfig, new_game,
+    player_match_preview,
+};
 use fforge_domain::ClubId;
 use std::path::PathBuf;
 
@@ -111,6 +115,38 @@ fn assert_snapshot(name: &str, actual: &str) {
     );
 }
 
+/// The highlight reel of the human's own opening fixture, rendered plain.
+///
+/// This is the one snapshot that pins a *flow*'s output rather than a screen's,
+/// and it earns the exception: `highlights` is a pure function of the match
+/// stream, and the reel is the thing a player actually spends the most time
+/// looking at. A filter change that silently drops goals or doubles every
+/// chance shows up here as a diff.
+#[test]
+fn highlight_reel_snapshot() {
+    let (session, _) = fixture(0);
+    let s = &session.state;
+    let outcome = player_match_preview(s).expect("the human has an opening fixture");
+    let f = s
+        .fixtures_of_matchday(s.current_matchday)
+        .find(|f| f.home == s.player_club || f.away == s.player_club)
+        .expect("the human's own fixture");
+    let home = &s.world.club(f.home).name;
+    let away = &s.world.club(f.away).name;
+    let mut out = String::new();
+    for beat in highlights(&s.world, home, away, &outcome) {
+        out.push_str(&beat.text);
+        out.push('\n');
+    }
+    out.push_str(&stats_block(
+        home,
+        away,
+        &stats(&outcome, |_| true),
+        Palette::PLAIN,
+    ));
+    assert_snapshot("match_highlights", &out);
+}
+
 #[test]
 fn squad_screen_snapshot() {
     let (session, _) = fixture(0);
@@ -164,6 +200,24 @@ fn availability_screen_snapshot() {
         "availability",
         &availability::render(&session, Palette::PLAIN),
     );
+}
+
+#[test]
+fn club_picker_snapshot() {
+    let (session, _) = fixture(0);
+    let world = &session.state.world;
+    assert_snapshot(
+        "clubs",
+        &clubs::render(world, &clubs::ordered(world), Palette::PLAIN),
+    );
+}
+
+#[test]
+fn title_screen_snapshot() {
+    let mut out = title::banner(Palette::PLAIN);
+    out.push_str(&title::menu(true, "savegame.fml", Palette::PLAIN));
+    out.push_str(&title::menu(false, "savegame.fml", Palette::PLAIN));
+    assert_snapshot("title", &out);
 }
 
 #[test]
@@ -246,6 +300,15 @@ fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
         ("fixtures", fixtures::render(&session, p)),
         ("stats", stats::render(&telemetry)),
         ("header", header::render(&session, 3, p)),
+        (
+            "clubs",
+            clubs::render(
+                &session.state.world,
+                &clubs::ordered(&session.state.world),
+                p,
+            ),
+        ),
+        ("title", title::banner(p)),
         (
             "season_end",
             season_end::render(&finished, &finished_telemetry, p),

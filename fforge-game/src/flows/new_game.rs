@@ -1,29 +1,20 @@
 //! Starting a new game (world seed, club pick) and loading a saved one.
 
 use crate::input::{prompt_number, prompt_seed};
-use crate::render::club_avg_ca;
+use crate::render::sem::Palette;
 use crate::{Observers, SAVE_PATH};
 use fforge_core::{Event, Session, WorldGenConfig, load_log};
 use std::path::Path;
 
-pub fn new_game_flow() -> Option<(Session, Observers)> {
+pub fn new_game_flow(p: Palette) -> Option<(Session, Observers)> {
     let seed = prompt_seed();
     let cfg = WorldGenConfig::default();
     let (world, schedule, start_date) = fforge_core::generate(seed, &cfg);
 
     println!("\nWorld seed: {seed}");
-    println!("League: {} — pick your club:\n", world.competition.name);
-    println!("     {:<22} {:>7}", "Club", "Avg CA");
-    let clubs = world.competition.clubs.clone();
-    for (i, &cid) in clubs.iter().enumerate() {
-        println!(
-            "[{:>2}] {:<22} {:>7}",
-            i + 1,
-            world.club(cid).name,
-            format!("{:.0}", club_avg_ca(&world, cid))
-        );
-    }
-    let pick = prompt_number("Club number: ", 1, clubs.len())? - 1;
+    let clubs = crate::screens::clubs::ordered(&world);
+    print!("{}", crate::screens::clubs::render(&world, &clubs, p));
+    let pick = prompt_number("  Club number: ", 1, clubs.len())? - 1;
     let player_club = clubs[pick];
     if let Some(old_boss) = world.manager_of(player_club) {
         println!(

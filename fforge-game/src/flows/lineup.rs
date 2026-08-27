@@ -8,7 +8,7 @@
 use crate::Observers;
 use crate::flows::subs::{self, Plan};
 use crate::flows::tactics;
-use crate::input::{prompt_choice, prompt_number, read_line};
+use crate::input::{prompt_choice, prompt_number, read_line_or_abort};
 use crate::render::headline_ca;
 use crate::render::sem::Palette;
 use fforge_core::{Command, Session, match_engine};
@@ -67,7 +67,7 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
             );
         }
         println!("  [a] auto-fill this and all remaining slots   [q] abort");
-        let input = read_line("> ");
+        let input = read_line_or_abort("> ");
         match input.trim() {
             "q" => return,
             "a" => {
