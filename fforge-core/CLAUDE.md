@@ -55,7 +55,7 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 | `rng` | xoshiro256** and `derive_stream` — the crate's only randomness |
 | `schedule` | `double_round_robin` |
 | `worldgen` | `generate`; `gen_player` draws PA first and seeds attributes on the age envelope beneath it through `SeedTables`, which calls `development`'s own ceiling machinery (`DEVELOPMENT_MODEL.md` §8) |
-| `match_engine` | `play_match`, `MatchRngs`, `MatchOutcome`; AI selection (`ai_pick_lineup`, `ai_pick_lineup_available`, `ai_pick_lineup_vs`, `ai_pick_tactics`, `ai_pick_bench_and_plan`). Submodules: `zone`, `knobs`, `contest`, `tactics`, `resolve` (the possession loop), `ratings`, `stream`, `golden` (test-only baseline), `calibrate` (harness) |
+| `match_engine` | `play_match`, `MatchRngs`, `MatchOutcome`; AI selection (`ai_pick_lineup`, `ai_pick_lineup_available`, `ai_pick_lineup_vs`, `ai_pick_tactics`, `ai_pick_bench_and_plan`). Submodules: `zone`, `knobs`, `contest`, `tactics`, `resolve` (the possession loop; `Kickoff`, `Team`, `Pitch`, `Attack` and `Ledger` are its context structs — extend those rather than adding parameters), `ratings`, `stream`, `golden` (test-only baseline), `calibrate` (harness) |
 | `condition` | the pure condition/recovery law; `GameState::condition` is its only caller |
 | `development` | `DevKnobs`, the age envelope, `tick_changes`, `attr_rate`, `phys_lmax`, `apply_attr_step` |
 | `career_arc` | development harness: career metrics, and the PA-recoverability fits Phase 5's fog-of-war depends on |

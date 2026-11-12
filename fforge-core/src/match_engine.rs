@@ -159,18 +159,7 @@ pub fn play_match(
     conditions: &std::collections::BTreeMap<PlayerId, f64>,
     today: GameDate,
 ) -> MatchOutcome {
-    resolve::play_match(
-        world,
-        home,
-        away,
-        &mut rngs.main,
-        &mut rngs.consistency,
-        &mut rngs.injury,
-        &mut rngs.foul,
-        k,
-        conditions,
-        today,
-    )
+    resolve::play_match(world, home, away, rngs, k, conditions, today)
 }
 
 /// Deterministic AI team selection: for each formation, greedily fill slots
