@@ -20,6 +20,7 @@ mod stream;
 mod tactics;
 mod zone;
 
+pub use crate::event::{Card, CardOutcome, InjuryOutcome};
 pub use calibrate::{
     DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, PROFILE_SHIFT,
     ProfileRow, SQUAD_PROFILES, SquadProfile, StreamTelemetry, apply_squad_profile, elo_expected,
@@ -42,7 +43,6 @@ use fforge_domain::{
     Mentality, PlayerId, Pressing, ROLE_WEIGHTS, Role, ScoreState, SubAction, SubCondition,
     SubRule, Tactics, Tempo, Width, World, XI, current_ability,
 };
-use serde::{Deserialize, Serialize};
 
 /// Tag namespace for a fixture's main RNG stream (`rng::derive_stream`),
 /// OR'd with the fixture id.
@@ -67,38 +67,6 @@ pub const INJURY_NS: u64 = 0x494E_4A55_0000_0000; // "INJU"
 /// `injury_rng`, so `foul_rate: 0.0` leaves every other stream's draw
 /// sequence untouched.
 pub const FOUL_NS: u64 = 0x464F_554C_0000_0000; // "FOUL"
-
-/// A resolved injury (`MATCH_MODEL.md` §12, §14): the *days out*, decided at
-/// match time — never a severity category for the fold to re-roll, so the
-/// severity model can evolve without rewriting anyone's recorded medical
-/// history (the `DevelopmentTick` argument verbatim).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InjuryOutcome {
-    pub player: PlayerId,
-    /// Days unavailable, counted from the match date. The fold turns this
-    /// into `Player.injured_until`.
-    pub days_out: u16,
-}
-
-/// The card itself (`MATCH_MODEL.md` §15). A second yellow is recorded as
-/// `SecondYellow` — a red by bookkeeping — so no consumer ever has to
-/// reconstruct the distinction from minute ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Card {
-    Yellow,
-    SecondYellow,
-    Red,
-}
-
-/// A resolved card (`MATCH_MODEL.md` §12, §15): the recorded truth from which
-/// suspensions are *derived* in the fold — a ban is never stored and never its
-/// own event (the derived-suspension rule).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CardOutcome {
-    pub player: PlayerId,
-    pub card: Card,
-    pub minute: u8,
-}
 
 /// Mean CA-in-slot-role over the eleven — a squad-quality scalar independent
 /// of any particular match-resolution model. Used for display and by

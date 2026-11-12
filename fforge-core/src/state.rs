@@ -5,10 +5,10 @@
 //! only consumes them. `replay(events)` is therefore save-loading, bug
 //! reproduction, and (later) counterfactual branch points, all in one.
 
-use crate::club_ai::TransferDecision;
 use crate::development::apply_attr_step;
+use crate::event::Card;
 use crate::event::Event;
-use crate::match_engine::Card;
+use crate::event::TransferDecision;
 use fforge_domain::{
     ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId, World,
 };

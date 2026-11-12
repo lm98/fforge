@@ -21,6 +21,7 @@
 //! extraction, not a prediction."
 
 use crate::development::DevKnobs;
+pub use crate::event::TransferDecision;
 use crate::valuation::project_ca_batch;
 use crate::worldgen::SQUAD_TEMPLATE;
 use fforge_domain::{ClubId, GameDate, Money, PlayerId, ROLE_WEIGHTS, Role, World, best_role};
@@ -81,23 +82,6 @@ pub struct ClubObservation {
     pub committed_wages: Money,
     pub squad: Vec<SquadMember>,
     pub candidates: Vec<Candidate>,
-}
-
-/// A club's resolved transfer decision (§6.1) — a constrained enum, never a
-/// world mutation. Neither variant is itself a transfer: `Bid` is a
-/// shortlist entry for §5's (not-yet-built) clearing loop to arbitrate,
-/// `List` a listing proposal for that same loop to act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransferDecision {
-    Bid {
-        player: PlayerId,
-        from: Option<ClubId>,
-        role: Role,
-        price: Money,
-    },
-    List {
-        player: PlayerId,
-    },
 }
 
 /// `fn transfer_decisions(&self, obs) -> Vec<TransferDecision>` — the

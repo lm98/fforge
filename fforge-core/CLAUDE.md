@@ -46,7 +46,7 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 
 | Module | Owns |
 |---|---|
-| `event` | `Event`: the log's payload types |
+| `event` | `Event` and every type it serializes that is not a domain type (`AttrStep`, `InjuryOutcome`, `Card`, `CardOutcome`, `TransferDecision`). The log's schema depends on no engine; engines re-export these under their own paths |
 | `state` | `GameState`, `apply`/`replay`, `league_table`, the `pub(crate) apply_*` mutations, and the derived views `condition`, `available`, `is_suspended`, `suspended_players`, `lineup_conditions` |
 | `commands` | `Command`, `step` and its validation; `advance_matchday` (matches, then monthly development and finance ticks, then any transfer window the date crossed); `player_match_preview` |
 | `session` | `Session`, `save_log`/`load_log` (JSON lines) |
