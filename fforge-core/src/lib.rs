@@ -40,8 +40,8 @@ pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_previe
 pub use development::{DEV_STREAM_NS, DevKnobs};
 pub use event::{AttrStep, Event};
 pub use market::{
-    MarketKnobs, RejectReason, RejectedBid, Transfer, WindowOutcome, MAX_ROUNDS,
-    TRANSFER_STREAM_NS, resolve_window,
+    MAX_ROUNDS, MarketKnobs, RejectReason, RejectedBid, TRANSFER_STREAM_NS, Transfer,
+    WindowOutcome, resolve_window,
 };
 pub use match_engine::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 pub use observer::{EventObserver, SeasonTelemetry};

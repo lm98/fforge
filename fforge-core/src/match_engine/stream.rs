@@ -308,7 +308,11 @@ mod tests {
                 actor: PlayerId(7),
                 opponent: Some(PlayerId(3)),
             };
-            assert!(!event.commentary("Home", "Rossi", Some("Bianchi")).is_empty());
+            assert!(
+                !event
+                    .commentary("Home", "Rossi", Some("Bianchi"))
+                    .is_empty()
+            );
             // Every beat must also render with no second name resolved.
             assert!(!event.commentary("Home", "Rossi", None).is_empty());
         }

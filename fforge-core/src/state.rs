@@ -243,7 +243,10 @@ impl GameState {
                 // XIs directly — `self.date` is still this matchday's date
                 // here; the `MatchdayAdvanced` that moves it folds after.
                 for &pid in home_xi.iter().chain(away_xi) {
-                    self.recent_appearances.entry(pid).or_default().push(self.date);
+                    self.recent_appearances
+                        .entry(pid)
+                        .or_default()
+                        .push(self.date);
                 }
                 if let Some(fx) = self.schedule.iter().find(|f| f.id == *fixture) {
                     *self.club_matches_since_tick.entry(fx.home).or_default() += 1;
@@ -333,9 +336,7 @@ impl GameState {
                 apply_transfer_completed(&mut self.world, *player, *from, *to, *fee, *contract);
                 self.unsigned_since.remove(player);
             }
-            Event::PlayerReleased {
-                player, club, date,
-            } => {
+            Event::PlayerReleased { player, club, date } => {
                 if let Some(c) = self.world.clubs.get_mut(club) {
                     c.players.retain(|p| p != player);
                 }
@@ -570,7 +571,7 @@ mod transfer_event_tests {
     use super::*;
     use crate::event::Event;
     use crate::session::{load_log, save_log};
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::worldgen::{WorldGenConfig, generate};
     use fforge_domain::{Contract, Money};
 
     /// A one-event log (`GameStarted` on a freshly generated world) plus the
@@ -928,7 +929,7 @@ mod match_boundary_tests {
     use crate::event::Event;
     use crate::match_engine::{Card, CardOutcome, InjuryOutcome};
     use crate::session::{load_log, save_log};
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::worldgen::{WorldGenConfig, generate};
 
     fn base_log(seed: u64) -> (Vec<Event>, GameState) {
         let (world, schedule, start_date) = generate(seed, &WorldGenConfig::default());

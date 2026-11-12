@@ -16,7 +16,7 @@ pub mod substitution;
 pub mod tactics;
 
 pub use ability::{best_role, current_ability};
-pub use attributes::{Attribute, Attributes, DevCategory, Rating, MAX_RATING, NUM_ATTRIBUTES};
+pub use attributes::{Attribute, Attributes, DevCategory, MAX_RATING, NUM_ATTRIBUTES, Rating};
 pub use character::Character;
 pub use date::GameDate;
 pub use entities::{
@@ -24,6 +24,6 @@ pub use entities::{
     Money, Player, PlayerId, Staff, StaffId, StaffRole, World,
 };
 pub use formation::{BENCH_SIZE, FORMATIONS, FormationDef, Lineup, MAX_SUBSTITUTIONS, XI};
-pub use role::{Role, RoleWeights, NUM_ROLES, ROLE_WEIGHTS};
+pub use role::{NUM_ROLES, ROLE_WEIGHTS, Role, RoleWeights};
 pub use substitution::{ScoreState, SubAction, SubCondition, SubRule};
 pub use tactics::{Mentality, Pressing, Tactics, Tempo, Width};

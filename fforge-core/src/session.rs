@@ -3,7 +3,7 @@
 //! is *literally* serialize/replay the log — there is no separate save-game
 //! format to drift out of sync.
 
-use crate::commands::{step, Command, CommandError};
+use crate::commands::{Command, CommandError, step};
 use crate::event::Event;
 use crate::observer::EventObserver;
 use crate::state::GameState;

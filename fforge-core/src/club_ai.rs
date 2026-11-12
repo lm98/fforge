@@ -23,7 +23,7 @@
 use crate::development::DevKnobs;
 use crate::valuation::project_ca_batch;
 use crate::worldgen::SQUAD_TEMPLATE;
-use fforge_domain::{best_role, ClubId, GameDate, Money, PlayerId, Role, World, ROLE_WEIGHTS};
+use fforge_domain::{ClubId, GameDate, Money, PlayerId, ROLE_WEIGHTS, Role, World, best_role};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -596,8 +596,8 @@ pub fn observe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::valuation::{value_all, MarketContext, ValueKnobs};
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::valuation::{MarketContext, ValueKnobs, value_all};
+    use crate::worldgen::{WorldGenConfig, generate};
 
     const TODAY: GameDate = GameDate { days: 2030 * 365 };
 

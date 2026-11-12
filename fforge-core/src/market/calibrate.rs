@@ -43,11 +43,11 @@
 //! re-fit is a human reading these numbers and editing the knob tables
 //! (`TRANSFER_MODEL.md` §9).
 
-use crate::club_ai::{observe, ClubPolicy, UtilityKnobs, UtilityPolicy};
+use crate::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy, observe};
 use crate::development::DevKnobs;
 use crate::event::Event;
 use crate::observer::EventObserver;
-use crate::state::{league_table, GameState};
+use crate::state::{GameState, league_table};
 use crate::valuation::{MarketContext, ValueKnobs, value_all};
 use crate::{Command, Session, WorldGenConfig, new_game};
 use fforge_domain::{Club, ClubId, Fixture, FixtureId, GameDate, Money, PlayerId, Role, World};
@@ -243,7 +243,7 @@ fn top3_share_of_top20(
         .iter()
         .filter_map(|(&pid, &v)| world.club_of(pid).map(|c| (pid, v, Some(c))))
         .collect();
-    signed.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    signed.sort_by_key(|s| std::cmp::Reverse(s.1.0));
     let top20 = &signed[..signed.len().min(20)];
     if top20.is_empty() {
         return f64::NAN;

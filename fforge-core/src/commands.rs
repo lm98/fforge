@@ -6,9 +6,9 @@
 //! never mutates state — callers apply the returned events through the fold.
 
 use crate::club_ai::{TransferDecision, UtilityKnobs};
-use crate::development::{self, period_date, period_index, DevKnobs};
+use crate::development::{self, DevKnobs, period_date, period_index};
 use crate::event::Event;
-use crate::finance::{finance_deltas, FinanceKnobs};
+use crate::finance::{FinanceKnobs, finance_deltas};
 use crate::market::{self, MarketKnobs};
 use crate::match_engine::{
     CONSISTENCY_NS, FOUL_NS, INJURY_NS, Knobs, ai_pick_lineup_available, ai_pick_lineup_vs,
@@ -18,8 +18,8 @@ use crate::pool::{self, PoolKnobs};
 use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
 use crate::state::{
-    apply_finance_deltas, apply_player_retired, apply_transfer_completed, apply_youth_intake,
-    league_table, GameState,
+    GameState, apply_finance_deltas, apply_player_retired, apply_transfer_completed,
+    apply_youth_intake, league_table,
 };
 use crate::valuation::ValueKnobs;
 use fforge_domain::{
@@ -288,9 +288,7 @@ fn effective_player_lineup(state: &GameState) -> Lineup {
 /// call this *before* executing `AdvanceMatchday` to render the humble text
 /// match view (`DESIGN.md` §9) for the human's own match. `None` if the
 /// player's club has a bye this matchday.
-pub fn player_match_preview(
-    state: &GameState,
-) -> Option<crate::match_engine::MatchOutcome> {
+pub fn player_match_preview(state: &GameState) -> Option<crate::match_engine::MatchOutcome> {
     let md = state.current_matchday;
     let fixture = state
         .fixtures_of_matchday(md)
@@ -461,7 +459,12 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
 
     // Transfer windows (`TRANSFER_MODEL.md` §7): resolved on the same
     // boundary-crossing mechanism, against the tick-compounded world above.
-    events.extend(transfer_window_events(state, &work_world, state.date, new_date));
+    events.extend(transfer_window_events(
+        state,
+        &work_world,
+        state.date,
+        new_date,
+    ));
 
     if md == state.last_matchday {
         let table = league_table(&state.world, &state.schedule, &new_results);
@@ -576,7 +579,12 @@ fn dev_ticks_between(
 /// deltas. `window_index` is even for the summer window, odd for winter
 /// (`season_start.year() * 2` / `+ 1`) — that parity is what gates the pool
 /// events to summer only.
-fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, new_date: GameDate) -> Vec<Event> {
+fn transfer_window_events(
+    state: &GameState,
+    world: &World,
+    old_date: GameDate,
+    new_date: GameDate,
+) -> Vec<Event> {
     let season_start = season_start_date(state);
     let candidates = [
         (
@@ -677,7 +685,9 @@ fn transfer_window_events(state: &GameState, world: &World, old_date: GameDate, 
 /// (`commands::advance_matchday`), so `date - (current_matchday - 1) * 7`
 /// recovers it without a dedicated field.
 fn season_start_date(state: &GameState) -> GameDate {
-    state.date.add_days(-((state.current_matchday as i64 - 1) * 7))
+    state
+        .date
+        .add_days(-((state.current_matchday as i64 - 1) * 7))
 }
 
 /// The next season-start date strictly after `date`: day 220 of this sim-year,
@@ -698,7 +708,7 @@ mod transfer_decision_tests {
     //! its threading through the real `AdvanceMatchday` pipeline.
 
     use super::*;
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::worldgen::{WorldGenConfig, generate};
     use fforge_domain::{Money, Role};
 
     fn base_log(seed: u64) -> (Vec<Event>, GameState) {

@@ -217,7 +217,10 @@ impl World {
     }
 
     pub fn club_players(&self, id: ClubId) -> impl Iterator<Item = &Player> {
-        self.clubs[&id].players.iter().map(move |pid| self.player(*pid))
+        self.clubs[&id]
+            .players
+            .iter()
+            .map(move |pid| self.player(*pid))
     }
 
     /// The club a player belongs to, or `None` if unattached (a free agent).

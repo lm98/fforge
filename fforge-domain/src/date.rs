@@ -30,7 +30,9 @@ impl GameDate {
 
     #[must_use]
     pub fn add_days(self, d: i64) -> Self {
-        GameDate { days: self.days + d }
+        GameDate {
+            days: self.days + d,
+        }
     }
 
     /// Whole sim-years elapsed since `birth` — a player's age.
