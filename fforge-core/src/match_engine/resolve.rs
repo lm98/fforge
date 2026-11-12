@@ -2284,7 +2284,7 @@ mod notebook_parity {
     }
 
     /// Tag namespace for this harness's derived streams — distinct from any
-    /// real gameplay tag (`commands::FIXTURE_STREAM_NS`, `worldgen`'s), and
+    /// real gameplay tag (`match_engine::FIXTURE_STREAM_NS`, `worldgen`'s), and
     /// unrelated to the seeds used elsewhere in the test suite.
     const PARITY_NS: u64 = 0x4E42_5052_0000_0000; // "NBPR"
 

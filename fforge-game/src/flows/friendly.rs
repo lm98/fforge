@@ -17,9 +17,9 @@ use crate::flows::match_view::present_match;
 use crate::flows::tactics;
 use crate::input::prompt_number;
 use crate::render::sem::Palette;
+use fforge_core::rng::Rng;
 use fforge_core::{Session, match_engine};
-use fforge_domain::{Lineup, PlayerId};
-use std::collections::BTreeMap;
+use fforge_domain::Lineup;
 
 pub fn watch_friendly_flow(session: &Session, p: Palette) {
     let s = &session.state;
@@ -66,28 +66,21 @@ pub fn watch_friendly_flow(session: &Session, p: Palette) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0xF00D);
-    let mut rng = fforge_core::rng::Rng::seed_from(seed);
-    let mut consistency_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(1));
-    let mut injury_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(2));
-    let mut foul_rng = fforge_core::rng::Rng::seed_from(seed.wrapping_add(3));
-    // A real GameState is available even for an unrecorded friendly, so this
-    // reads the same accumulated condition a real fixture would.
-    let conditions: BTreeMap<PlayerId, f64> = home_lineup
-        .players
-        .iter()
-        .chain(&away_lineup.players)
-        .map(|&pid| (pid, s.condition(pid)))
-        .collect();
+    let mut rngs = match_engine::MatchRngs {
+        main: Rng::seed_from(seed),
+        consistency: Rng::seed_from(seed.wrapping_add(1)),
+        injury: Rng::seed_from(seed.wrapping_add(2)),
+        foul: Rng::seed_from(seed.wrapping_add(3)),
+    };
     let outcome = match_engine::play_match(
         world,
         &home_lineup,
         &away_lineup,
-        &mut rng,
-        &mut consistency_rng,
-        &mut injury_rng,
-        &mut foul_rng,
+        &mut rngs,
         &match_engine::Knobs::default(),
-        &conditions,
+        // A real GameState is available even for an unrecorded friendly, so
+        // this reads the same accumulated condition a real fixture would.
+        &s.lineup_conditions(&home_lineup, &away_lineup),
         s.date,
     );
 

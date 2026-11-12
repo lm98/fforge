@@ -14,8 +14,7 @@ use super::MatchOutcome;
 use super::resolve::mirrored_zone;
 use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 use super::zone::{NUM_ZONES, Zone};
-use super::{CONSISTENCY_NS, FOUL_NS, INJURY_NS, Knobs, ai_pick_lineup, play_match};
-use crate::rng::derive_stream;
+use super::{Knobs, MatchRngs, ai_pick_lineup, play_match};
 use fforge_domain::{Attribute, ClubId, GameDate, Pressing, Tactics, Tempo, World};
 use std::collections::BTreeMap;
 
@@ -483,7 +482,7 @@ pub struct DeviationReport {
 }
 
 /// Namespace tag for the head-to-head harness's RNG stream
-/// (`rng::derive_stream`), distinct from `commands::FIXTURE_STREAM_NS`.
+/// (`rng::derive_stream`), distinct from `match_engine::FIXTURE_STREAM_NS`.
 /// `TACTICS_MODEL.md` §7's triangle harness needs its own mode: the v1 AI
 /// never counter-picks (§7's opponent-blindness), so the §5 triangle is
 /// never exercised in ordinary league play — it can only be tested by
@@ -543,18 +542,12 @@ pub fn run_head_to_head_detailed(
     let mut total_goals = 0u32;
     let mut matches = 0u32;
     for &seed in seeds {
-        let mut rng_a_home = derive_stream(seed, HEAD_TO_HEAD_NS);
-        let mut consistency_a_home = derive_stream(seed, HEAD_TO_HEAD_NS | CONSISTENCY_NS);
-        let mut injury_a_home = derive_stream(seed, HEAD_TO_HEAD_NS | INJURY_NS);
-        let mut foul_a_home = derive_stream(seed, HEAD_TO_HEAD_NS | FOUL_NS);
+        let mut rngs_a_home = MatchRngs::derive(seed, HEAD_TO_HEAD_NS, HEAD_TO_HEAD_NS);
         let out_a_home = play_match(
             world,
             &lineup_a,
             &lineup_b,
-            &mut rng_a_home,
-            &mut consistency_a_home,
-            &mut injury_a_home,
-            &mut foul_a_home,
+            &mut rngs_a_home,
             &Knobs::default(),
             &BTreeMap::new(),
             today,
@@ -563,18 +556,12 @@ pub fn run_head_to_head_detailed(
         total_goals += out_a_home.home_goals as u32 + out_a_home.away_goals as u32;
         matches += 1;
 
-        let mut rng_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | 1);
-        let mut consistency_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | CONSISTENCY_NS | 1);
-        let mut injury_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | INJURY_NS | 1);
-        let mut foul_b_home = derive_stream(seed, HEAD_TO_HEAD_NS | FOUL_NS | 1);
+        let mut rngs_b_home = MatchRngs::derive(seed, HEAD_TO_HEAD_NS | 1, HEAD_TO_HEAD_NS | 1);
         let out_b_home = play_match(
             world,
             &lineup_b,
             &lineup_a,
-            &mut rng_b_home,
-            &mut consistency_b_home,
-            &mut injury_b_home,
-            &mut foul_b_home,
+            &mut rngs_b_home,
             &Knobs::default(),
             &BTreeMap::new(),
             today,
@@ -1128,38 +1115,26 @@ mod tests {
         let mut tel_pressed = StreamTelemetry::default();
         let mut tel_baseline = StreamTelemetry::default();
         for seed in 0..3000u64 {
-            let mut rng = derive_stream(seed, HEAD_TO_HEAD_NS);
-            let mut consistency_rng = derive_stream(seed, HEAD_TO_HEAD_NS | CONSISTENCY_NS);
-            let mut injury_rng = derive_stream(seed, HEAD_TO_HEAD_NS | INJURY_NS);
-            let mut foul_rng = derive_stream(seed, HEAD_TO_HEAD_NS | FOUL_NS);
+            let mut rngs = MatchRngs::derive(seed, HEAD_TO_HEAD_NS, HEAD_TO_HEAD_NS);
             // Home presses, Away neutral: Away is the "opponent" whose
             // build-up we're checking.
             let out = play_match(
                 &world,
                 &press,
                 &neutral_opp,
-                &mut rng,
-                &mut consistency_rng,
-                &mut injury_rng,
-                &mut foul_rng,
+                &mut rngs,
                 &k,
                 &BTreeMap::new(),
                 today,
             );
             tel_pressed.record(&out, 0, 0, 50.0, 50.0);
 
-            let mut rng2 = derive_stream(seed, HEAD_TO_HEAD_NS | 1);
-            let mut consistency_rng2 = derive_stream(seed, HEAD_TO_HEAD_NS | CONSISTENCY_NS | 1);
-            let mut injury_rng2 = derive_stream(seed, HEAD_TO_HEAD_NS | INJURY_NS | 1);
-            let mut foul_rng2 = derive_stream(seed, HEAD_TO_HEAD_NS | FOUL_NS | 1);
+            let mut rngs2 = MatchRngs::derive(seed, HEAD_TO_HEAD_NS | 1, HEAD_TO_HEAD_NS | 1);
             let out2 = play_match(
                 &world,
                 &neutral_baseline,
                 &neutral_opp,
-                &mut rng2,
-                &mut consistency_rng2,
-                &mut injury_rng2,
-                &mut foul_rng2,
+                &mut rngs2,
                 &k,
                 &BTreeMap::new(),
                 today,
@@ -1507,21 +1482,12 @@ mod tests {
                 );
                 let home_strength = crate::match_engine::lineup_strength(&world, &home_lineup);
                 let away_strength = crate::match_engine::lineup_strength(&world, &away_lineup);
-                let mut rng =
-                    crate::rng::derive_stream(seed, crate::FIXTURE_STREAM_NS | fixture.id.0 as u64);
-                let mut consistency_rng =
-                    crate::rng::derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
-                let mut injury_rng =
-                    crate::rng::derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
-                let mut foul_rng = crate::rng::derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
+                let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
                 let outcome = crate::match_engine::play_match(
                     &world,
                     &home_lineup,
                     &away_lineup,
-                    &mut rng,
-                    &mut consistency_rng,
-                    &mut injury_rng,
-                    &mut foul_rng,
+                    &mut rngs,
                     &Knobs::default(),
                     &BTreeMap::new(),
                     start,

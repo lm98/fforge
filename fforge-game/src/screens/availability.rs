@@ -148,8 +148,9 @@ fn status_of(session: &Session, pid: PlayerId) -> Status {
     let s = &session.state;
     // `injured_until` is the recorded layoff; the availability check itself is
     // `GameState::available`, which reads both this and the derived ban.
-    if let Some(until) = s.world.player(pid).injured_until
-        && until > s.date
+    let player = s.world.player(pid);
+    if let Some(until) = player.injured_until
+        && player.is_injured(s.date)
     {
         return Status::Injured(until.days - s.date.days);
     }

@@ -410,11 +410,18 @@ impl GameState {
     /// recorded truth is the days-out/cards already resolved at match time;
     /// this is a view over them, never a second source of truth.
     pub fn available(&self, pid: PlayerId) -> bool {
-        let injury_ok = match self.world.player(pid).injured_until {
-            Some(until) => until <= self.date,
-            None => true,
-        };
-        injury_ok && !self.is_suspended(pid)
+        !self.world.player(pid).is_injured(self.date) && !self.is_suspended(pid)
+    }
+
+    /// Pre-match condition for every starter in both lineups — the
+    /// `conditions` input `match_engine::play_match` takes, since the engine
+    /// has no `GameState` of its own (`MATCH_MODEL.md` §13).
+    pub fn lineup_conditions(&self, home: &Lineup, away: &Lineup) -> BTreeMap<PlayerId, f64> {
+        home.players
+            .iter()
+            .chain(&away.players)
+            .map(|&pid| (pid, self.condition(pid)))
+            .collect()
     }
 
     /// Whether `pid` is banned for `self.current_matchday` (`MATCH_MODEL.md`

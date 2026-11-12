@@ -5,10 +5,11 @@
 //! (`match_model_prototype.ipynb`, referenced from `MATCH_MODEL.md` §1) —
 //! nothing here is a re-guess of the shape-finding, only its translation.
 //!
-//! Phase 2e has begun: tactics (`TACTICS_MODEL.md`) lands as transition-
-//! matrix modifiers behind this same call site (no structural change).
-//! Still deferred: cards & fouls, injuries, set pieces, substitutions, and
-//! the character/hidden attributes.
+//! Phase 2e is layered on behind the same call site: tactics
+//! (`TACTICS_MODEL.md`), consistency, condition, injuries, fouls & cards,
+//! substitutions and ratings (`MATCH_MODEL.md` §12–§18). Each has an identity
+//! setting under which the engine reproduces the Phase-2a baseline bit for
+//! bit (`golden`). Set pieces remain deferred (§11).
 
 mod calibrate;
 mod contest;
@@ -35,17 +36,21 @@ pub use resolve::SUB_CHECKPOINTS;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
 pub use zone::Zone;
 
-use crate::rng::Rng;
+use crate::rng::{Rng, derive_stream};
 use fforge_domain::{
-    Attribute, BENCH_SIZE, ClubId, FORMATIONS, FormationDef, GameDate, Lineup, Mentality, PlayerId,
-    Pressing, ROLE_WEIGHTS, Role, ScoreState, SubAction, SubCondition, SubRule, Tactics, Tempo,
-    Width, World, XI, current_ability,
+    Attribute, BENCH_SIZE, ClubId, FORMATIONS, FixtureId, FormationDef, GameDate, Lineup,
+    Mentality, PlayerId, Pressing, ROLE_WEIGHTS, Role, ScoreState, SubAction, SubCondition,
+    SubRule, Tactics, Tempo, Width, World, XI, current_ability,
 };
 use serde::{Deserialize, Serialize};
 
+/// Tag namespace for a fixture's main RNG stream (`rng::derive_stream`),
+/// OR'd with the fixture id.
+pub const FIXTURE_STREAM_NS: u64 = 0x4D41_5443_0000_0000; // "MATC"
+
 /// Tag namespace for the per-match Consistency RNG stream
 /// (`rng::derive_stream`, `MATCH_MODEL.md` §17, T8) — distinct from
-/// `commands::FIXTURE_STREAM_NS`, `development::DEV_STREAM_NS`, and
+/// `FIXTURE_STREAM_NS`, `development::DEV_STREAM_NS`, and
 /// `market::TRANSFER_STREAM_NS`, per §2.1's own-stream rule. Callers OR in a
 /// per-fixture component (e.g. `CONSISTENCY_NS | fixture.id`) the same way
 /// the main stream does.
@@ -108,11 +113,10 @@ pub fn lineup_strength(world: &World, lineup: &Lineup) -> f64 {
     sum / XI as f64
 }
 
-/// The result of a simulated match: the score that folds into `GameState`
-/// (via `Event::MatchPlayed`) plus the minute-by-minute trace. The trace
-/// rides alongside the fold, never inside it (`MATCH_MODEL.md` §7) — it is a
-/// Trace, not a fold input, and callers are free to discard it. Nothing here
-/// is persisted by `commands::advance_matchday`; only the score is.
+/// The result of a simulated match. The score and the §12 boundary fields
+/// fold into `GameState` via `Event::MatchPlayed`; `stream` is a Trace
+/// (`MATCH_MODEL.md` §7) — it rides alongside the fold, never inside it, and
+/// is never persisted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchOutcome {
     pub home_goals: u8,
@@ -120,53 +124,69 @@ pub struct MatchOutcome {
     pub stream: Vec<MatchEvent>,
     /// Resolved per-player consequences that outlive the match
     /// (`MATCH_MODEL.md` §12): unlike `stream`, these *do* ride into
-    /// `Event::MatchPlayed`. The boundary was grown once, ahead of the models
-    /// that fill it; `injuries` is now populated by the §14 model (T10, own
-    /// `INJURY_NS` stream, identity `injury_rate: 0.0`). `cards`/`ratings`
-    /// still emit empty until the §15 foul/card contest and §18 rating
-    /// derivation land, so nothing there touches the RNG draw sequence yet.
+    /// `Event::MatchPlayed`.
     pub injuries: Vec<InjuryOutcome>,
     pub cards: Vec<CardOutcome>,
     /// Per-player rating in tenths (`68` = 6.8), `MATCH_MODEL.md` §18.
     pub ratings: Vec<(PlayerId, u8)>,
-    /// True minutes played, substitutions included (`MATCH_MODEL.md` §12,
-    /// §16, R7). Every starting-XI player at 90 until T10/T11/T12 (injuries,
-    /// red cards, substitutions) make partial minutes possible — there is no
-    /// bench yet, so "0 otherwise" is simply absence from this vec, not a
-    /// recorded entry.
+    /// True minutes played (`MATCH_MODEL.md` §12, §16): 90 for a starter who
+    /// finishes, less for one sent off or substituted, the remainder for the
+    /// substitute who replaced him. An unused player has no entry.
     pub minutes: Vec<(PlayerId, u8)>,
 }
 
-/// Simulate one match: `(lineups, world, rng, consistency_rng, knobs,
-/// conditions)` in, score + trace out. A pure function of its inputs — same
-/// seed streams, same outcome, by construction (`MATCH_MODEL.md` §7).
-/// `consistency_rng` must be a stream independent of `rng` (`MATCH_MODEL.md`
-/// §17, T8) — callers typically derive it as `derive_stream(seed,
-/// CONSISTENCY_NS | fixture.id)`, the sibling of however `rng` itself was
-/// derived. `k` is almost always `&Knobs::default()`; tests that need to pin
-/// a knob independent of the production default (the T5/T6 identity tests
-/// pinning `consistency_sigma_max: 0.0`) pass their own. `conditions`
-/// (`MATCH_MODEL.md` §13, T9) is a pre-computed `PlayerId -> condition` map —
-/// typically `GameState::condition` for every player in both lineups; an
-/// empty map (or a missing entry) is full condition, the identity setting.
-/// `injury_rng` (`MATCH_MODEL.md` §14, T10) is a third stream, independent of
-/// both `rng` and `consistency_rng`, typically derived as `derive_stream(seed,
-/// INJURY_NS | fixture.id)` — at `k.injury_rate == 0.0` (§2.1's identity) it
-/// is still drawn from, just never produces an injury. `foul_rng`
-/// (`MATCH_MODEL.md` §15, T11) is a fourth stream, independent of the other
-/// three, typically derived as `derive_stream(seed, FOUL_NS | fixture.id)` —
-/// at `k.foul_rate == 0.0` it is still drawn from, just never produces a
-/// foul. `today` is only used to compute each player's age for the ambient
-/// injury channel.
-#[allow(clippy::too_many_arguments)]
+/// The four independent RNG streams one match consumes (`MATCH_MODEL.md` §11's
+/// separate-stream rule). Each feature draws from its own stream so that its
+/// identity setting (`consistency_sigma_max: 0.0`, `injury_rate: 0.0`,
+/// `foul_rate: 0.0`) leaves every other stream's draw sequence untouched —
+/// the property the bit-for-bit golden tests rest on. Bundled so the streams
+/// are named at the call site and cannot be transposed.
+#[derive(Debug, Clone)]
+pub struct MatchRngs {
+    /// The possession loop's own stream.
+    pub main: Rng,
+    /// Per-player Consistency multipliers (`MATCH_MODEL.md` §17).
+    pub consistency: Rng,
+    /// Contact and ambient injury channels (`MATCH_MODEL.md` §14).
+    pub injury: Rng,
+    /// The foul check and its card severity (`MATCH_MODEL.md` §15).
+    pub foul: Rng,
+}
+
+impl MatchRngs {
+    /// The streams of a recorded fixture — the one derivation
+    /// `commands::advance_matchday`, `commands::player_match_preview` and the
+    /// league harnesses all share, which is why a preview can never disagree
+    /// with the match that gets recorded.
+    pub fn for_fixture(seed: u64, fixture: FixtureId) -> Self {
+        let id = fixture.0 as u64;
+        Self::derive(seed, FIXTURE_STREAM_NS | id, id)
+    }
+
+    /// `main` from `main_tag` verbatim; the three feature streams from their
+    /// own namespace OR'd with `sub_tag`.
+    pub fn derive(seed: u64, main_tag: u64, sub_tag: u64) -> Self {
+        MatchRngs {
+            main: derive_stream(seed, main_tag),
+            consistency: derive_stream(seed, CONSISTENCY_NS | sub_tag),
+            injury: derive_stream(seed, INJURY_NS | sub_tag),
+            foul: derive_stream(seed, FOUL_NS | sub_tag),
+        }
+    }
+}
+
+/// Simulate one match: a pure function of its inputs — same streams, same
+/// outcome (`MATCH_MODEL.md` §7). `k` is `&Knobs::default()` in production;
+/// tests pin individual knobs to their identity values through it.
+/// `conditions` (`MATCH_MODEL.md` §13) is a pre-computed `PlayerId ->
+/// condition` map, since the engine has no `GameState`; a missing entry is
+/// full condition, the identity. `today` only feeds the ambient injury
+/// channel's age term.
 pub fn play_match(
     world: &World,
     home: &Lineup,
     away: &Lineup,
-    rng: &mut Rng,
-    consistency_rng: &mut Rng,
-    injury_rng: &mut Rng,
-    foul_rng: &mut Rng,
+    rngs: &mut MatchRngs,
     k: &Knobs,
     conditions: &std::collections::BTreeMap<PlayerId, f64>,
     today: GameDate,
@@ -175,10 +195,10 @@ pub fn play_match(
         world,
         home,
         away,
-        rng,
-        consistency_rng,
-        injury_rng,
-        foul_rng,
+        &mut rngs.main,
+        &mut rngs.consistency,
+        &mut rngs.injury,
+        &mut rngs.foul,
         k,
         conditions,
         today,
@@ -214,13 +234,7 @@ pub fn ai_pick_lineup_available(
     let available: Vec<PlayerId> = squad
         .iter()
         .copied()
-        .filter(|&pid| {
-            let injury_ok = match world.player(pid).injured_until {
-                Some(until) => until <= today,
-                None => true,
-            };
-            injury_ok && !suspended.contains(&pid)
-        })
+        .filter(|&pid| !world.player(pid).is_injured(today) && !suspended.contains(&pid))
         .collect();
     if available.len() >= XI {
         pick_lineup_from(world, available)
@@ -651,21 +665,21 @@ mod tests {
     /// (`golden` module) call `play_match` directly with
     /// `consistency_sigma_max: 0.0`/`injury_rate: 0.0` pinned instead.
     fn play(world: &World, home: &Lineup, away: &Lineup, rng: &mut Rng) -> MatchOutcome {
-        let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
-        let mut injury_rng = derive_stream(0, INJURY_NS);
-        let mut foul_rng = derive_stream(0, FOUL_NS);
-        play_match(
+        let mut rngs = MatchRngs {
+            main: rng.clone(),
+            ..MatchRngs::derive(0, 0, 0)
+        };
+        let outcome = play_match(
             world,
             home,
             away,
-            rng,
-            &mut consistency_rng,
-            &mut injury_rng,
-            &mut foul_rng,
+            &mut rngs,
             &Knobs::default(),
             &std::collections::BTreeMap::new(),
             GameDate { days: 0 },
-        )
+        );
+        *rng = rngs.main;
+        outcome
     }
 
     #[test]
@@ -852,18 +866,12 @@ mod tests {
         let pooled_home_goals = |conditions: &std::collections::BTreeMap<PlayerId, f64>| {
             let mut total = 0u32;
             for seed in 0..300u64 {
-                let mut rng = derive_stream(seed, 1);
-                let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-                let mut injury_rng = derive_stream(seed, INJURY_NS);
-                let mut foul_rng = derive_stream(seed, FOUL_NS);
+                let mut rngs = MatchRngs::derive(seed, 1, 0);
                 let outcome = play_match(
                     &world,
                     &home,
                     &away,
-                    &mut rng,
-                    &mut consistency_rng,
-                    &mut injury_rng,
-                    &mut foul_rng,
+                    &mut rngs,
                     &k,
                     conditions,
                     GameDate { days: 0 },
@@ -1033,18 +1041,12 @@ mod tests {
             injury_knock_prob: 1.0, // every hit is a trivial Knock — irrelevant to this test
             ..Knobs::default()
         };
-        let mut rng = derive_stream(0, 1);
-        let mut consistency_rng = derive_stream(0, CONSISTENCY_NS);
-        let mut injury_rng = derive_stream(0, INJURY_NS);
-        let mut foul_rng = derive_stream(0, FOUL_NS);
+        let mut rngs = MatchRngs::derive(0, 1, 0);
         let outcome = play_match(
             &world,
             &home,
             &away,
-            &mut rng,
-            &mut consistency_rng,
-            &mut injury_rng,
-            &mut foul_rng,
+            &mut rngs,
             &k,
             &std::collections::BTreeMap::new(),
             GameDate { days: 0 },
@@ -1101,18 +1103,12 @@ mod tests {
         };
         let mut found = false;
         for seed in 0..30u64 {
-            let mut rng = derive_stream(seed, 1);
-            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-            let mut injury_rng = derive_stream(seed, INJURY_NS);
-            let mut foul_rng = derive_stream(seed, FOUL_NS);
+            let mut rngs = MatchRngs::derive(seed, 1, 0);
             let outcome = play_match(
                 &world,
                 &home,
                 &away,
-                &mut rng,
-                &mut consistency_rng,
-                &mut injury_rng,
-                &mut foul_rng,
+                &mut rngs,
                 &k,
                 &std::collections::BTreeMap::new(),
                 GameDate { days: 0 },
@@ -1365,7 +1361,6 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod golden {
     use super::*;
-    use crate::rng::derive_stream;
 
     /// The exact fixture `TACTICS_MODEL.md` §4 names: a 2-club world at
     /// worldgen seed 7, `ai_pick_lineup` XIs for each club.
@@ -1470,18 +1465,12 @@ pub(crate) mod golden {
         away.sub_plan.clear();
         let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
-            let mut rng = derive_stream(seed, 1);
-            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-            let mut injury_rng = derive_stream(seed, INJURY_NS);
-            let mut foul_rng = derive_stream(seed, FOUL_NS);
+            let mut rngs = MatchRngs::derive(seed, 1, 0);
             let outcome = play_match(
                 &world,
                 &home,
                 &away,
-                &mut rng,
-                &mut consistency_rng,
-                &mut injury_rng,
-                &mut foul_rng,
+                &mut rngs,
                 &k,
                 &std::collections::BTreeMap::new(),
                 GameDate { days: 0 },
@@ -1514,18 +1503,12 @@ pub(crate) mod golden {
         away.sub_plan.clear();
         let k = identity_2e_knobs();
         for (seed, &(hg, ag, len)) in (0u64..32).zip(PHASE_2A_SEEDS_0_32.iter()) {
-            let mut rng = derive_stream(seed, 1);
-            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS);
-            let mut injury_rng = derive_stream(seed, INJURY_NS);
-            let mut foul_rng = derive_stream(seed, FOUL_NS);
+            let mut rngs = MatchRngs::derive(seed, 1, 0);
             let outcome = play_match(
                 &world,
                 &home,
                 &away,
-                &mut rng,
-                &mut consistency_rng,
-                &mut injury_rng,
-                &mut foul_rng,
+                &mut rngs,
                 &k,
                 &std::collections::BTreeMap::new(),
                 GameDate { days: 0 },

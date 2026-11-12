@@ -11,11 +11,9 @@ use crate::event::Event;
 use crate::finance::{FinanceKnobs, finance_deltas};
 use crate::market::{self, MarketKnobs};
 use crate::match_engine::{
-    CONSISTENCY_NS, FOUL_NS, INJURY_NS, Knobs, ai_pick_lineup_available, ai_pick_lineup_vs,
-    play_match,
+    Knobs, MatchOutcome, MatchRngs, ai_pick_lineup_available, ai_pick_lineup_vs, play_match,
 };
 use crate::pool::{self, PoolKnobs};
-use crate::rng::derive_stream;
 use crate::schedule::double_round_robin;
 use crate::state::{
     GameState, apply_finance_deltas, apply_player_retired, apply_transfer_completed,
@@ -23,7 +21,8 @@ use crate::state::{
 };
 use crate::valuation::ValueKnobs;
 use fforge_domain::{
-    BENCH_SIZE, ClubId, FORMATIONS, GameDate, Lineup, PlayerId, SubAction, SubCondition, World, XI,
+    BENCH_SIZE, ClubId, FORMATIONS, Fixture, GameDate, Lineup, PlayerId, SubAction, SubCondition,
+    World, XI,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -97,12 +96,6 @@ impl fmt::Display for CommandError {
         }
     }
 }
-
-/// Tag namespace for per-fixture RNG streams (see rng::derive_stream). Public
-/// so the calibration harness (`fforge-core/src/bin/calibrate.rs`) can derive
-/// the exact same per-fixture stream `advance_matchday` uses without
-/// duplicating the constant.
-pub const FIXTURE_STREAM_NS: u64 = 0x4D41_5443_0000_0000; // "MATC"
 
 /// Season kickoff is late-summer, day 220 (matching `worldgen`).
 const SEASON_START_DOY: u16 = 220;
@@ -288,69 +281,41 @@ fn effective_player_lineup(state: &GameState) -> Lineup {
 /// call this *before* executing `AdvanceMatchday` to render the humble text
 /// match view (`DESIGN.md` §9) for the human's own match. `None` if the
 /// player's club has a bye this matchday.
-pub fn player_match_preview(state: &GameState) -> Option<crate::match_engine::MatchOutcome> {
-    let md = state.current_matchday;
+pub fn player_match_preview(state: &GameState) -> Option<MatchOutcome> {
     let fixture = state
-        .fixtures_of_matchday(md)
+        .fixtures_of_matchday(state.current_matchday)
         .find(|f| f.home == state.player_club || f.away == state.player_club)?;
-    let suspended = state.suspended_players();
-    let home_lineup = if fixture.home == state.player_club {
-        effective_player_lineup(state)
-    } else {
-        ai_pick_lineup_vs(
-            &state.world,
-            fixture.home,
-            fixture.away,
-            true,
-            state.date,
-            &suspended,
-        )
+    let (_, _, outcome) = simulate_fixture(state, fixture, &state.suspended_players());
+    Some(outcome)
+}
+
+/// Pick both lineups for `fixture` and simulate it — the single encoding of
+/// "how a recorded fixture is played", shared by `advance_matchday` and
+/// `player_match_preview` so the two cannot drift apart.
+fn simulate_fixture(
+    state: &GameState,
+    fixture: &Fixture,
+    suspended: &BTreeSet<PlayerId>,
+) -> (Lineup, Lineup, MatchOutcome) {
+    let lineup_for = |club: ClubId, opponent: ClubId, is_home: bool| {
+        if club == state.player_club {
+            effective_player_lineup(state)
+        } else {
+            ai_pick_lineup_vs(&state.world, club, opponent, is_home, state.date, suspended)
+        }
     };
-    let away_lineup = if fixture.away == state.player_club {
-        effective_player_lineup(state)
-    } else {
-        ai_pick_lineup_vs(
-            &state.world,
-            fixture.away,
-            fixture.home,
-            false,
-            state.date,
-            &suspended,
-        )
-    };
-    let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-    let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
-    let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
-    let mut foul_rng = derive_stream(state.seed, FOUL_NS | fixture.id.0 as u64);
-    let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
-    Some(play_match(
+    let home_lineup = lineup_for(fixture.home, fixture.away, true);
+    let away_lineup = lineup_for(fixture.away, fixture.home, false);
+    let outcome = play_match(
         &state.world,
         &home_lineup,
         &away_lineup,
-        &mut rng,
-        &mut consistency_rng,
-        &mut injury_rng,
-        &mut foul_rng,
+        &mut MatchRngs::for_fixture(state.seed, fixture.id),
         &Knobs::default(),
-        &conditions,
+        &state.lineup_conditions(&home_lineup, &away_lineup),
         state.date,
-    ))
-}
-
-/// Pre-match condition (`MATCH_MODEL.md` §13, T9) for every player in both
-/// lineups, read off `GameState::condition` — the one seam that turns the
-/// fold-maintained `recent_appearances` window into `play_match`'s RNG-free
-/// `conditions` input.
-fn lineup_conditions(
-    state: &GameState,
-    home: &Lineup,
-    away: &Lineup,
-) -> std::collections::BTreeMap<PlayerId, f64> {
-    home.players
-        .iter()
-        .chain(&away.players)
-        .map(|&pid| (pid, state.condition(pid)))
-        .collect()
+    );
+    (home_lineup, away_lineup, outcome)
 }
 
 fn advance_matchday(state: &GameState) -> Vec<Event> {
@@ -365,51 +330,9 @@ fn advance_matchday(state: &GameState) -> Vec<Event> {
     let suspended = state.suspended_players();
 
     for fixture in state.fixtures_of_matchday(md) {
-        let home_lineup = if fixture.home == state.player_club {
-            effective_player_lineup(state)
-        } else {
-            ai_pick_lineup_vs(
-                &state.world,
-                fixture.home,
-                fixture.away,
-                true,
-                state.date,
-                &suspended,
-            )
-        };
-        let away_lineup = if fixture.away == state.player_club {
-            effective_player_lineup(state)
-        } else {
-            ai_pick_lineup_vs(
-                &state.world,
-                fixture.away,
-                fixture.home,
-                false,
-                state.date,
-                &suspended,
-            )
-        };
-        let mut rng = derive_stream(state.seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-        let mut consistency_rng = derive_stream(state.seed, CONSISTENCY_NS | fixture.id.0 as u64);
-        let mut injury_rng = derive_stream(state.seed, INJURY_NS | fixture.id.0 as u64);
-        let mut foul_rng = derive_stream(state.seed, FOUL_NS | fixture.id.0 as u64);
-        let conditions = lineup_conditions(state, &home_lineup, &away_lineup);
-        // The minute-by-minute stream is a Trace, not a fold input
-        // (MATCH_MODEL.md §7) — only the score is recorded; it rides
-        // alongside for live-viewing consumers (fforge-game's friendly
-        // viewer) but is never persisted through the event log.
-        let outcome = play_match(
-            &state.world,
-            &home_lineup,
-            &away_lineup,
-            &mut rng,
-            &mut consistency_rng,
-            &mut injury_rng,
-            &mut foul_rng,
-            &Knobs::default(),
-            &conditions,
-            state.date,
-        );
+        // Only the score and the §12 boundary fields are recorded; the
+        // minute-by-minute stream is a Trace (MATCH_MODEL.md §7).
+        let (home_lineup, away_lineup, outcome) = simulate_fixture(state, fixture, &suspended);
         let (hg, ag) = (outcome.home_goals, outcome.away_goals);
         new_results.insert(fixture.id, (hg, ag));
         let home_xi = home_lineup.players.to_vec();
