@@ -73,7 +73,7 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   suspended set, today's date) is computed by the caller and passed in. Keep it that way; it is
   why the engine can be driven by a harness with no season at all.
 - **`bin/calibrate` therefore runs at the condition identity.** It cannot see fatigue-driven
-  effects such as substitutions. Reading those needs a real-season harness (`BACKLOG.md` §4).
+  effects such as substitutions. Reading those needs a real-season harness (`BACKLOG.md` §4.3).
 - **`UtilityKnobs::asking_markup` must stay `<= 1.0`.** Every club prices off the same
   `value()`, so an ask above value makes the surplus negative for every buyer and nothing clears.
 - **`opp_mid_advance_mult` and `opp_penetrate_mult` each have two tenants**, Pressing and
