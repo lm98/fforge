@@ -28,7 +28,7 @@ are drafted as sections in the note that already pins that model.
   `neutral_tactics_reproduce_phase_2a_bit_for_bit` (replaying the T5 golden table). All four
   pooled calibration guards re-ran unchanged.
 - **§7 landed and now live (batch-3 T7 → T7-R → T7-R2).** `ai_pick_tactics`/`AiTacticKnobs`
-  and the head-to-head harness (`calibrate::run_head_to_head`, `bin/calibrate --head-to-head`)
+  and the head-to-head harness (`fforge-harness::match_engine::run_head_to_head`, `bin/calibrate --head-to-head`)
   are implemented and tested, and `match_engine::AI_TACTICS_ENABLED` is now **`true`** — every
   AI-controlled side picks real tactics. It took two fits to get there: **§9 item 6** (§5's
   cyclic triangle retired, non-dominance re-founded as squad-conditional, Tempo and Pressing
@@ -37,7 +37,7 @@ are drafted as sections in the note that already pins that model.
   re-banked league aggregates. No scratchpad was used to settle the structure — the
   `TRANSFER_MODEL.md` §1.1 reasoning applies verbatim: the *structure* is settled by this note
   (every tactic effect is a deformation of an already-calibrated probability), and the numbers
-  are knob-table entries the existing Rust harness (`match_engine::calibrate`, `bin/calibrate`)
+  are knob-table entries the existing Rust harness (`fforge-harness::match_engine`, `bin/calibrate`)
   will fit directly, exactly as it re-fit `b_beat`.
 - **In scope (this pass):** the instruction surface (§2), per-side resolution into effective
   knobs (§3), the neutral-tactics invariant (§4), the structural interaction model (§5), the
@@ -308,7 +308,7 @@ instruction has an almost-orthogonal, easily-verified signature.
 
 **T7 finding (batch-3 addendum) — the triangle did not close on first measurement, and did
 not close after two principled fixes.** B3.9's own head-to-head harness (`bin/calibrate
---head-to-head`, `calibrate::run_head_to_head`), pooled to 6,000 matches on an equal-strength
+--head-to-head`, `fforge-harness::match_engine::run_head_to_head`), pooled to 6,000 matches on an equal-strength
 squad (std error ≈ 0.0065), read:
 
 | Edge | First measurement | After Fix A (press zone-profile) | After Fix B (Direct zone-profile) |
@@ -389,7 +389,7 @@ net-neutral against `Tactics::neutral()` on a control squad — leaving the *sha
 makes Pressing squad-conditional at all, and flattening it to balance the press would have
 deleted the effect this whole question was about.
 
-**The measurement** (`bin/calibrate --squad-conditional`, `calibrate::run_squad_conditional_probe`;
+**The measurement** (`bin/calibrate --squad-conditional`, `fforge-harness::match_engine::run_squad_conditional_probe`;
 8 worlds × 3000 seeds × 2 legs per cell, i.e. 48,000 matches a cell, profiles applied as
 CA-preserving ±12 mirror shifts so only squad *shape* varies):
 
@@ -415,7 +415,7 @@ Two things are now established, and one is retired:
    exertion cost is strictly cheaper for a high-Stamina squad, while its `def_bias_by_zone`
    benefit is attribute-independent. The re-fit did not create this gradient (it read +0.0190
    at the old magnitudes too); it *unmasked* it by removing the blanket Tempo advantage sitting
-   on top. Guarded by `calibrate::tests::tactics_are_squad_conditionally_non_dominant`.
+   on top. Guarded by `fforge-harness::match_engine::tests::tactics_are_squad_conditionally_non_dominant`.
 3. **The mechanism commitment at the top of this section survives intact.** No matchup table
    was introduced; the squad-conditionality emerges from `fatigue_mult`'s attribute
    dependence, exactly the "structural, not a lookup" standard §5 set. It also lands
@@ -650,7 +650,7 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
    **Resolution (T7-R): squad-conditional, and the cyclic claim is retired.** The addendum's
    proposed check was run exactly as specified — tactics held fixed, squad composition varied
    across high-`PASS_ATK` / high-physical / high-work-rate profiles — as
-   `calibrate::run_squad_conditional_probe` / `bin/calibrate --squad-conditional`. Full numbers
+   `fforge-harness::match_engine::run_squad_conditional_probe` / `bin/calibrate --squad-conditional`. Full numbers
    and the re-fit that made the reading possible are in §5's T7-R finding; in brief:
    - The premise behind "further magnitude iteration is futile" was **wrong**. T7's two fixes
      both moved logit-class terms, ~4× weaker than the advance-class `advance_mult` that
@@ -663,7 +663,7 @@ Deliberately unresolved, to settle during implementation or B3.9 calibration:
      is a structural property of the engine, not a fitted one — which is what makes it a
      legitimate replacement for the cyclic mechanism rather than a curve-fit.
 
-   Guarded by `calibrate::tests::tactics_are_squad_conditionally_non_dominant`.
+   Guarded by `fforge-harness::match_engine::tests::tactics_are_squad_conditionally_non_dominant`.
    `match_engine::AI_TACTICS_ENABLED` stays `false`, but **no longer on account of this item** —
    see item 7.
 

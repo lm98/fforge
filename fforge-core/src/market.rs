@@ -31,11 +31,6 @@
 //! submitted, never adapted round to round (that is what "pre-commitment"
 //! means here).
 
-pub mod calibrate;
-pub use calibrate::{
-    MarketReport, MarketTelemetry, SeedSpread, print_report, run_market_calibration,
-};
-
 use crate::club_ai::{
     ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs, UtilityPolicy,
     observe,

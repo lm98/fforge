@@ -12,7 +12,7 @@ note is the thing that survives it**, and the structure below is what drops into
 
 - **Status:** Phase 2a — *ported, calibrated, and guarded.* Model shape settled in a Python
   scratchpad (per `DESIGN.md` §8, discarded after use, never a port target); `fforge-core::match_engine`
-  is the Rust transcription (`play_match`), and `fforge-core::match_engine::calibrate` +
+  is the Rust transcription (`play_match`), and `fforge-harness::match_engine` +
   `bin/calibrate` re-ran the calibration against real `worldgen` + `ai_pick_lineup` (not the
   notebook's synthetic squads), re-fit `b_beat` against the real attribute distribution, and
   pinned the result behind the `favourite_discrimination_regression_guard` regression test (§10).
@@ -284,7 +284,7 @@ Deliberately unresolved, to settle during the Rust port or Phase 2 calibration:
    `(wins + 0.5·draws)/matches`, not P(home win). `StreamTelemetry::record` (`calibrate.rs`) bins
    each match by `home_strength - away_strength` (`lineup_strength`, ~2-CA-point bins) and tracks
    per-bin match/win/draw/loss counts; `expected_points_curve` reports the empirical curve.
-   `calibrate::elo_expected(gap, s)` is the reference — the Elo expected-score curve, with
+   `fforge-harness::match_engine::elo_expected(gap, s)` is the reference — the Elo expected-score curve, with
    `ELO_SCALE_S = 40` a documented, plausibility-picked constant (not fitted); `score_against_
    reference` reports per-bin deviation plus max/mean-weighted deviation. This is a
    **discrimination** check (does the favourite-vs-underdog slope look sane) — it validates the

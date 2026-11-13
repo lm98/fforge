@@ -1,5 +1,5 @@
 //! The Phase-4 market pathology harness (`TRANSFER_MODEL.md` §11) — the
-//! transfer-market sibling of `match_engine::calibrate::StreamTelemetry` and
+//! transfer-market sibling of `fforge-harness::match_engine::StreamTelemetry` and
 //! `career_arc`. Where those drive the real worldgen + match / development
 //! pipeline and report emergent match / career aggregates, this drives the
 //! real worldgen + **full command pipeline** (matches, development, finance,
@@ -43,13 +43,13 @@
 //! re-fit is a human reading these numbers and editing the knob tables
 //! (`TRANSFER_MODEL.md` §9).
 
-use crate::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy, observe};
-use crate::development::DevKnobs;
-use crate::event::Event;
-use crate::observer::EventObserver;
-use crate::state::{GameState, league_table};
-use crate::valuation::{MarketContext, ValueKnobs, value_all};
-use crate::{Command, Session, WorldGenConfig, new_game};
+use fforge_core::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy, observe};
+use fforge_core::development::DevKnobs;
+use fforge_core::event::Event;
+use fforge_core::observer::EventObserver;
+use fforge_core::state::{GameState, league_table};
+use fforge_core::valuation::{MarketContext, ValueKnobs, value_all};
+use fforge_core::{Command, Session, WorldGenConfig, new_game};
 use fforge_domain::{Club, ClubId, Fixture, FixtureId, GameDate, Money, PlayerId, Role, World};
 use std::collections::BTreeMap;
 
@@ -234,7 +234,7 @@ fn gk_counts(world: &World) -> Vec<usize> {
 /// omniscient valuers make this an upper bound, not a prediction.
 fn top3_share_of_top20(
     world: &World,
-    table: &[crate::state::TableRow],
+    table: &[fforge_core::state::TableRow],
     valuations: &BTreeMap<PlayerId, Money>,
 ) -> f64 {
     let top3: std::collections::BTreeSet<ClubId> = table.iter().take(3).map(|r| r.club).collect();
@@ -635,8 +635,8 @@ fn window_will_close_on_next_advance(state: &GameState) -> bool {
         .date
         .add_days(-((state.current_matchday as i64 - 1) * 7));
     let new_date = state.date.add_days(7);
-    let summer = super::summer_window_close(season_start);
-    let winter = super::winter_window_close(season_start, state.last_matchday);
+    let summer = fforge_core::market::summer_window_close(season_start);
+    let winter = fforge_core::market::winter_window_close(season_start, state.last_matchday);
     [summer, winter]
         .into_iter()
         .any(|close| state.date < close && close <= new_date)

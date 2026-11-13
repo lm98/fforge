@@ -8,7 +8,7 @@
 //! Run with: `cargo run --release --bin market -- --seeds 8 --seasons 15`
 
 use fforge_core::WorldGenConfig;
-use fforge_core::market::{print_report, run_market_calibration};
+use fforge_harness::market::{print_report, run_market_calibration};
 
 fn parse_usize_arg(args: &[String], flag: &str, default: usize) -> usize {
     for i in 0..args.len() {

@@ -11,7 +11,6 @@
 //! setting under which the engine reproduces the Phase-2a baseline bit for
 //! bit (`golden`). Set pieces remain deferred (§11).
 
-mod calibrate;
 mod contest;
 mod knobs;
 mod ratings;
@@ -21,11 +20,6 @@ mod tactics;
 mod zone;
 
 pub use crate::event::{Card, CardOutcome, InjuryOutcome};
-pub use calibrate::{
-    DeviationReport, ELO_SCALE_S, FormationStats, GapBinStats, GapDeviation, PROFILE_SHIFT,
-    ProfileRow, SQUAD_PROFILES, SquadProfile, StreamTelemetry, apply_squad_profile, elo_expected,
-    probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
-};
 pub use knobs::Knobs;
 pub use ratings::man_of_the_match;
 /// The fixed in-match decision points a `sub_plan` is evaluated at
@@ -34,8 +28,9 @@ pub use ratings::man_of_the_match;
 /// *when* his rules get their chance is showing him half the mechanism: a
 /// `MinuteAtLeast(65)` rule fires at 70, not 65.
 pub use resolve::SUB_CHECKPOINTS;
+pub use resolve::mirrored_zone;
 pub use stream::{MatchEvent, MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
-pub use zone::Zone;
+pub use zone::{NUM_ZONES, Zone};
 
 use crate::rng::{Rng, derive_stream};
 use fforge_domain::{
