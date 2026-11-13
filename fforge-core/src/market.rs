@@ -32,20 +32,22 @@
 //! means here).
 
 pub mod calibrate;
-pub use calibrate::{print_report, run_market_calibration, MarketReport, MarketTelemetry, SeedSpread};
+pub use calibrate::{
+    MarketReport, MarketTelemetry, SeedSpread, print_report, run_market_calibration,
+};
 
 use crate::club_ai::{
-    observe, ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs,
-    UtilityPolicy,
+    ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs, UtilityPolicy,
+    observe,
 };
 use crate::development::DevKnobs;
 use crate::rng::derive_stream;
 use crate::state::apply_transfer_completed;
-use crate::valuation::{value_all, MarketContext, ValueKnobs};
+use crate::valuation::{MarketContext, ValueKnobs, value_all};
 use crate::worldgen::wage_for_quality;
 use fforge_domain::{
-    best_role, date::DAYS_PER_YEAR, ClubId, Contract, GameDate, Money, PlayerId, Role, World,
-    ROLE_WEIGHTS,
+    ClubId, Contract, GameDate, Money, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
+    date::DAYS_PER_YEAR,
 };
 use std::collections::BTreeMap;
 
@@ -521,10 +523,10 @@ pub fn winter_window_close(season_start: GameDate, last_matchday: u8) -> GameDat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::worldgen::{WorldGenConfig, generate};
     use fforge_domain::{
         Attribute, Attributes, Character, Club, Competition, CompetitionId, DevProfile, Finances,
-        Player, NUM_ATTRIBUTES,
+        NUM_ATTRIBUTES, Player,
     };
     use std::collections::BTreeSet;
 

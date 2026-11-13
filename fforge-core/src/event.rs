@@ -19,11 +19,9 @@
 //!    deltas, *not* the seed, so the growth model can evolve without rewriting a
 //!    recorded career — the fold only integer-adds the deltas.
 
-use crate::club_ai::TransferDecision;
-use crate::match_engine::{CardOutcome, InjuryOutcome};
 use fforge_domain::{
     Attribute, ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId,
-    World,
+    Role, World,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,4 +174,59 @@ pub enum Event {
     /// to expire a pre-committed human plan rather than letting it silently
     /// carry into the *next* window it was never meant for.
     TransferWindowClosed { date: GameDate, window_index: u64 },
+}
+
+// --- Payload types -------------------------------------------------------
+//
+// Everything an `Event` serializes is defined in this module (or in
+// `fforge-domain`), so the log's schema does not depend on any engine. The
+// engines that produce these values re-export them under their own paths.
+
+/// A resolved injury (`MATCH_MODEL.md` §12, §14): the *days out*, decided at
+/// match time — never a severity category for the fold to re-roll, so the
+/// severity model can evolve without rewriting anyone's recorded medical
+/// history (the `DevelopmentTick` argument verbatim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjuryOutcome {
+    pub player: PlayerId,
+    /// Days unavailable, counted from the match date. The fold turns this
+    /// into `Player.injured_until`.
+    pub days_out: u16,
+}
+
+/// The card itself (`MATCH_MODEL.md` §15). A second yellow is recorded as
+/// `SecondYellow` — a red by bookkeeping — so no consumer ever has to
+/// reconstruct the distinction from minute ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Card {
+    Yellow,
+    SecondYellow,
+    Red,
+}
+
+/// A resolved card (`MATCH_MODEL.md` §12, §15): the recorded truth from which
+/// suspensions are *derived* in the fold — a ban is never stored and never its
+/// own event (the derived-suspension rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardOutcome {
+    pub player: PlayerId,
+    pub card: Card,
+    pub minute: u8,
+}
+
+/// A club's resolved transfer decision (`TRANSFER_MODEL.md` §6.1) — a constrained enum, never a
+/// world mutation. Neither variant is itself a transfer: `Bid` is a
+/// shortlist entry for §5's (not-yet-built) clearing loop to arbitrate,
+/// `List` a listing proposal for that same loop to act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferDecision {
+    Bid {
+        player: PlayerId,
+        from: Option<ClubId>,
+        role: Role,
+        price: Money,
+    },
+    List {
+        player: PlayerId,
+    },
 }

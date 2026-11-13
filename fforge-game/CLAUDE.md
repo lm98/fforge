@@ -7,49 +7,23 @@ resulting `Event`s.
 
 ## Current state
 
-**Batch 4 is complete — U1–U7 and G1–G4 — plus season rollover.** Everything the
-simulation resolves now has somewhere to be seen:
+Every subsystem the simulation resolves has a screen or a flow, and seasons roll over. The match
+view is three tellings of one `MatchOutcome`: a highlight reel (default), the full humble text
+view of `DESIGN.md` §9 behind `[f]`, or straight to the result with `[s]`. Match statistics are
+counted off the same stream.
 
-- the presentation layer is split by role, pure, and snapshot-tested;
-- a semantic colour vocabulary is in place and adopted, one axis per screen;
-- Phase 4's state has screens (finances with the `FinanceTick` trend, contracts,
-  valuations, squad depth against the market's hard stabilizers);
-- `fforge-core::news` is wired into the live loop as an inbox;
-- Phase 2e is fully surfaced: tactics, fitness/availability, cards and injuries in the
-  match stream, the substitution plan editor, ratings and form;
-- seasons roll over, reporting the summer's development on the squad.
+Not built, deliberately: set pieces (`MATCH_MODEL.md` §11) and anything Phase 5 owns (agents,
+scouting fog-of-war, the journalist renderer). The `[r] Reports` screen is still bare
+`SeasonTelemetry`, cumulative across seasons, and is the obvious next thing to grow.
 
-Not built, and deliberately: set pieces (deferred beyond 2e, `MATCH_MODEL.md` §11), and
-anything Phase 5 owns (agents, scouting fog-of-war, the journalist renderer).
+How this crate got here is in `docs/IMPLEMENTATION_LOG.md` §2; what the screens taught is in
+`docs/UI_TOOLKIT_EVIDENCE.md`.
 
-**A slice of Phase 6 has been pulled forward** (`DESIGN.md` §9 puts UI/UX after the agent
-layer; this was taken early, deliberately, because the project is a game and had stopped
-looking like one). Nothing in the simulation changed. What landed:
-
-- **the match view is three modes, not one.** Highlights (default) narrates the ~27 beats
-  that changed something, with a running scoreline and a half-time break, paced by match
-  time rather than by a fixed tick; the full humble text view of `DESIGN.md` §9 is intact
-  behind `[f]`; `[s]` goes straight to full time. All three read the same `MatchOutcome`.
-- **match statistics** — possession, shots, on target, fouls, cards — counted off the same
-  stream with no new state.
-- **a framed status panel** carrying position, points, next opponent and recent form.
-- **human-readable dates** (`9 Aug 2026`, not `2026, day 220`) — a layer-5 presentation
-  function, not a change to `GameDate`.
-- **a title screen and a real club picker** (squad strength, reputation, money, a
-  league-relative expectation label, ordered strongest first).
-- **prompts that terminate at EOF.** A redirected run used to play out the season and then
-  spin; see hard constraint 10.
-
-What each of those taught is recorded in `docs/UI_TOOLKIT_EVIDENCE.md` §6.
-
-The `[r] Reports` screen is still just `SeasonTelemetry` — accurate, but thin, and now
-cumulative across seasons rather than per-season. It is the obvious next thing to grow.
-
-## Module layout — split by role, not by feature (R17)
+## Module layout — split by role, not by feature
 
 ```
 main.rs        entry, game_loop, the grouped menu, the Observers bundle
-screens/       read-only renders — each a pure fn returning String (R16)
+screens/       read-only renders — each a pure fn returning String
 flows/         multi-step interactions (new game, team sheet, transfers, advance, season, friendly)
 render/        the Sem colour vocabulary, table layout, shared formatting
 input.rs       the only functions that touch stdin
@@ -65,7 +39,7 @@ prints screens with `print!`, since every screen's string already ends in a newl
 
 | Module | Holds |
 |---|---|
-| `main` | the entry menu, `game_loop`, R14's grouped menu, `SAVE_PATH`, and `Observers` |
+| `main` | the entry menu, `game_loop`, the grouped menu, `SAVE_PATH`, and `Observers` |
 | `screens::title` | the title banner and the entry menu; the menu greys out "Continue" when there is no save on disk |
 | `screens::clubs` | the new-game club picker: squad strength, reputation, balance, wage ceiling and a league-relative expectation label, ordered strongest first |
 | `screens::header` | the framed status panel — club, date, competition, matchday, position, points, next opponent, recent form, and what is still outstanding (unset team sheet, unread inbox, pending transfer plan) |
@@ -98,7 +72,7 @@ prints screens with `print!`, since every screen's string already ends in a newl
    `SystemTime::now()` when the player leaves the seed blank (the chosen seed is
    immediately recorded in `Event::GameStarted`, so replay never re-derives it), and
    `flows::friendly`'s ad-hoc RNG seed (a friendly produces no `Event` at all).
-   `print_humble_text_view`'s raw-mode toggling is the same kind of edge-only concern, and
+   The match view's raw-mode toggling is the same kind of edge-only concern, and
    is always paired so canonical mode is restored before the next prompt.
 
 2. **All game-state mutation goes through `Session::execute`.** Nothing here mutates
@@ -205,8 +179,5 @@ affected flow.
 
 ## Related records
 
-- `docs/UI_TOOLKIT_EVIDENCE.md` — R18's record of what these screens taught, the input
-  `DESIGN.md` §10's toolkit question has been waiting on. Complete as of Batch 4, including
-  the G3 measurement it was written to wait for; §6 adds what the early Phase-6 slice
-  taught (the 867 → 27 highlight filter, pacing by match time, and the qualifier §6.4 puts
-  on §4b's one-colour-channel conclusion). Add to it when a new screen teaches something.
+- `docs/UI_TOOLKIT_EVIDENCE.md` — what these screens taught; the input `DESIGN.md` §10's toolkit
+  question is waiting on. Add to it when a new screen teaches something.

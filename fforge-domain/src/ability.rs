@@ -62,12 +62,19 @@ mod tests {
         ] {
             attrs.set(a, 90);
         }
-        for a in [Attribute::Finishing, Attribute::Dribbling, Attribute::OffTheBall] {
+        for a in [
+            Attribute::Finishing,
+            Attribute::Dribbling,
+            Attribute::OffTheBall,
+        ] {
             attrs.set(a, 25);
         }
         let cb = current_ability(&attrs, Role::Cb, &ROLE_WEIGHTS);
         let st = current_ability(&attrs, Role::St, &ROLE_WEIGHTS);
-        assert!(cb > st, "defender profile must rate higher at CB ({cb}) than ST ({st})");
+        assert!(
+            cb > st,
+            "defender profile must rate higher at CB ({cb}) than ST ({st})"
+        );
         assert_eq!(best_role(&attrs, &ROLE_WEIGHTS).0, Role::Cb);
     }
 

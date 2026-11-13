@@ -133,6 +133,12 @@ impl Player {
     pub fn age(&self, today: GameDate) -> i32 {
         today.years_since(self.birth)
     }
+
+    /// Whether a recorded layoff still covers `today` — the one reading of
+    /// `injured_until` every availability check shares.
+    pub fn is_injured(&self, today: GameDate) -> bool {
+        self.injured_until.is_some_and(|until| until > today)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,7 +223,10 @@ impl World {
     }
 
     pub fn club_players(&self, id: ClubId) -> impl Iterator<Item = &Player> {
-        self.clubs[&id].players.iter().map(move |pid| self.player(*pid))
+        self.clubs[&id]
+            .players
+            .iter()
+            .map(move |pid| self.player(*pid))
     }
 
     /// The club a player belongs to, or `None` if unattached (a free agent).

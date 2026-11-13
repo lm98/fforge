@@ -68,7 +68,7 @@ pub fn finance_deltas(world: &World, knobs: &FinanceKnobs) -> Vec<(ClubId, Money
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worldgen::{generate, WorldGenConfig};
+    use crate::worldgen::{WorldGenConfig, generate};
 
     #[test]
     fn deltas_cover_every_club_in_id_order() {

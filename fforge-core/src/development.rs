@@ -35,7 +35,7 @@ use fforge_domain::{
 use std::collections::BTreeMap;
 
 /// Tag namespace for the per-tick development RNG stream (`rng::derive_stream`),
-/// distinct from `commands::FIXTURE_STREAM_NS`. The tick's period index is
+/// distinct from `match_engine::FIXTURE_STREAM_NS`. The tick's period index is
 /// OR'd into the low bits, so every month draws an independent stream.
 pub const DEV_STREAM_NS: u64 = 0x4445_5645_0000_0000; // "DEVE"
 

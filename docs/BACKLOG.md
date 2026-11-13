@@ -5,7 +5,8 @@ The running record of where fforge stands and what comes next. `DESIGN.md` says 
 yet**. Items are coarse — each is a piece of work with a clear finish line, not a task list. Task
 breakdowns live in the per-batch documents that spawn from them.
 
-**Conventions.** Items are gated: nothing marked *blocked* starts before its blocker resolves.
+**Conventions.** Item numbers are permanent: other notes cite them, so a closed item keeps its
+number and gains a `[Closed]` tag rather than being renumbered or unlabelled. Items are gated: nothing marked *blocked* starts before its blocker resolves.
 Anything that changes a subsystem's shape gets its design note amended **first** — the
 design-note-first rule is not relaxed for backlog items. When code and a design note disagree, the
 note is authoritative and the divergence is filed as a bug (§5 below is where those live).
@@ -118,7 +119,9 @@ for.
 
 ## 3. Phase 5 — the agent layer
 
-Scoping in `BATCH5_SCOPING.md`. **Unblocked — §2 is closed.** The fog-of-war dependency (PA no
+Scoping was done in `BATCH5_SCOPING.md`, a working document that was never checked into this
+repository; where other notes cite its section numbers, this section is the surviving summary.
+**Unblocked — §2 is closed.** The fog-of-war dependency (PA no
 longer trivially recoverable from `(CA, age)`, `DEVELOPMENT_MODEL.md` §8.1) is in place;
 `AGENT_MODEL.md` can be written next.
 
@@ -172,7 +175,7 @@ hoarding quintupling should have loosened it; it didn't move. **Fog-of-war may f
 making valuations genuinely divergent — which is an argument for re-reading it after B5.1 rather than
 fixing it blind.
 
-**[Closed — resolved as a side effect of §2 item 3's re-fit, not by fitting it.]** Mental plateau
+**4.2 — [Closed — resolved as a side effect of §2 item 3's re-fit, not by fitting it.]** Mental plateau
 onset read 26.4 against an early-30s target and the veteran mental slope ~+0.02 against ~+0.3 — the
 same fact seen twice. Post-re-fit they read **32.12** (sd 0.15) and **+0.36** (sd 0.02), both on
 target. `DEVELOPMENT_MODEL.md` §8.5 explicitly forbade chasing these two rows (read-and-report-only),
@@ -180,7 +183,7 @@ so this is an unfitted improvement: the much wider plasticity window the primary
 needed keeps the mental composite climbing into the 30s, which is what the envelope always described
 — the pre-fix knobs were freezing it early. Banked in `DEVELOPMENT_MODEL.md` §6's divergences table.
 
-**[Answered — `bin/calibrate`, 24 seeds, post-seeding-invert.]** Subs/match **0.13** (sd 0.02,
+**4.3 — [Answered — `bin/calibrate`, 24 seeds, post-seeding-invert.]** Subs/match **0.13** (sd 0.02,
 range 0.10–0.18) — far below `MATCH_MODEL.md` §16's +3 to +5/match prediction; late-match (75'+)
 goal share **16.6%** (sd 1.1) against a +1 to +3pt prediction; non-XI mean minutes **45.1** (sd 3.6)
 against a ~10–20 prediction, well above; pooled gpm **2.50** (sd 0.31) against the 2.59 baseline —
@@ -197,7 +200,7 @@ pitch at all, which was previously impossible. Not re-fit — a reading, not a t
 Things the code does not do that a reader might reasonably assume it does. Recorded so nobody
 rediscovers them the hard way.
 
-**[Closed — S1b, `MATCH_MODEL.md` §16.]** `ai_pick_lineup` now fills a real bench and default
+**5.1 — [Closed — S1b, `MATCH_MODEL.md` §16.]** `ai_pick_lineup` now fills a real bench and default
 `sub_plan` for every AI-controlled side (forced-cover, fatigue, and chase/hold rules — the vocabulary
 already expressed all three). Measured in §4.3: substitutions fire far less often than the design
 note's own prediction (0.13/match against 3–5), so this closes the mechanism gap but the resulting
@@ -211,7 +214,7 @@ reference anywhere in `fforge-core`. The "split holds" verdict is therefore half
 **5.3 — Set pieces.** The one item deferred past 2e. No downstream dependency; the worst
 calibration-cost-to-value ratio in the match model. Deferred deliberately, not forgotten.
 
-**[Closed — S1a.]** `MATCH_MODEL.md` §16's stale note (claiming the human side has no bench/plan UI)
+**5.4 — [Closed — S1a.]** `MATCH_MODEL.md` §16's stale note (claiming the human side has no bench/plan UI)
 is corrected; Batch 4's G3 UI (`fforge-game/src/flows/subs.rs`) is acknowledged there.
 
 ---

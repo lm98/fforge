@@ -140,7 +140,10 @@ fn main() {
     let compt_all = fit_pa_from_composites_age(&seeds, &cfg);
     println!(
         "all ages pooled:       naive_sd={:.3} (n={})  competent_sd={:.3} (n={})  gap={:.3}",
-        naive_all.residual_sd, naive_all.n, compt_all.residual_sd, compt_all.n,
+        naive_all.residual_sd,
+        naive_all.n,
+        compt_all.residual_sd,
+        compt_all.n,
         naive_all.residual_sd - compt_all.residual_sd
     );
     println!();
@@ -150,7 +153,12 @@ fn main() {
         if b.start_age_band <= 18 {
             println!(
                 "band {:>3}: n={:>4} n_wk={:>4}  attainment {:.3}  sub80 {:.3}  hit {:.3}  flop {:.3}",
-                b.start_age_band, b.n, b.n_wonderkid, b.attainment_mean, b.sub80_frac, b.hit_rate,
+                b.start_age_band,
+                b.n,
+                b.n_wonderkid,
+                b.attainment_mean,
+                b.sub80_frac,
+                b.hit_rate,
                 b.flop_rate
             );
         }
@@ -158,7 +166,11 @@ fn main() {
     let le18 = projection.le18();
     println!(
         "<=18 pooled: n={} n_wk={}  attainment {:.3}  sub80 {:.3}  hit {:.3}  flop {:.3}  (target flop 0.02-0.08, hit >=0.45)",
-        le18.n, le18.n_wonderkid, le18.attainment_mean, le18.sub80_frac, le18.hit_rate,
+        le18.n,
+        le18.n_wonderkid,
+        le18.attainment_mean,
+        le18.sub80_frac,
+        le18.hit_rate,
         le18.flop_rate
     );
     let overall = projection.overall();

@@ -15,12 +15,11 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    CONSISTENCY_NS, ELO_SCALE_S, FOUL_NS, INJURY_NS, Knobs, MatchEventKind, PROFILE_SHIFT,
-    SQUAD_PROFILES, ShotOutcome, StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match,
-    probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
+    ELO_SCALE_S, Knobs, MatchEventKind, MatchRngs, PROFILE_SHIFT, SQUAD_PROFILES, ShotOutcome,
+    StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, probe_tactics,
+    run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
-use fforge_core::rng::derive_stream;
-use fforge_core::{FIXTURE_STREAM_NS, WorldGenConfig, worldgen};
+use fforge_core::{WorldGenConfig, worldgen};
 use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
 
 struct CalibReport {
@@ -81,18 +80,12 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                 ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
-            let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-            let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
-            let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
-            let mut foul_rng = derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
+            let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
             let outcome = play_match(
                 &world,
                 &home_lineup,
                 &away_lineup,
-                &mut rng,
-                &mut consistency_rng,
-                &mut injury_rng,
-                &mut foul_rng,
+                &mut rngs,
                 &Knobs::default(),
                 &std::collections::BTreeMap::new(),
                 start,
@@ -406,18 +399,12 @@ fn run_bench_isolation_report(num_seeds: u64) {
                     &mut full_pooled,
                 ),
             ] {
-                let mut rng = derive_stream(seed, FIXTURE_STREAM_NS | fixture.id.0 as u64);
-                let mut consistency_rng = derive_stream(seed, CONSISTENCY_NS | fixture.id.0 as u64);
-                let mut injury_rng = derive_stream(seed, INJURY_NS | fixture.id.0 as u64);
-                let mut foul_rng = derive_stream(seed, FOUL_NS | fixture.id.0 as u64);
+                let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
                 let outcome = play_match(
                     &world,
                     home,
                     away,
-                    &mut rng,
-                    &mut consistency_rng,
-                    &mut injury_rng,
-                    &mut foul_rng,
+                    &mut rngs,
                     &Knobs::default(),
                     &std::collections::BTreeMap::new(),
                     start,

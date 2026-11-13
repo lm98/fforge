@@ -32,13 +32,36 @@ jobs:
       - name: Run fast suite
         run: cargo test --workspace --verbose
 
+  lint:
+    name: fmt + clippy
+    # Both are documented as "must be clean" in CLAUDE.md; without this job
+    # they drift silently with each new stable toolchain.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   full:
     name: full suite (slow-tests)
     # Runs the knob-change tripwires on top of the fast suite. Always on
     # push (post-merge safety net) and on the nightly schedule; on a PR,
     # only when the diff touches a *Knobs table or a sim module
-    # (`development`, `match_engine`, `market`, `valuation`, `club_ai`,
-    # `pool`, `finance`, `worldgen`, `rng`, `state`, `commands`) or anything
+    # (`development`, `match_engine`, `condition`, `market`, `valuation`,
+    # `club_ai`, `pool`, `finance`, `worldgen`, `rng`, `state`, `commands`) or anything
     # in `fforge-domain/src` (e.g. `ROLE_WEIGHTS`, which feeds
     # `current_ability`, `lineup_strength`, and valuation) — the only
     # commits that could actually move these.
@@ -62,7 +85,7 @@ jobs:
           changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
           echo "Changed files:"
           echo "$changed"
-          pattern='^(fforge-core/src/(development\.rs|match_engine(\.rs|/.*)|market(\.rs|/.*)|valuation\.rs|club_ai\.rs|pool\.rs|finance\.rs|worldgen\.rs|rng\.rs|state\.rs|commands\.rs)|fforge-domain/src/.*)$'
+          pattern='^(fforge-core/src/(development\.rs|match_engine(\.rs|/.*)|condition\.rs|market(\.rs|/.*)|valuation\.rs|club_ai\.rs|pool\.rs|finance\.rs|worldgen\.rs|rng\.rs|state\.rs|commands\.rs)|fforge-domain/src/.*)$'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else

@@ -1,4 +1,4 @@
-//! fm-core — layer 2: the deterministic simulation core.
+//! fforge-core — layer 2: the deterministic simulation core.
 //!
 //! Hard invariants enforced here (DESIGN.md):
 //! - the core is a **pure fold over an append-only event log** (`state`);
@@ -36,12 +36,12 @@ pub use club_ai::{
     ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs, UtilityPolicy,
     observe,
 };
-pub use commands::{Command, CommandError, FIXTURE_STREAM_NS, player_match_preview};
+pub use commands::{Command, CommandError, player_match_preview};
 pub use development::{DEV_STREAM_NS, DevKnobs};
 pub use event::{AttrStep, Event};
 pub use market::{
-    MarketKnobs, RejectReason, RejectedBid, Transfer, WindowOutcome, MAX_ROUNDS,
-    TRANSFER_STREAM_NS, resolve_window,
+    MAX_ROUNDS, MarketKnobs, RejectReason, RejectedBid, TRANSFER_STREAM_NS, Transfer,
+    WindowOutcome, resolve_window,
 };
 pub use match_engine::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 pub use observer::{EventObserver, SeasonTelemetry};
