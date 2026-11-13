@@ -23,7 +23,7 @@
 //! `Event` stream, exactly like `SeasonTelemetry`. State-condition news
 //! (contract expiring, balance below zero, no cover at a role) does not fit
 //! that signature, which sees events and never state — the same wall
-//! `market::calibrate::MarketTelemetry` hit and resolved by taking
+//! `fforge-harness::market::MarketTelemetry` hit and resolved by taking
 //! `record_season_end(&world, ...)` from outside the trait. [`NewsObserver::check_conditions`]
 //! does the same here, reading `&GameState` directly; nothing widens the
 //! Phase-1 `EventObserver` trait itself.
@@ -385,7 +385,7 @@ impl NewsObserver {
     /// the state's progression — so the edge-triggered `warned_*` sets stay
     /// in lockstep and the resulting inbox is exactly reproducible. Does not
     /// widen `EventObserver`; this is a plain inherent method taking
-    /// `&GameState` directly, the same seam `market::calibrate::MarketTelemetry`
+    /// `&GameState` directly, the same seam `fforge-harness::market::MarketTelemetry`
     /// already established for `record_season_end`.
     pub fn check_conditions(&mut self, state: &GameState) {
         for (&cid, club) in &state.world.clubs {

@@ -1457,7 +1457,7 @@ mod match_boundary_tests {
     /// `MATCH_MODEL.md` §14's target: ~1.5-2.5 match-missing injuries per
     /// club per season. Drives a real full season through
     /// `commands::advance_matchday`, pooled over several seeds — the same
-    /// multi-seed-pooling discipline `career_arc`/`market::calibrate` use,
+    /// multi-seed-pooling discipline `career_arc`/`fforge-harness::market` use,
     /// since a single season is too small a sample to trust on its own.
     /// `injury_base_contact`/`injury_ambient_base` are plausibility-picked
     /// starting points (`match_engine::knobs.rs`'s own doc comment), not yet

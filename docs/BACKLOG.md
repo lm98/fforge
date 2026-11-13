@@ -27,7 +27,7 @@ note is authoritative and the divergence is filed as a bug (§5 below is where t
 | 6 — UI/UX & balancing | evidence gathered (`UI_TOOLKIT_EVIDENCE.md`), decision pending |
 
 **Crates.** `fforge-domain` (pure model) · `fforge-core` (deterministic event-sourced sim; the active
-front) · `fforge-game` (CLI — Batch 4 complete: grouped menu, `Sem` colour vocabulary, pure
+front) · `fforge-harness` (the calibration harnesses, split out of the core) · `fforge-game` (CLI — Batch 4 complete: grouped menu, `Sem` colour vocabulary, pure
 snapshot-tested screens, inbox, finances, tactics and substitution-plan editors).
 
 **Harnesses.** Four, all pooled over many seeds and guarded by wide-band regression tripwires:

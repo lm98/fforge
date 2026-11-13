@@ -19,7 +19,7 @@ Natural Fitness (`ATTRIBUTE_SCHEMA.md` §3), and the validation targets.
 - **Status:** Phase 3 — *ported, calibrated, and guarded.* Model shape settled in a Python
   scratchpad (per `DESIGN.md` §8, discarded after use, never a port target); `fforge-core::development`
   is the Rust transcription (the monthly `DevelopmentTick` fold), and the career-arc harness
-  (`fforge-core::career_arc`, `bin/career_arc`) re-ran the §6 metrics against real `worldgen` +
+  (`fforge-harness::career_arc`, `bin/career_arc`) re-ran the §6 metrics against real `worldgen` +
   the full command pipeline, re-fit the knob table against it exactly as `MATCH_MODEL.md` §8
   re-fitted the match knobs, and pinned the result behind the
   `career_arcs_are_in_a_believable_ballpark` regression test.
@@ -329,7 +329,7 @@ re-derives freely, authoritative replay reads the record.
 
 ## 6. Validation targets
 
-The career-arc harness — the development sibling of `match_engine::calibrate` — simulates a decade+
+The career-arc harness — the development sibling of `fforge-harness::match_engine` — simulates a decade+
 and checks emergent career statistics, the `DESIGN.md` §4.2 discipline ("validate by simulating a
 decade and checking career arcs"). Fitted starting point (`dev_shape`, 4000-player synthetic cohort)
 and its readings:
@@ -368,7 +368,7 @@ early-30s decline from a mid-career start (a ~−4 CA/yr Speed slope over 3 seas
 `development_ages_veterans_and_respects_pa` test) — the `b_beat`-style single-field re-tune this model
 expected. The from-youth env-consistent slope stays gentler still.
 
-**Full real-`worldgen` re-fit banked (career-arc harness).** The harness (`fforge-core::career_arc`,
+**Full real-`worldgen` re-fit banked (career-arc harness).** The harness (`fforge-harness::career_arc`,
 `bin/career_arc`) is now built: it drives the real worldgen → AI-lineup → match → monthly-development
 pipeline over many seeds, each a decade-plus, and reads the metrics above off the developed world (per
 player: category composites and best-role CA vs age), reporting **per-seed spread**, not just the pooled
@@ -600,7 +600,7 @@ left-tail the original arithmetic had asserted away. The amendment's own correct
 career gap-closure fraction `f = (attainment − r0)/(1 − r0)` is approximately scale-invariant under
 proportional growth) is what makes projecting the fix's effect from already-traced arcs possible at
 all without touching `worldgen` first — W1b, now implemented as
-`fforge-core::career_arc::{run_career_arc_with_projection, print_seeding_projection,
+`fforge-harness::career_arc::{run_career_arc_with_projection, print_seeding_projection,
 fit_pa_from_ca_age_youth}` and exposed by `bin/career_arc`. This section is the destination those
 investigations were gated on reaching, and the reason §2.1's and §6's structural
 findings above are marked superseded rather than rewritten in place — the numbers they recorded are a

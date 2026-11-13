@@ -665,10 +665,10 @@ fn other_side(s: Side) -> Side {
 
 /// The zone a turnover's winner restarts in (`MATCH_MODEL.md` §3): lose it
 /// deep and the opponent wins it high; lose it high and they win it deep.
-/// `pub(super)` so `calibrate`'s turnover-won-by-zone telemetry cut
-/// (`TACTICS_MODEL.md` §8, T7) reads the same mapping rather than a second
+/// Public so the harness's turnover-won-by-zone telemetry cut
+/// (`TACTICS_MODEL.md` §8) reads the same mapping rather than a second
 /// encoding of it.
-pub(super) fn mirrored_zone(zone: Zone) -> Zone {
+pub fn mirrored_zone(zone: Zone) -> Zone {
     match zone {
         Zone::Def => Zone::AttC,
         Zone::Mid => Zone::Mid,

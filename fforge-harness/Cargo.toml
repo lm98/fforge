@@ -1,0 +1,16 @@
+[package]
+name = "fforge-harness"
+version = "0.2.0"
+edition.workspace = true
+description = "Calibration and pathology harnesses for the Football Forge simulation core."
+license = "Apache-2.0"
+
+[features]
+# Gates the pooled knob-change regression guards (`*_believable_ballpark`,
+# `favourite_discrimination_regression_guard`, the tactics non-dominance
+# guards): multi-seed, multi-season runs too slow for the default `cargo test`.
+slow-tests = []
+
+[dependencies]
+fforge-domain = { path = "../fforge-domain", version = "0.2.0" }
+fforge-core = { path = "../fforge-core", version = "0.2.0" }

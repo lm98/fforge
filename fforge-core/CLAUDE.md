@@ -55,13 +55,12 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 | `rng` | xoshiro256** and `derive_stream` — the crate's only randomness |
 | `schedule` | `double_round_robin` |
 | `worldgen` | `generate`; `gen_player` draws PA first and seeds attributes on the age envelope beneath it through `SeedTables`, which calls `development`'s own ceiling machinery (`DEVELOPMENT_MODEL.md` §8) |
-| `match_engine` | `play_match`, `MatchRngs`, `MatchOutcome`; AI selection (`ai_pick_lineup`, `ai_pick_lineup_available`, `ai_pick_lineup_vs`, `ai_pick_tactics`, `ai_pick_bench_and_plan`). Submodules: `zone`, `knobs`, `contest`, `tactics`, `resolve` (the possession loop; `Kickoff`, `Team`, `Pitch`, `Attack` and `Ledger` are its context structs — extend those rather than adding parameters), `ratings`, `stream`, `golden` (test-only baseline), `calibrate` (harness) |
+| `match_engine` | `play_match`, `MatchRngs`, `MatchOutcome`; AI selection (`ai_pick_lineup`, `ai_pick_lineup_available`, `ai_pick_lineup_vs`, `ai_pick_tactics`, `ai_pick_bench_and_plan`). Submodules: `zone`, `knobs`, `contest`, `tactics`, `resolve` (the possession loop; `Kickoff`, `Team`, `Pitch`, `Attack` and `Ledger` are its context structs — extend those rather than adding parameters), `ratings`, `stream`, `golden` (test-only baseline) |
 | `condition` | the pure condition/recovery law; `GameState::condition` is its only caller |
 | `development` | `DevKnobs`, the age envelope, `tick_changes`, `attr_rate`, `phys_lmax`, `apply_attr_step` |
-| `career_arc` | development harness: career metrics, and the PA-recoverability fits Phase 5's fog-of-war depends on |
 | `valuation` | `value`/`value_all`, `project_ca*`, `ValueKnobs`, `MarketContext` — prices, never decides |
 | `club_ai` | the `ClubPolicy` trait (`ClubObservation` in, `TransferDecision`s out), `UtilityPolicy` for AI clubs, `RecordedPolicy` replaying the human's pre-committed plan |
-| `market` | `resolve_window`: the deferred-acceptance clearing loop; window dates; `calibrate` (harness) |
+| `market` | `resolve_window`: the deferred-acceptance clearing loop; window dates |
 | `finance` | `finance_deltas`, `FinanceKnobs` |
 | `pool` | youth intake and retirement at the summer window, `PoolKnobs` |
 
@@ -83,11 +82,13 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   a world that has moved on since it was submitted.
 - **A suspension is one matchday wide by construction.** `is_suspended` compares against
   `current_matchday - 1` exactly, so there is no "ban served" flag to maintain.
-- **The harness modules print.** `career_arc`, `market::calibrate` and `match_engine::calibrate`
-  are reporting code that lives in the library so the guards can call them; nothing in the fold
-  or in `step` may depend on them.
-- **The pooled guards are `#[ignore]` without `--features slow-tests`.** A green fast suite says
-  nothing about calibration.
+- **The harnesses live in `fforge-harness`, not here.** This crate prints nothing and must not
+  depend on that one. A few items are `pub` only because a harness reads them
+  (`match_engine::mirrored_zone`, `development::EnvTables`/`norms_by_role`/
+  `tick_changes_with_clip_stats`); they are measurement surface, not API to build on.
+- **The pooled guards are `#[ignore]` without the `slow-tests` features** (one here for the
+  whole-season sanity bands, one in `fforge-harness` for the calibration guards). A green fast
+  suite says nothing about calibration.
 
 History, measurements and the reasoning behind individual knob values are in the design notes
 and `docs/IMPLEMENTATION_LOG.md`, not here.

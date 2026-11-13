@@ -738,13 +738,13 @@ It slots into the identical propose-then-validate gate as `Command::SubmitLineup
   that clears zero transfers, so a plan is good for exactly the one window it was pending for, never
   silently carried into the next.
 
-**The harness needed a compensating fix, not a free ride.** `market::calibrate`'s pathology harness
+**The harness needed a compensating fix, not a free ride.** `fforge-harness::market`'s pathology harness
 (§11) drives the same real command pipeline a live game does, with `player_club = ClubId(0)` — before
 this seam existed that was irrelevant to market dynamics (only lineup selection cared), but this seam
 makes `player_club` matter to the market for the first time. Left alone, club 0 would have gone
 permanently passive (no submissions, ever, in a harness with no human) and silently stopped being "20
 uniform AI clubs," corrupting exactly the pinning/volume/concentration statistics the harness exists to
-read. `market::calibrate::submit_player_clubs_ai_equivalent_plan` compensates: right before a window
+read. `fforge-harness::market::submit_player_clubs_ai_equivalent_plan` compensates: right before a window
 closes, it submits whatever `UtilityPolicy` itself would have decided for club 0, so the harness models
 "a manager who always follows the AI's advice" rather than either a real human or a silently-broken
 club. Re-read at the fuller 24-seed pool this fix was verified against: transfers/window 1.759 (bank:
@@ -756,7 +756,7 @@ similarly flat) — statistically the same league this harness read before the s
 ## 11. Validation targets & the harness
 
 `fforge-core::market` + `bin/market` + a `market_is_in_a_believable_ballpark` regression guard — the
-sibling of `match_engine::calibrate::StreamTelemetry` / `bin/calibrate` /
+sibling of `fforge-harness::match_engine::StreamTelemetry` / `bin/calibrate` /
 `favourite_discrimination_regression_guard` and of `career_arc` / `bin/career_arc` /
 `career_arcs_are_in_a_believable_ballpark`. A **passive consumer** of the event stream and the window
 Traces; it never writes to the world (`DESIGN.md` §5).

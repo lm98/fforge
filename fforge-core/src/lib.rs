@@ -13,7 +13,6 @@
 //! (`MATCH_MODEL.md`); only its score folds into `GameState` — the
 //! minute-by-minute trace rides alongside, never inside, the fold.
 
-pub mod career_arc;
 pub mod club_ai;
 pub mod commands;
 pub mod condition;
@@ -380,7 +379,7 @@ mod tests {
     #[test]
     fn aggregates_are_in_a_believable_ballpark() {
         // Phase-2a engine (MATCH_MODEL.md). The calibration harness
-        // (`match_engine::calibrate::StreamTelemetry`, `bin/calibrate.rs`,
+        // (`fforge-harness::match_engine::StreamTelemetry`, `bin/calibrate.rs`,
         // and `resolve.rs`'s `notebook_parity` test) diagnosed the original
         // ~1.7-2.0 goals/match this suite used to see: parity against
         // notebook-equivalent inputs held (loop is a faithful port, not a
