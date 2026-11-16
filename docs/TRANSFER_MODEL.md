@@ -380,6 +380,42 @@ inside the existing hard filters (cash, wage headroom, `squad_max`), so a club w
 sell first to open it — the "may force a sale to fund it, even at a discount" behaviour this stabilizer
 implies (`club_ai::UtilityPolicy::hard_minimum_violations`).
 
+**A club buys only against an unfilled need** (amended after `AGENT_MODEL.md` §5.7). `need` as
+first written is a weighted sum that is positive for almost every role at almost every club: any
+starter under the club's target leaves a quality gap. So "positive need" filtered nothing, the
+policy bought whatever was priced under its valuation, and seven signings in ten were sold again
+within a year. A candidate must now **fill a need**, a yes-or-no test, before `need · surplus`
+ranks him:
+
+- **depth** — his natural role is under its `SQUAD_TEMPLATE` headcount; or
+- **upgrade** — the club's starter in his role is under the club's target, and he is better than
+  that starter by at least `upgrade_margin` as the club sees both; or
+- **succession** — the starter is projected to decline below the target, and the candidate is
+  younger and already at least `upgrade_margin` better than what the starter is projected to
+  become.
+
+A depth signing brings a role up to its template and so creates no surplus. An upgrade or an heir
+takes a role over it, and the policy then lists the player it least wants to keep, which is how one
+signing becomes a chain down the league instead of a loop. "Least wants to keep" is the lower of
+`max(current, projected)` ability: ordering by current ability alone listed the heir a club had
+just signed.
+
+Under fog an upgrade is judged on what the club sees, so some are not upgrades at all. That is the
+intended source of a flop: the club learns it a season later and the player is then the one it
+least wants to keep.
+
+**A club in financial difficulty sells to get out of it.** Difficulty is a negative balance or
+committed wages over the wage budget. Such a club lists up to `distress_listings` of its
+highest-paid players each window on top of the ordinary triggers, still inside the squad and
+goalkeeper minima. It cannot buy until it has headroom again: the cash and wage filters
+already see to that.
+
+*Predictions, written before the change* (`bin/market`, 24 seeds × 15 seasons, against §5.7's
+readings): the share of signings gone within a year falls from 71–74% to under 35%; volume falls
+to 0.8–1.8 omniscient and 1.5–3 fogged; star signings written off within two years stays near
+zero omniscient and becomes clearly non-zero fogged; fewer clubs sit pinned at `squad_max`; more
+clubs hoard cash than the present 5.5 in 20, since there is less to spend it on.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.
