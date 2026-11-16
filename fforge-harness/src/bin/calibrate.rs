@@ -21,8 +21,8 @@ use fforge_core::scouting::{self, ScoutKnobs};
 use fforge_core::{DevKnobs, WorldGenConfig, worldgen};
 use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
 use fforge_harness::match_engine::{
-    ELO_SCALE_S, PROFILE_SHIFT, SQUAD_PROFILES, StreamTelemetry, probe_tactics, run_head_to_head,
-    run_head_to_head_detailed, run_squad_conditional_probe,
+    ELO_SCALE_S, LeagueSpread, PROFILE_SHIFT, SQUAD_PROFILES, StreamTelemetry, play_opening_season,
+    probe_tactics, run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
 };
 
 struct CalibReport {
@@ -52,6 +52,38 @@ struct SeedReading {
     /// §3's minutes-share signal actually reaching non-XI players in
     /// AI-vs-AI play, previously always exactly zero appearances.
     non_xi_mean_minutes: f64,
+    /// `MATCH_MODEL.md` §10 item 7: this seed's league table and rout shares.
+    league: SpreadReading,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpreadReading {
+    champion_ppm: f64,
+    champion_gf: f64,
+    champion_ga: f64,
+    bottom_ppm: f64,
+    bottom_gf: f64,
+    bottom_ga: f64,
+    ppm_sd: f64,
+    by_three: f64,
+    by_four: f64,
+}
+
+impl SpreadReading {
+    fn of(league: &LeagueSpread) -> Self {
+        let (top, bottom) = (league.champion(), league.bottom());
+        SpreadReading {
+            champion_ppm: top.points_per_match(),
+            champion_gf: top.goals_for_per_match(),
+            champion_ga: top.goals_against_per_match(),
+            bottom_ppm: bottom.points_per_match(),
+            bottom_gf: bottom.goals_for_per_match(),
+            bottom_ga: bottom.goals_against_per_match(),
+            ppm_sd: league.points_per_match_sd(),
+            by_three: league.share_decided_by(3),
+            by_four: league.share_decided_by(4),
+        }
+    }
 }
 
 /// Whatever `ai_pick_lineup_vs` actually does. Since T7-R2 flipped
@@ -61,85 +93,39 @@ struct SeedReading {
 /// the ones `TACTICS_MODEL.md` §8's re-bank records. Since S1b,
 /// `ai_pick_lineup_vs` also fills a real bench/plan (`MATCH_MODEL.md` §16),
 /// so every AI-controlled match here now substitutes too.
-fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
+fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig, knobs: &Knobs) -> CalibReport {
     let mut pooled = StreamTelemetry::default();
     let mut per_seed = Vec::with_capacity(seeds.len());
 
     for &seed in seeds {
-        let (world, schedule, start) = worldgen::generate(seed, cfg);
         let mut seed_goals = 0u32;
         let mut seed_matches = 0u32;
         let mut seed_tel = StreamTelemetry::default();
+        let mut league = LeagueSpread::default();
         let mut seed_subs = 0u32;
         let mut seed_goals_75_plus = 0u32;
         let mut seed_non_xi_minutes_sum = 0u64;
         let mut seed_non_xi_apps = 0u32;
 
-        let suspended = std::collections::BTreeSet::new();
-        for fixture in &schedule {
-            let home_lineup = ai_pick_lineup_vs(
-                &world,
-                &scouting::seen_squad(
-                    &world,
-                    seed,
-                    fixture.home,
-                    fixture.away,
-                    start,
-                    &ScoutKnobs::default(),
-                    &DevKnobs::default(),
-                ),
-                fixture.home,
-                fixture.away,
-                true,
-                start,
-                &suspended,
+        play_opening_season(seed, cfg, knobs, |m| {
+            let outcome = m.outcome;
+            league.record(
+                m.fixture.home,
+                m.fixture.away,
+                outcome.home_goals,
+                outcome.away_goals,
             );
-            let away_lineup = ai_pick_lineup_vs(
-                &world,
-                &scouting::seen_squad(
-                    &world,
-                    seed,
-                    fixture.away,
-                    fixture.home,
-                    start,
-                    &ScoutKnobs::default(),
-                    &DevKnobs::default(),
-                ),
-                fixture.away,
-                fixture.home,
-                false,
-                start,
-                &suspended,
-            );
-            let home_strength = lineup_strength(&world, &home_lineup);
-            let away_strength = lineup_strength(&world, &away_lineup);
-            let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
-            let outcome = play_match(
-                &world,
-                &home_lineup,
-                &away_lineup,
-                &mut rngs,
-                &Knobs::default(),
-                &std::collections::BTreeMap::new(),
-                start,
-            );
-
             seed_goals += outcome.home_goals as u32 + outcome.away_goals as u32;
             seed_matches += 1;
-            pooled.record(
-                &outcome,
-                home_lineup.formation,
-                away_lineup.formation,
-                home_strength,
-                away_strength,
-            );
-            seed_tel.record(
-                &outcome,
-                home_lineup.formation,
-                away_lineup.formation,
-                home_strength,
-                away_strength,
-            );
+            for telemetry in [&mut pooled, &mut seed_tel] {
+                telemetry.record(
+                    outcome,
+                    m.home.formation,
+                    m.away.formation,
+                    m.home_strength,
+                    m.away_strength,
+                );
+            }
 
             for event in &outcome.stream {
                 match event.kind {
@@ -151,10 +137,11 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                     _ => {}
                 }
             }
-            let dressed_xi: std::collections::BTreeSet<_> = home_lineup
+            let dressed_xi: std::collections::BTreeSet<_> = m
+                .home
                 .players
                 .iter()
-                .chain(away_lineup.players.iter())
+                .chain(m.away.players.iter())
                 .copied()
                 .collect();
             for &(pid, mins) in &outcome.minutes {
@@ -163,7 +150,7 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
                     seed_non_xi_apps += 1;
                 }
             }
-        }
+        });
 
         per_seed.push(SeedReading {
             gpm: seed_goals as f64 / seed_matches as f64,
@@ -184,6 +171,7 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
             } else {
                 seed_non_xi_minutes_sum as f64 / seed_non_xi_apps as f64
             },
+            league: SpreadReading::of(&league),
         });
     }
 
@@ -307,6 +295,39 @@ fn print_report(report: &CalibReport) {
         "max |deviation| : {:.3}   match-weighted mean |deviation| : {:.3}",
         deviation.max_abs_deviation, deviation.weighted_mean_abs_deviation
     );
+    match deviation.implied_elo_scale() {
+        Some(scale) => println!("implied Elo scale : {scale:.1}  (reference {ELO_SCALE_S:.0})"),
+        None => println!("implied Elo scale : n/a"),
+    }
+    println!();
+    println!("=== Goals vs strength gap (home / away goals per match) ===");
+    for (&bin, stats) in &p.by_strength_gap {
+        println!(
+            "{:>8.1} {:>8} {:>8.2} {:>8.2}",
+            (bin as f64 + 0.5) * 2.0,
+            stats.matches,
+            stats.home_goals_per_match(),
+            stats.away_goals_per_match()
+        );
+    }
+    println!();
+    println!("=== League spread (MATCH_MODEL.md §10 item 7; per-seed mean, sd, range) ===");
+    type Row = (&'static str, fn(&SeedReading) -> f64, &'static str);
+    let rows: [Row; 9] = [
+        ("champion pts/match", |s| s.league.champion_ppm, "2.15-2.55"),
+        ("champion GF/match", |s| s.league.champion_gf, "2.0-2.6"),
+        ("champion GA/match", |s| s.league.champion_ga, "0.6-1.0"),
+        ("bottom pts/match", |s| s.league.bottom_ppm, "0.40-0.80"),
+        ("bottom GF/match", |s| s.league.bottom_gf, "0.65-1.05"),
+        ("bottom GA/match", |s| s.league.bottom_ga, "1.8-2.4"),
+        ("pts/match sd", |s| s.league.ppm_sd, "0.40-0.52"),
+        ("won by 3+ (%)", |s| s.league.by_three * 100.0, "15-21"),
+        ("won by 4+ (%)", |s| s.league.by_four * 100.0, "5-9"),
+    ];
+    for (label, f, band) in rows {
+        let (m, sd, lo, hi) = spread(&report.per_seed, f);
+        println!("{label:<19}: {m:>6.2}  (sd {sd:.2}, range {lo:.2}-{hi:.2})  [band {band}]");
+    }
     println!();
     println!("=== Per-formation breakdown ===");
     println!(
@@ -347,6 +368,18 @@ fn parse_u64_arg(args: &[String], flag: &str, default: u64) -> u64 {
         }
     }
     default
+}
+
+/// Every `--set name=value` pair: a what-if reading against a knob table
+/// other than the shipped one. The harness reports it; it never writes it.
+fn parse_knob_overrides(args: &[String]) -> Vec<(String, f64)> {
+    args.windows(2)
+        .filter(|w| w[0] == "--set")
+        .map(|w| {
+            let (name, value) = w[1].split_once('=').expect("--set name=value");
+            (name.to_string(), value.parse().expect("--set value"))
+        })
+        .collect()
 }
 
 fn parse_seeds_arg(args: impl Iterator<Item = String>) -> u64 {
@@ -815,10 +848,28 @@ fn main() {
         return;
     }
 
-    let num_seeds = parse_seeds_arg(args.into_iter());
+    let num_seeds = parse_seeds_arg(args.clone().into_iter());
     let seeds: Vec<u64> = (0..num_seeds).collect();
     let cfg = WorldGenConfig::default();
 
-    let report = run_calibration(&seeds, &cfg);
+    let mut knobs = Knobs::default();
+    for (name, value) in parse_knob_overrides(&args) {
+        let field = match name.as_str() {
+            "s" => &mut knobs.s,
+            "home_bias" => &mut knobs.home_bias,
+            "delta" => &mut knobs.delta,
+            "b_pass" => &mut knobs.b_pass,
+            "b_takeon" => &mut knobs.b_takeon,
+            "b_ontarget" => &mut knobs.b_ontarget,
+            "b_beat" => &mut knobs.b_beat,
+            "p_mid_advance" => &mut knobs.p_mid_advance,
+            "p_attc_penetrate" => &mut knobs.p_attc_penetrate,
+            "support" => &mut knobs.support,
+            other => panic!("--set: no sweepable knob named {other}"),
+        };
+        *field = value;
+        println!("(sweep: {name} = {value}; not the shipped knob table)");
+    }
+    let report = run_calibration(&seeds, &cfg, &knobs);
     print_report(&report);
 }

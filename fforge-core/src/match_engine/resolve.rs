@@ -2173,21 +2173,15 @@ mod notebook_parity {
         const NUM_LEAGUES: u64 = 8;
         const NUM_CLUBS: usize = 20;
 
-        // The notebook's own fitted b_beat, pinned independent of
-        // `Knobs::default()`: the Rust-side calibration harness re-tuned
-        // b_beat against real `worldgen`'s attribute distribution
-        // (`knobs.rs`'s doc comment), so `Knobs::default()` no longer *is*
-        // the notebook's snapshot. This test's whole point is checking the
-        // loop against what the notebook actually reported, not against
-        // whatever production is calibrated to today.
+        // The notebook's own fitted table, pinned independent of
+        // `Knobs::default()`: this test checks the loop against what the
+        // notebook reported, not against today's calibration. The notebook
+        // never modelled injuries or fouls.
         let notebook_knobs = Knobs {
             b_beat: -1.7,
-            // The notebook never modeled injuries or fouls; identity here
-            // keeps this test checking only the parity question
-            // (MATCH_MODEL.md §14 T10, §15 T11).
             injury_rate: 0.0,
             foul_rate: 0.0,
-            ..Knobs::default()
+            ..Knobs::phase_2a()
         };
 
         let mut total_goals = 0u32;
