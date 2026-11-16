@@ -416,6 +416,36 @@ to 0.8–1.8 omniscient and 1.5–3 fogged; star signings written off within two
 zero omniscient and becomes clearly non-zero fogged; fewer clubs sit pinned at `squad_max`; more
 clubs hoard cash than the present 5.5 in 20, since there is less to spend it on.
 
+*Readings* (per-seed sd in brackets; "before" is `AGENT_MODEL.md` §5.7 with the one-move rule):
+
+| Row | Omniscient before → after | Fogged before → after | Prediction |
+|---|---|---|---|
+| Signings gone within a year | 70.7% → 54.1% (3.2) | 73.5% → 47.7% (3.8) | under 35% — **not met** |
+| Transfers per club per window | 2.48 → 1.46 (0.16) | 4.33 → 1.68 (0.16) | 0.8–1.8 and 1.5–3 — **met** |
+| Star signings written off in two years | 0.1% → 0.2% | 0.7% → 0.5% | clearly non-zero fogged — **refuted** |
+| Clubs majority-pinned at `squad_max` | 9.6% → 5.6% | 10.6% → 8.3% | falls — met, inside one sd |
+| Clubs hoarding cash, of 20 | 5.77 → 5.52 | 5.49 → 5.45 | rises — **refuted**, unmoved |
+| Top-3 share of the top-20 players, late | 0.29 → 0.53 | 0.33 → 0.49 | not predicted |
+| Median fee | 0.89M → 0.62M | 0.59M → 0.48M | not predicted |
+
+What they say:
+
+- **The loop is weaker, not gone.** Half of all signings still leave within a year. The suspect
+  is depth signings: "depth asks nothing of quality", so the cheapest body fills the hole, is then
+  the player the club least wants to keep, and is first out when the role next goes over template
+  or squad pressure takes an at-template player, which reopens the hole. Unconfirmed; it needs
+  each `Signing` tagged with the need it was bought against and the trigger that listed it.
+- **Most of fog's extra volume was bargain-hunting.** With the need test, fog raises volume by
+  15%, not 75%. Fogged volume, 1.68, is back under the 2–5 band `BACKLOG.md` §4.1 was closed
+  against. That band was set when every hop and every flip counted, so it wants re-deriving
+  before anything is tuned towards it.
+- **Talent stopped dispersing.** The top three clubs now hold half of the twenty best players
+  late in a run, where before the carousel spread them. Whether 0.5 is healthy or a frozen
+  hierarchy is a judgement the §11 band has to make; the points-Gini did not rise with it
+  (0.17 late).
+- **Flops still cannot happen.** A club can always resell at about what it paid, so a mistake
+  costs nothing. That is the asking-price model (§12 item 6), not the buying rule.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.

@@ -595,9 +595,9 @@ Against the predictions:
   did not stop; it slowed from one hop a round to one hop a window. No club keeps what it buys.
   That is a property of `UtilityPolicy`, not of fog and not of the clearing loop: it buys
   whatever shows a surplus over the ask and lists whoever is weakest in an over-template role,
-  with no notion of having just signed someone. It is filed as `BACKLOG.md` §4.8 and not fixed
-  here, because the fix is a change to what the policy wants, and that needs its own design in
-  `TRANSFER_MODEL.md` §6.
+  with no notion of having just signed someone. `TRANSFER_MODEL.md` §6 now makes it buy only
+  against an unfilled need, and carries the readings after that change; what remains is
+  `BACKLOG.md` §4.8.
 - The flop rate is near zero by construction rather than by good judgement: a club can always
   sell at about what it paid, so nothing is ever written off.
 

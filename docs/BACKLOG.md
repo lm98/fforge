@@ -221,15 +221,18 @@ were.** Each scales a player's attributes and so passes through `Knobs::s`, whic
 52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
 it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
 
-**4.8 — No club keeps what it buys** (`AGENT_MODEL.md` §5.7). Seven fee-paying signings in ten
-are sold again within a year, at a median 7% profit, with or without fog. The same-window version
-of this is fixed in the clearing loop; the window-to-window version is `UtilityPolicy` itself,
-which buys any surplus over the ask and lists the weakest player in an over-template role with no
-memory of having signed him. Transfer volume, fees and the flop rate are all read through this, so
-none of them means what its name says until it is fixed. Candidate designs, none chosen: a
-squad-role intention the buyer holds for a signing; a holding period before a signing can be
-listed; buying only against an unfilled need. Needs a section in `TRANSFER_MODEL.md` §6 first.
-A player managing a club will see it directly: rivals reselling their summer signings in January.
+**4.8 — Half of all signings are still resold within a year** (`TRANSFER_MODEL.md` §6,
+`AGENT_MODEL.md` §5.7). It was seven in ten. Two fixes are in: a player moves once per window, and
+a club buys only against an unfilled need. What remains is probably depth signings: the cheapest
+body fills a hole, is then the first man out, and reopens it. Next step is measurement, not a
+rule: tag each `Signing` in the market harness with the need it was bought against and the trigger
+that listed it, and read the resale rate per pair.
+
+**4.9 — The market's target bands predate its two fixes.** Volume now reads 1.68 fogged against a
+2–5 band; the top three clubs hold half the twenty best players late in a run, up from a third;
+the flop rate is zero because a club can always resell at cost (`TRANSFER_MODEL.md` §12 item 6).
+Each band in §11 was set against a market that counted flips as transfers. Re-derive them before
+tuning towards any. 4.1's closure is superseded by this item.
 
 ---
 
