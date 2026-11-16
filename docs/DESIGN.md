@@ -47,6 +47,14 @@ Five layers, with a hard rule: **lower layers know nothing about higher ones.**
 5. **Presentation** — CLI first; the egui management UI and an optional Bevy match viewer come
    later (§8).
 
+**The calibration harness sits beside the layers, not in them.** It is a consumer of the
+simulation core on the same footing as presentation: it drives the real engines over many seeds,
+reads their public surface and their Traces, and reports. The core knows nothing about it, by the
+same rule that keeps the core ignorant of the UI. In the workspace this is its own crate
+(`fforge-harness`, depending on `fforge-core`), so nothing that prints, pools or fits statistics
+can be linked into a game build or reached from the fold. It is also the natural home for the
+reusable evaluation kernel of §5 as that grows.
+
 ### Cross-cutting invariants
 
 - **Determinism & seeding from day one.** Every stochastic engine takes an explicit RNG seed.
@@ -357,7 +365,7 @@ The meta-principle: **thin vertical slice first, then deepen.**
   transition-matrix modifiers, cards/fouls, injuries, set pieces, substitutions, and the
   character/hidden attributes), all landing behind the same `play_match` call site. 2a is settled,
   ported to Rust (`fforge-core::match_engine`), and calibrated: the harness
-  (`fforge-core::match_engine::calibrate`, `bin/calibrate`) re-fit `b_beat` against real `worldgen`
+  (`fforge-harness::match_engine`, `bin/calibrate`) re-fit `b_beat` against real `worldgen`
   and guards the result with a regression test.
   **2e is now complete** — tactics (`TACTICS_MODEL.md`, AI policy live), consistency, condition &
   recovery, injuries, fouls/cards/suspensions, substitutions, and match ratings & form
@@ -373,7 +381,7 @@ The meta-principle: **thin vertical slice first, then deepen.**
   over decade-long runs. **Pinned in `DEVELOPMENT_MODEL.md`** (the six deferred development decisions
   resolved: PA-gating, the `DevCategory` curve parameters, the event-log seam, in-scope inputs,
   Natural Fitness, validation targets). Settled and implemented in Rust (`fforge-core::development`,
-  a monthly `DevelopmentTick`); the career-arc harness (`fforge-core::career_arc`) is built and has
+  a monthly `DevelopmentTick`); the career-arc harness (`fforge-harness::career_arc`) is built and has
   re-fit the knob table against real `worldgen`, exactly as the match engine's `b_beat` was re-fit.
 - **Phase 4 — Transfer market.** Club decision AI, the shared valuation function, windows;
   stress-test for pathologies. **Pinned in `TRANSFER_MODEL.md`** (the centralized valuation
@@ -381,7 +389,7 @@ The meta-principle: **thin vertical slice first, then deepen.**
   sequential-vs-simultaneous ordering question — club finances/contracts, youth intake and
   retirement, and the market pathology harness). Settled and implemented in Rust
   (`fforge-core::{valuation, club_ai, market, pool}`); the market harness
-  (`fforge-core::market::calibrate`) is built and has re-fit `ValueKnobs::beta` and
+  (`fforge-harness::market`) is built and has re-fit `ValueKnobs::beta` and
   `FinanceKnobs::revenue_per_reputation` against real `worldgen`, exactly as the match engine's
   `b_beat` and development's knob table were re-fit.
 - **Phase 5 — LLM narrative layer + feedback loop.** Agents, propose/dispose, the validation

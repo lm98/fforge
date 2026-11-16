@@ -159,7 +159,7 @@ impl EnvTable {
 /// every player/attribute a tick or projection touches — the env-lookup
 /// analogue of `valuation::DevTables`' knob-derived caching.
 #[derive(Debug, Clone)]
-pub(crate) struct EnvTables {
+pub struct EnvTables {
     phys: EnvTable,
     tech: EnvTable,
     ment: EnvTable,
@@ -167,7 +167,7 @@ pub(crate) struct EnvTables {
 }
 
 impl EnvTables {
-    pub(crate) fn new(knobs: &DevKnobs) -> Self {
+    pub fn new(knobs: &DevKnobs) -> Self {
         EnvTables {
             phys: EnvTable::build(knobs.env_phys),
             tech: EnvTable::build(knobs.env_tech),
@@ -190,7 +190,7 @@ impl EnvTables {
     /// measurement/harness code outside this module (`career_arc`'s maturity-
     /// ratio report) that wants the already-built envelope rather than
     /// re-deriving `grow_c`/`loss_c` a second time.
-    pub(crate) fn env_at(&self, cat: DevCategory, y: f64) -> f64 {
+    pub fn env_at(&self, cat: DevCategory, y: f64) -> f64 {
         self.env(cat).env(y)
     }
 }
@@ -198,7 +198,7 @@ impl EnvTables {
 /// The development knob table (`DEVELOPMENT_MODEL.md` §2–§3), sibling of
 /// `match_engine::Knobs`. Values began as the fitted `dev_shape` scratchpad
 /// point (`DEVELOPMENT_MODEL.md` §6); several have since been **re-fit against
-/// real `worldgen`** by the career-arc harness (`crate::career_arc`), exactly as
+/// real `worldgen`** by the career-arc harness (`fforge-harness::career_arc`), exactly as
 /// `b_beat` was re-fit for the match engine — the fields carrying a re-fit note
 /// below (`env_phys`, `plast_*`, `e_sigma`/`e_min`, and the earlier `k_dec`) are
 /// the ones the real distribution moved. See `DEVELOPMENT_MODEL.md` §6 for the
@@ -427,7 +427,7 @@ const GRID_STEP: f64 = 0.05;
 /// `NORM` per role (`DEVELOPMENT_MODEL.md` §2.2): the max over age of the
 /// role-weighted mean of the category envelopes — "the role-weighted mean of env
 /// at its blended peak." A per-role constant given the knobs.
-pub(crate) fn norms_by_role(envs: &EnvTables) -> [f64; fforge_domain::NUM_ROLES] {
+pub fn norms_by_role(envs: &EnvTables) -> [f64; fforge_domain::NUM_ROLES] {
     let mut norms = [0.0f64; fforge_domain::NUM_ROLES];
     for role in fforge_domain::Role::ALL {
         let mut best = 0.0;
@@ -685,8 +685,9 @@ pub fn tick_changes(
 
 /// `tick_changes`'s instrumented sibling (`DEVELOPMENT_MODEL.md` §8.6):
 /// identical output, plus per-player `ClipStats` for the harness's max-step
-/// saturation measurement (`career_arc`). `pub(crate)` — harness-only.
-pub(crate) fn tick_changes_with_clip_stats(
+/// saturation measurement (`fforge-harness::career_arc`). Public for that
+/// harness only; nothing in the simulation calls it.
+pub fn tick_changes_with_clip_stats(
     world: &World,
     seed: u64,
     period: i64,

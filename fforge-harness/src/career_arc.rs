@@ -1,5 +1,5 @@
 //! The career-arc harness (`DEVELOPMENT_MODEL.md` §6): the development sibling
-//! of `match_engine::calibrate`. Where `calibrate` drives the real worldgen +
+//! of `fforge-harness::match_engine`. Where `calibrate` drives the real worldgen +
 //! match pipeline and reports emergent *match* aggregates, this drives the real
 //! worldgen + development fold across a **decade-plus, pooled over many world
 //! seeds**, and reports the emergent *career* statistics §6 lists — peak age per
@@ -23,12 +23,12 @@
 //! as such, not hidden.
 //!
 //! This module is harness plumbing, not simulation logic — like
-//! `match_engine::calibrate` it never feeds back into `DevKnobs` by itself; the
+//! `fforge-harness::match_engine` it never feeds back into `DevKnobs` by itself; the
 //! re-fit is a human reading these numbers and editing `DevKnobs::default`.
 
-use crate::development::{self, DevKnobs, EnvTables, norms_by_role};
-use crate::event::Event;
-use crate::{Command, Session, WorldGenConfig, new_game, worldgen};
+use fforge_core::development::{self, DevKnobs, EnvTables, norms_by_role};
+use fforge_core::event::Event;
+use fforge_core::{Command, Session, WorldGenConfig, new_game, worldgen};
 use fforge_domain::{
     Attribute, ClubId, DevCategory, Fixture, GameDate, PlayerId, ROLE_WEIGHTS, Role, World,
     best_role, date::DAYS_PER_YEAR,
@@ -329,7 +329,7 @@ fn trace_seed_clip_stats_16_band(seed: u64, seasons: usize, cfg: &WorldGenConfig
             record_new_start_ages(&session.state.world, session.state.date, &mut start_age);
 
             let mut this_apps: BTreeMap<PlayerId, u32> = BTreeMap::new();
-            let mut tick: Option<(GameDate, Vec<crate::event::AttrStep>)> = None;
+            let mut tick: Option<(GameDate, Vec<fforge_core::event::AttrStep>)> = None;
             for ev in &session.log[log_before..] {
                 match ev {
                     Event::MatchPlayed { minutes, .. } => {
@@ -1565,7 +1565,7 @@ mod tests {
 
     /// The career-arc regression guard (`DEVELOPMENT_MODEL.md` §6): the
     /// development sibling of `aggregates_are_in_a_believable_ballpark`
-    /// (`lib.rs`) and of `match_engine::calibrate`'s
+    /// (`lib.rs`) and of `fforge-harness::match_engine`'s
     /// `favourite_discrimination_regression_guard`. It pools a small
     /// multi-season run over a couple of real-`worldgen` seeds and asserts the
     /// §6 headline metrics — peak ages, PA attainment, and the aging character —

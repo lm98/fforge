@@ -10,11 +10,10 @@
 //! This module is exploratory-harness plumbing, not simulation logic: it
 //! never feeds back into `Knobs` or the presence tables by itself.
 
-use super::MatchOutcome;
-use super::resolve::mirrored_zone;
-use super::stream::{MatchEventKind, ShotKind, ShotOutcome, ShotSource, Side};
-use super::zone::{NUM_ZONES, Zone};
-use super::{Knobs, MatchRngs, ai_pick_lineup, play_match};
+use fforge_core::match_engine::{
+    Card, Knobs, MatchEventKind, MatchOutcome, MatchRngs, NUM_ZONES, ShotKind, ShotOutcome,
+    ShotSource, Side, Zone, ai_pick_lineup, mirrored_zone, play_match,
+};
 use fforge_domain::{Attribute, ClubId, GameDate, Pressing, Tactics, Tempo, World};
 use std::collections::BTreeMap;
 
@@ -207,12 +206,12 @@ impl StreamTelemetry {
                 MatchEventKind::Foul { card } => {
                     self.fouls += 1;
                     match card {
-                        Some(super::Card::Yellow) => self.yellows += 1,
-                        Some(super::Card::SecondYellow) => {
+                        Some(Card::Yellow) => self.yellows += 1,
+                        Some(Card::SecondYellow) => {
                             self.yellows += 1;
                             self.reds += 1;
                         }
-                        Some(super::Card::Red) => self.reds += 1,
+                        Some(Card::Red) => self.reds += 1,
                         None => {}
                     }
                 }
@@ -890,8 +889,7 @@ pub fn run_squad_conditional_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::match_engine::Zone;
-    use crate::match_engine::stream::MatchEvent;
+    use fforge_core::match_engine::MatchEvent;
     use fforge_domain::PlayerId;
 
     /// The T7-R regression guard for `TACTICS_MODEL.md` §9 item 6's
@@ -931,7 +929,7 @@ mod tests {
     #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn mentality_is_a_risk_axis_not_a_better_setting() {
-        use crate::worldgen::{WorldGenConfig, generate};
+        use fforge_core::worldgen::{WorldGenConfig, generate};
         use fforge_domain::Mentality;
 
         let cfg = WorldGenConfig {
@@ -1011,7 +1009,7 @@ mod tests {
     #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn tactics_are_squad_conditionally_non_dominant() {
-        use crate::worldgen::{WorldGenConfig, generate};
+        use fforge_core::worldgen::{WorldGenConfig, generate};
 
         let cfg = WorldGenConfig {
             num_clubs: 2,
@@ -1082,7 +1080,7 @@ mod tests {
     #[cfg_attr(not(feature = "slow-tests"), ignore)]
     #[test]
     fn pressing_high_lands_in_the_opponents_def_and_mid_and_nowhere_else() {
-        use crate::worldgen::{WorldGenConfig, generate};
+        use fforge_core::worldgen::{WorldGenConfig, generate};
         use fforge_domain::{Pressing, Tactics};
 
         let cfg = WorldGenConfig {
@@ -1458,13 +1456,13 @@ mod tests {
         // reads (0.023, 0.008), an 0.015 dip well inside it. Test-pool
         // sizing, not a production knob — Consistency's own values are
         // unchanged.
-        let cfg = crate::WorldGenConfig::default();
+        let cfg = fforge_core::WorldGenConfig::default();
         let mut telemetry = StreamTelemetry::default();
         for seed in 0..24u64 {
-            let (world, schedule, start) = crate::worldgen::generate(seed, &cfg);
+            let (world, schedule, start) = fforge_core::worldgen::generate(seed, &cfg);
             for fixture in &schedule {
                 let suspended = std::collections::BTreeSet::new();
-                let home_lineup = crate::match_engine::ai_pick_lineup_vs(
+                let home_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
                     &world,
                     fixture.home,
                     fixture.away,
@@ -1472,7 +1470,7 @@ mod tests {
                     start,
                     &suspended,
                 );
-                let away_lineup = crate::match_engine::ai_pick_lineup_vs(
+                let away_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
                     &world,
                     fixture.away,
                     fixture.home,
@@ -1480,10 +1478,12 @@ mod tests {
                     start,
                     &suspended,
                 );
-                let home_strength = crate::match_engine::lineup_strength(&world, &home_lineup);
-                let away_strength = crate::match_engine::lineup_strength(&world, &away_lineup);
+                let home_strength =
+                    fforge_core::match_engine::lineup_strength(&world, &home_lineup);
+                let away_strength =
+                    fforge_core::match_engine::lineup_strength(&world, &away_lineup);
                 let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
-                let outcome = crate::match_engine::play_match(
+                let outcome = fforge_core::match_engine::play_match(
                     &world,
                     &home_lineup,
                     &away_lineup,

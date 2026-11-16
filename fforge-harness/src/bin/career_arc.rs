@@ -9,7 +9,7 @@
 
 use fforge_core::DevKnobs;
 use fforge_core::WorldGenConfig;
-use fforge_core::career_arc::{
+use fforge_harness::career_arc::{
     fit_pa_from_ca_age, fit_pa_from_ca_age_band, fit_pa_from_ca_age_youth,
     fit_pa_from_composites_age, fit_pa_from_composites_age_band, fit_pa_from_composites_age_youth,
     max_step_saturation_16_band, print_maturity_ratios, print_report, print_seeding_projection,

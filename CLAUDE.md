@@ -6,6 +6,7 @@ A deterministic, event-sourced football manager simulation in Rust.
 fforge/
 ├── fforge-domain   layer 1: pure domain model
 ├── fforge-core     layer 2: simulation engines, a pure fold over an event log
+├── fforge-harness  calibration harnesses: a consumer of fforge-core, never a dependency of it
 └── fforge-game     layer 5: the CLI
 ```
 
@@ -34,7 +35,7 @@ subsystem's shape.
 | `ATTRIBUTE_SCHEMA.md` | attributes, rating scale, role weights, CA/PA, Character | `fforge-domain` |
 | `MATCH_MODEL.md` | match engine (§1–§10); Phase 2e: condition, injuries, cards, substitutions, ratings (§11–§18) | `match_engine`, `condition` |
 | `TACTICS_MODEL.md` | the four instructions, their effects, the AI tactics policy | `match_engine::tactics` |
-| `DEVELOPMENT_MODEL.md` | age envelope, growth law, envelope-consistent seeding (§8) | `development`, `worldgen`, `career_arc` |
+| `DEVELOPMENT_MODEL.md` | age envelope, growth law, envelope-consistent seeding (§8) | `development`, `worldgen`; harness `career_arc` |
 | `TRANSFER_MODEL.md` | valuation, club AI, clearing loop, finances, player pool | `valuation`, `club_ai`, `market`, `finance`, `pool` |
 | `UI_TOOLKIT_EVIDENCE.md` | what the CLI screens taught | `fforge-game` |
 | `BACKLOG.md` | status, next work, open questions | — |
@@ -55,7 +56,8 @@ depends on.
    state. Determinism is load-bearing: reproducible bugs, replayable matches, calibration.
 3. **Purity by layer.** `fforge-domain`: no I/O, no RNG, no clock. `fforge-core`: no I/O in the
    fold, no clock, and randomness only from `rng::derive_stream(seed, tag)`. `fforge-game` is the
-   only crate that touches stdin, stdout and the wall clock.
+   only crate that touches stdin and the wall clock; `fforge-harness` prints reports and is
+   otherwise as pure as the core it drives.
 4. **One encoding per rule.** If two call sites need the same rule, they call the same function.
    A second copy is a copy free to drift, and here drift means a replay that no longer matches.
 5. **Old logs must keep loading.** A save is the event log. New fields on an `Event` or on a
@@ -65,7 +67,7 @@ depends on.
 ## Calibration discipline
 
 The engines carry fitted knob tables (`Knobs`, `DevKnobs`, `ValueKnobs`, `FinanceKnobs`,
-`PoolKnobs`, `UtilityKnobs`) and three harness binaries that measure them.
+`PoolKnobs`, `UtilityKnobs`); `fforge-harness` holds the three harnesses that measure them.
 
 - **A harness reports; a human re-fits.** Never feed a harness reading back into a knob
   automatically, and never move a knob to make a guard pass without recording the reading in the
@@ -85,7 +87,7 @@ The engines carry fitted knob tables (`Knobs`, `DevKnobs`, `ValueKnobs`, `Financ
 
 ```
 cargo test                                             # fast suite
-cargo test --workspace --features fforge-core/slow-tests  # plus the pooled calibration guards (minutes)
+cargo test --workspace --features fforge-core/slow-tests,fforge-harness/slow-tests  # plus the pooled guards (minutes)
 cargo clippy --all-targets -- -D warnings              # must be clean
 cargo fmt --check                                      # must be clean
 cargo run --bin fforge-game                            # play
@@ -95,7 +97,7 @@ cargo run --release --bin market                       # transfer-market harness
 ```
 
 Run the slow suite before finishing any change to a knob table, a simulation module, `worldgen`,
-`rng`, `state`, `commands`, or anything in `fforge-domain/src`. CI runs it on those paths and
+`rng`, `state`, `commands`, or anything in `fforge-domain/src` or `fforge-harness/src`. CI runs it on those paths and
 nightly.
 
 ## Testing

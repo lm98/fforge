@@ -7,7 +7,7 @@ on:
     branches: [master]
   schedule:
     # Nightly full suite: the only unconditional trigger for the
-    # knob-change tripwires (see `slow-tests` feature, fforge-core/Cargo.toml).
+    # knob-change tripwires (see the `slow-tests` features of fforge-core and fforge-harness).
     - cron: '17 3 * * *'
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
     # only when the diff touches a *Knobs table or a sim module
     # (`development`, `match_engine`, `condition`, `market`, `valuation`,
     # `club_ai`, `pool`, `finance`, `worldgen`, `rng`, `state`, `commands`) or anything
-    # in `fforge-domain/src` (e.g. `ROLE_WEIGHTS`, which feeds
+    # in `fforge-harness/src` or `fforge-domain/src` (e.g. `ROLE_WEIGHTS`, which feeds
     # `current_ability`, `lineup_strength`, and valuation) — the only
     # commits that could actually move these.
     runs-on: ubuntu-latest
@@ -85,7 +85,7 @@ jobs:
           changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
           echo "Changed files:"
           echo "$changed"
-          pattern='^(fforge-core/src/(development\.rs|match_engine(\.rs|/.*)|condition\.rs|market(\.rs|/.*)|valuation\.rs|club_ai\.rs|pool\.rs|finance\.rs|worldgen\.rs|rng\.rs|state\.rs|commands\.rs)|fforge-domain/src/.*)$'
+          pattern='^(fforge-core/src/(development\.rs|match_engine(\.rs|/.*)|condition\.rs|market(\.rs|/.*)|valuation\.rs|club_ai\.rs|pool\.rs|finance\.rs|worldgen\.rs|rng\.rs|state\.rs|commands\.rs)|fforge-domain/src/.*|fforge-harness/src/.*)$'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -102,4 +102,4 @@ jobs:
 
       - name: Run full suite
         if: steps.scope.outputs.run == 'true'
-        run: cargo test --workspace --verbose --features fforge-core/slow-tests
+        run: cargo test --workspace --verbose --features fforge-core/slow-tests,fforge-harness/slow-tests

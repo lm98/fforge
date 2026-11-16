@@ -7,6 +7,12 @@ know why something is the way it is, not to learn the current shape of the code.
 knob values quoted below were true when each entry was written and may have moved since; the code
 and the design notes are current. New entries go at the end of the relevant section.
 
+**Path note.** The three harnesses were later moved out of `fforge-core` into their own crate.
+Where entries below say `fforge-core::career_arc`, `match_engine::calibrate` or
+`market::calibrate`, read `fforge-harness::career_arc`, `fforge-harness::match_engine` and
+`fforge-harness::market`. The runner names (`bin/calibrate`, `bin/career_arc`, `bin/market`) and
+every test name are unchanged.
+
 Task labels: `T1`–`T14` are the Phase 2e batch-3 tasks, `T7-R`/`T7-R2` the two tactics re-fits,
 `S1a`/`S1b` the AI substitution policy, `W1`–`W5` the wonderkid seeding fix, `U1`–`U7`/`G1`–`G4`
 the Batch 4 UI tasks, `R<n>` the review items those batches answered.

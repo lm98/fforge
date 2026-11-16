@@ -15,12 +15,14 @@
 //! Run with: `cargo run --bin calibrate -- --seeds 8`
 
 use fforge_core::match_engine::{
-    ELO_SCALE_S, Knobs, MatchEventKind, MatchRngs, PROFILE_SHIFT, SQUAD_PROFILES, ShotOutcome,
-    StreamTelemetry, ai_pick_lineup_vs, lineup_strength, play_match, probe_tactics,
-    run_head_to_head, run_head_to_head_detailed, run_squad_conditional_probe,
+    Knobs, MatchEventKind, MatchRngs, ShotOutcome, ai_pick_lineup_vs, lineup_strength, play_match,
 };
 use fforge_core::{WorldGenConfig, worldgen};
 use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
+use fforge_harness::match_engine::{
+    ELO_SCALE_S, PROFILE_SHIFT, SQUAD_PROFILES, StreamTelemetry, probe_tactics, run_head_to_head,
+    run_head_to_head_detailed, run_squad_conditional_probe,
+};
 
 struct CalibReport {
     per_seed: Vec<SeedReading>,
