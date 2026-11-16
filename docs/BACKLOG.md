@@ -123,7 +123,8 @@ Scoping was done in `BATCH5_SCOPING.md`, a working document that was never check
 repository; where other notes cite its section numbers, this section is the surviving summary.
 **Unblocked — §2 is closed.** The fog-of-war dependency (PA no
 longer trivially recoverable from `(CA, age)`, `DEVELOPMENT_MODEL.md` §8.1) is in place;
-`AGENT_MODEL.md` can be written next.
+`AGENT_MODEL.md` is **drafted** — its §14 lists the calls still open, and its §13 is the build
+sequence for 3.2 and 3.3 below.
 
 Four seams already exist and have each been exercised once: `ClubPolicy`/`RecordedPolicy`,
 `NewsItem` provenance (`sources: Vec<EventRef>`), the Event/Trace split, and the pre-commitment
