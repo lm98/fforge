@@ -50,37 +50,57 @@ introduces the smallest surface that makes §7 implementable.
 
 ## 2. The roster
 
-### 2.1 Two speeds of agent
+### 2.1 Three kinds of mind
 
-**Settled (owner decision, with the reasoning recorded).** Agents come in two kinds, split by
-what the work needs rather than by role:
+**Settled (owner decision, with the reasoning recorded).** Work is assigned by what it needs, not
+by role. There are three kinds of decider, in increasing cost:
 
-- **Fast policies ("system 1")** make the frequent, structured decisions: team sheet, tactics,
-  in-match plan, transfer plan. They are cheap, deterministic functions of an observation, run
-  for *every* club on *every* matchday, and never call a language model.
-- **Language models ("system 2")** do what needs text or deliberation: writing, and setting the
-  slow-moving *intent* a fast policy then executes.
+| Kind | What it is | What it does here | Cost |
+|---|---|---|---|
+| **Fast policy** | a pure function in `fforge-core` | *executes*: team sheet, tactics, in-match plan, transfer plan — for every club, every decision | none |
+| **Decision model** | a small model that answers typed questions about a state with a probability for each answer | *chooses intent*: a manager's stance, a board's stance | small, local |
+| **Language model** | a generative model | *writes*: the journalist's prose and claims | the budget of §6 |
 
-The split exists because the two workloads have opposite shapes. A league makes roughly 760
-team-sheet decisions and 40 transfer plans a season; almost all are routine, and a language model
-is an expensive and slow way to make a routine decision. A season also contains a handful of
-moments where a manager's *character* should show — what kind of side he builds, how he reacts to
-a bad run — and those are few, verbal, and exactly what a language model is good at.
+**Decision models** — also called System One models — are a model class built for exactly the
+middle row: given a state as text or JSON and a set of typed questions, one forward pass returns
+a calibrated probability for every answer. Liquid AI's `d1` (about 3B parameters) and `d1-omni`
+(about 600M) are the reference examples, served locally through Ollama. *(Recorded from the
+vendor's listing as reported in November 2026; this note depends on the class, not on a
+product, and the interface in §7.1 is what the code depends on.)*
 
-**The connection between the two is a `ManagerStance`** (§2.3): a small, bounded, typed value a
-language model sets a few times a season, which conditions that club's fast policy on every
-decision until it is next set. Deliberation is rare and expensive; execution is constant and
-free. That is how every one of the nineteen rival clubs can have a distinct manager on a budget
-that would otherwise pay for three.
+Three properties make the class fit this project unusually well:
+
+- **The output cannot be malformed.** There is no text to parse and no schema to violate: the
+  answer is one of the options offered. A `ManagerStance` is eight questions with five answers
+  each, so every reply is a legal stance by construction.
+- **It is cheap enough to ask for every club.** The whole league's managers can have a
+  considered stance for a fraction of what three language-model managers would cost.
+- **The probabilities are themselves data.** A manager who answers `risk: StrongToward` with
+  0.9 confidence about a seventeen-year-old is making a measurable claim about how sure he is,
+  where the fog says nobody can be (§5.4). The overconfidence probe stops being an inference
+  from behaviour and becomes a number read off the reply (§12.2).
+
+The split exists because the workloads have opposite shapes. A league makes roughly 760
+team-sheet decisions and 40 transfer plans a season, almost all routine and combinatorial — pick
+eleven from twenty-five — which is what a pure policy is for and what a question-answering model
+is poorly shaped for. A season also contains moments where a manager's *character* should show:
+what kind of side he builds, how he reacts to a bad run. Those are few, and they are choices
+among a handful of options. Only the press actually needs to produce language.
+
+**The connection between execution and intent is a `ManagerStance`** (§2.3): a small, bounded,
+typed value that conditions a club's fast policy on every decision until it is next set.
+
+**A language model can stand in for a decision model** — ask it the same questions and parse the
+reply — and that substitution is an arm of the ablation (§12.2), not the default.
 
 ### 2.2 The roles
 
-| Role | Speed | Decides | Decision value | Baseline |
+| Role | Kind | Decides | Decision value | Baseline |
 |---|---|---|---|---|
-| **Journalist** | LLM | which facts to report, and the prose | `Article { text, claims }` (§8) | `news::TemplateRenderer` |
-| **Manager's intent** | LLM, a few times a season | how his side should play and trade | `ManagerStance` (§2.3) | the neutral stance |
-| **Manager's execution** | fast policy, every decision | team sheet, tactics, plan; transfer plan | `Lineup`; `Vec<TransferDecision>` | the same policy at the neutral stance |
-| **Board** (the human's club) | LLM, monthly | a season objective and a reaction to results | `BoardStance` (§9.4) | a rule-based stance |
+| **Journalist** | language model | which facts to report, and the prose | `Article { text, claims }` (§8) | `news::TemplateRenderer` |
+| **Manager's intent** | decision model | how his side should play and trade | `ManagerStance` (§2.3) | the neutral stance |
+| **Manager's execution** | fast policy | team sheet, tactics, plan; transfer plan | `Lineup`; `Vec<TransferDecision>` | the same policy at the neutral stance |
+| **Board** (the human's club) | decision model | a season objective and its patience | `BoardStance` (§9.4) | a rule-based stance |
 
 The journalist is built first because it is read-only on the decision side: it exercises the
 provider, the trace and the gate with no effect on the simulation until §9's feedback is switched
@@ -98,7 +118,7 @@ narrow the fog (§5.2) are a planned extension and need no agent either.
 
 ### 2.3 The stance
 
-**Proposed.** A stance is a bounded adjustment to the knob tables the built-in policies already
+**Settled (owner decision on the axes and their grain).** A stance is a bounded adjustment to the knob tables the built-in policies already
 read (`AiTacticKnobs`, `UtilityKnobs`), plus the one new preference fog makes meaningful:
 
 ```rust
@@ -116,8 +136,13 @@ pub struct ManagerStance {
 pub enum Lean { StrongAgainst, Against, Neutral, Toward, StrongToward }
 ```
 
-- **Typed and closed**: five steps on eight axes. Every value is legal, so a stance cannot fail
-  validation; the worst a language model can do is choose badly.
+- **Typed and closed**: five steps on eight axes — eight typed questions, five answers each,
+  which is the native shape of a decision model's reply. Every value is legal, so a stance
+  cannot fail validation; the worst a model can do is choose badly.
+- **Chosen by argmax in v1.** The model returns a distribution per axis; the driver takes the
+  most probable answer and keeps the whole distribution in the trace. Sampling from it instead
+  would give managers more variety and is a one-line change, but argmax makes two runs of the
+  same model on the same state agree, which the ablation wants first.
 - **Recorded**: `Command::SetManagerStance { club, stance }` → `Event::ManagerStanceSet`, folded
   into `GameState.stances: BTreeMap<ClubId, ManagerStance>`. The policies read it from state, so
   they stay pure and a replay needs no model.
@@ -127,13 +152,15 @@ pub enum Lean { StrongAgainst, Against, Neutral, Toward, StrongToward }
   mapping is calibrated once so that no stance dominates — the same non-dominance requirement
   tactics had to meet, and measured the same way (§12.2).
 
-A stance is what a persona *does*. The persona (§10) is who the manager is; the stance is that
+A stance is what a persona *does*: the persona sheet is part of the state the decision model is
+asked about. The persona (§10) is who the manager is; the stance is that
 character rendered into numbers the simulation can act on.
 
-### 2.4 Learned policies — where they fit, and why not yet
+### 2.4 Trained policies — where they fit, and why not yet
 
-The fast policy in v1 is the existing utility policy, parameterised by a stance. A *learned*
-fast policy — a small network or tree model trained in the simulation — is the obvious next step
+The fast policy in v1 is the existing utility policy, parameterised by a stance. A fast policy
+*trained in this simulation* — a small network or tree model, distinct from the general-purpose
+decision models of §2.1 — is the obvious next step
 and the seam is already the right shape for it: it is another `ClubPolicy` and another lineup
 picker, taking the same observation and the stance as conditioning input.
 
@@ -258,7 +285,7 @@ stages.** One matchday:
 5. REPORT    journalist stage: gather → invoke → PublishArticle, on the post-advance state
 ```
 
-**Only language-model seats appear in stages 1–3.** A fast policy is not invoked by the driver
+**Only model seats appear in stages 1–3.** A fast policy is not invoked by the driver
 at all: it runs inside the pure advance, where the built-in policies already run, and reads its
 club's stance from `GameState`. On most matchdays stages 1–3 are therefore empty for managers —
 a stance is due only at its fixed points and triggers (§6) — and the stage carries the
@@ -423,52 +450,77 @@ fog by reasoning harder over attributes. Two consequences:
 **Settled (owner decision): the number of agent-managed clubs is configuration, with no
 architectural cap.** The budget below is what keeps any chosen number affordable.
 
-**Proposed: a per-season call budget, set in configuration, enforced by the driver.** With
-intent and execution split (§2.1), a 38-matchday season with *every* rival agent-managed:
+**Proposed: a per-season language-model budget, set in configuration, enforced by the driver.**
+A 38-matchday season with *every* rival agent-managed:
 
-| Call | Frequency | Per season, 19 rivals |
+| Call | Model | Frequency | Per season |
+|---|---|---|---|
+| Journalist: the human's match | language | per matchday | 38 |
+| Journalist: league round-up | language | per matchday | 38 |
+| **Language-model total** | | | **76, two per matchday** |
+| Manager's intent: stance, 19 rivals | decision | pre-season, each window, on a trigger | ~76 |
+| Board: stance | decision | monthly | ~10 |
+
+The fast policies cost nothing and are not in the table. Decision-model calls are counted but
+not budgeted: they are local and small, and their limit is the per-club trigger cap below, which
+exists for stability rather than cost.
+
+### 6.1 When a manager reconsiders
+
+**Settled (owner decision): a stance is revisited when things go badly.** Outside the two fixed
+points — pre-season and the opening of each window — a manager reconsiders only on one of:
+
+| Trigger | Fires when | Read from |
 |---|---|---|
-| Manager's intent: stance | pre-season, each window, and on a trigger (below) | ~76 |
-| Journalist: the human's match | per matchday | 38 |
-| Journalist: league round-up | per matchday | 38 |
-| Board: stance | monthly | ~10 |
-| **Total** | | **~162, about 4.3 per matchday** |
+| **Form** | the last five league results yield three points or fewer | `GameState.results` |
+| **Standing** | the club falls a set number of places below its reputation-implied position | `league_table`, `Club.reputation` |
+| **Confidence** | club sentiment (§9.3) crosses a negative threshold | recorded beats |
+| **Loss** | a first-choice player is ruled out for two months or more | `Player.injured_until` |
 
-The fast policies cost nothing and are not in the table. For comparison, having a language model
-pick three rivals' team sheets every matchday would cost 114 calls for three characters; the
-stance model buys nineteen for 76.
+*Confidence* is the rival-club stand-in for board unhappiness: rivals have no board agent, and
+club sentiment is the same quantity the human's board reads. Thresholds live in a `TriggerKnobs`
+table.
 
-**A stance is revisited on a trigger, not on a timer.** Outside the fixed points, a manager
-reconsiders when something happens *to* him: a run of results crossing a threshold, a board
-stance change, a first-team player lost for months. Triggers are events, never continuous
-levels — `DESIGN.md` §7's first rule applied to cost — and each club is capped per season.
+Three rules, all for stability:
+
+- **Edge-triggered, with re-arming.** A trigger fires once when its condition *becomes* true and
+  cannot fire again until the condition has cleared — the discipline `news::NewsObserver`
+  already uses for its warnings. A club stuck in a slump is asked once, not weekly.
+- **Capped per club per season**, default four reconsiderations.
+- **Bad news only in v1.** A manager on a winning run changes nothing. Whether success should
+  make a manager bolder is a real question and a second feedback loop; it waits until the first
+  is shown stable.
+
+A stance change is itself a response to results that then affects results, so it is a feedback
+loop of the kind §9.5 guards. The edge-triggering and the cap are its damping, and §9.5's
+streak-inflation guard is run with stance triggers live.
 
 Rules that keep it there:
 
 - **Skip when nothing changed.** If a seat's observation hashes equal to the one behind its last
   decision, the last decision stands and no call is made. Recorded in the trace.
-- **Routine prose on the cheap model**; intent on the capable one. Model choice is per role, in
+- **Routine prose on the cheap model.** Model choice is per role, in
   configuration, recorded per trace.
 - **A deterministic degradation order when the budget runs short:** league round-up first, then
-  the board, then the human's match report, and manager intent last.
+  the human's match report. Stances do not degrade: they are not on the budget.
 - **One retry at most**, and only for a parse failure (§7). Never for a validation failure: an
   illegal output is a datum, and retrying until legal would hide the rate the research wants.
 
 **Direct mode**, in which a language model picks a club's team sheet and transfer plan itself
-instead of setting a stance, remains available as configuration for a chosen few clubs. It is an
+instead of a decision model setting a stance, remains available as configuration for a chosen few clubs. It is an
 experimental arm of the ablation (§12.2), not the default, and it is where the cost goes if it
 is switched on.
 
-Defaults: all rivals stance-managed, none in direct mode, budget 250.
+Defaults: all rivals stance-managed, none in direct mode, language-model budget 100.
 
 ---
 
 ## 7. Provider, fake provider, fallbacks
 
-### 7.1 The interface
+### 7.1 The interfaces
 
-**Proposed:** one narrow trait, text in and text out, with everything football-specific outside
-it.
+**Proposed:** two narrow traits, one per kind of model, with everything football-specific
+outside both.
 
 ```rust
 pub trait Provider {
@@ -485,6 +537,21 @@ mode in the contract: the agent is asked for JSON and the driver parses it. That
 provider, and the fake one, interchangeable — and it means parse failures are *observed*, which
 is a metric (`DESIGN.md` §6), rather than prevented by a vendor feature.
 
+```rust
+pub trait Decider {
+    fn ask(&self, queries: &[Query]) -> Vec<Result<Answers, ProviderError>>;
+}
+
+pub struct Query    { pub model: ModelId, pub state: String, pub questions: Vec<Question> }
+pub struct Question { pub id: String, pub text: String, pub options: Vec<String> }
+pub struct Answers  { pub distributions: Vec<Vec<f64>> }   // one per question, over its options
+```
+
+`Decider` is the decision-model contract: a state and typed questions in, a distribution per
+question out. Its implementations are a local decision model, a language model wrapped to answer
+the same questions (the ablation arm of §12.2), and the fakes of §7.2. A `Decider` reply has no
+parse step and so no parse-failure rate; what it has instead is calibration (§12.2).
+
 ### 7.2 The fake provider
 
 **Proposed: four modes, all deterministic, all offline.**
@@ -495,6 +562,9 @@ is a metric (`DESIGN.md` §6), rather than prevented by a vendor feature.
 | `Scripted` | a canned response keyed by `(role, observation hash)` | scenario replay; the regression suite for prompts and parsers |
 | `Garbage` | malformed JSON, unknown players, illegal lineups, false claims | every fallback and every gate path |
 | `Recorded` | the raw output stored in an existing trace | re-scoring old runs with a new parser or scorer at zero cost |
+
+Each mode exists for both traits: the fake `Decider` returns, respectively, all mass on
+`Neutral`, scripted distributions, deliberately uniform or degenerate ones, and recorded ones.
 
 `Baseline` is the load-bearing one. **A season driven through `fforge-agents` with the `Baseline`
 provider must produce a log byte-identical to the same season with no agents** — the agent
@@ -785,20 +855,26 @@ ladder of comparators, all under the same fog:
 | fast policy, neutral stance | the baseline everything must justify itself against |
 | fast policy, random stance | separates "a stance helps" from "any change helps" |
 | fast policy, best fixed stance for that squad | what a perfect stance-setter would achieve |
-| fast policy, LLM-set stance | **the default subject** |
-| LLM in direct mode | the expensive arm: is per-decision deliberation worth its cost? |
+| fast policy, stance set by a decision model | **the default subject** |
+| fast policy, stance set by a language model | is a generative model better at intent, and at what cost? |
+| language model in direct mode | the expensive arm: is per-decision deliberation worth it? |
 | learned fast policy (§2.4, later) | a trained policy on the same decisions |
 | fast policy with fog removed | the ceiling: what perfect information is worth |
 
 The stance model makes the first question sharper than "is the LLM better than the baseline".
-It becomes: **does an LLM choose a stance that suits its squad** — close to the best fixed stance
+It becomes: **does a model choose a stance that suits its squad** — close to the best fixed stance
 and above a random one — and does that survive a change of squad? The direct-mode arm then
 prices the alternative.
 
 **A precondition, inherited from tactics:** the stance axes must be calibrated to non-dominance
-first. If one stance is simply best, "the LLM chose well" and "the LLM chose the dominant
-setting" are indistinguishable, and a random-stance arm that scores as well as the LLM arm
+first. If one stance is simply best, "the model chose well" and "the model chose the dominant
+setting" are indistinguishable, and a random-stance arm that scores as well as the model arm
 would be the tell.
+
+**Calibration of confidence**, a reading decision models make available for free: bucket every
+stance answer by the probability the model gave it, and compare against how often that answer
+was in fact the best one for the squad. On the `risk` axis in the 16–18 band, where §5.4 shows
+no one can know, any confidence far from uniform is overconfidence by construction.
 
 **Tactics axis — settled by `TACTICS_MODEL.md` §9:** non-dominance is squad-conditional, so the
 measure is *does the agent match tactics to its squad*, scored as expected-points share against
@@ -812,7 +888,8 @@ ground truth at a fixed horizon, reported in two bands that must never be pooled
 - **ages 16–18**, where it cannot. Here the reading is *calibration*: does the agent's spend track
   the uncertainty it was told about? Overpaying confidently in this band is the failure to count.
 
-**Decision it changes:** whether LLM managers are worth their budget at all, or whether Phase 5's
+**Decision it changes:** which kind of model sets a manager's intent, and whether any of them
+beats leaving every manager neutral — that is, whether Phase 5's
 value is the narrative layer over the utility baseline.
 
 **In-match plans** cannot be scored on `bin/calibrate`, which has no `GameState` and runs at the
@@ -854,30 +931,35 @@ unchanged from the player's seat except that the transfer market is fogged. That
 which to inspect the seams before spending a token.
 
 The agent half — `BACKLOG.md` §3.3: a real provider; the journalist; switch on `narrative_scale`
-and calibrate it to §9.5; LLM-set stances and the ablation; the board. Narrative can be switched
+and calibrate it to §9.5; a real decision model, model-set stances and the ablation; the board. Narrative can be switched
 on with templates alone, before any language model exists, since templates make claims too.
 
 ---
 
 ## 14. Open questions
 
-**Answered by the owner and now settled in the text:** the number of agent-managed clubs is
-configurable with no cap (§2.2, §6); everyone is fogged, the human included, and fog is shown as
-ranges with scouting upgrades to narrow them later (§5); the board does not act in v1 (§9.4);
-narrative must be tangible without running away (§9.5); decisions go to fast policies and text
-to language models (§2.1).
+**Answered by the owner and now settled in the text:**
+
+- the number of agent-managed clubs is configurable with no cap (§2.2, §6);
+- everyone is fogged, the human included; fog is shown as ranges, a range holds the truth about
+  nine times in ten, and scouting upgrades narrow it later (§5);
+- the board does not act in v1 (§9.4);
+- narrative must be tangible without running away (§9.5);
+- execution goes to fast policies, intent to decision models, text to language models (§2.1);
+- the stance has eight axes of five steps (§2.3);
+- a manager reconsiders on bad news — form, standing, confidence, a serious loss (§6.1).
 
 **Still open.** Each has a proposed default, so no work is blocked.
 
-1. **Should a range always contain the truth?** Default no — about nine in ten (§5.2). The
-   alternative is friendlier and removes most of the risk the fog exists to create.
-2. **The stance's eight axes** (§2.3). Are these the right eight, and is five steps the right
-   grain? More axes mean more character and a harder non-dominance calibration.
-3. **Stance triggers and their per-season cap** (§6). Which events make a manager reconsider.
+1. **The trigger thresholds** (§6.1): how bad is bad. Defaults are in the table; they are knobs
+   and will be read on the harness like any others.
+2. **Should good news also move a stance?** Default no in v1 (§6.1).
+3. **Argmax or sampling for a stance** (§2.3). Default argmax.
 4. **Is one sentiment consumer enough?** Default yes for v1. The obvious second is club sentiment
    nudging `Club.reputation`, which touches revenue and transfer consent and is a much larger
    loop to stabilise.
-5. **When to build a learned fast policy** (§2.4). Default: after Phase 5, in the harness first.
-6. **Which provider and models.** Deliberately not decided here; the interface is the decision.
+5. **When to build a trained fast policy** (§2.4). Default: after Phase 5, in the harness first.
+6. **Which models.** `d1` for intent is the working assumption, to be confirmed by measuring it
+   against `d1-omni` and a language model on §12.2's ladder rather than by reputation.
 7. **Does a journalist have a house style per outlet?** Personas support it; whether several
    outlets are worth the budget is a game-feel question.
