@@ -136,7 +136,8 @@ calls-per-season with a named fallback for every agent; the fake provider; what 
 whether the human is fogged like the agents; what a "claim" is structurally, so the validation gate
 can parse one; the narrative-effect mapping; and persona/memory/trace shape.
 
-**3.2 — The deterministic half.** No LLM in it: the Gym-shaped `Observation`/`Decision`/`info`
+**3.2 — The deterministic half.** *(`AGENT_MODEL.md` §13 is the step list; step 1, the
+multi-club control seam, is done.)* No LLM in it: the Gym-shaped `Observation`/`Decision`/`info`
 boundary with fog-of-war masking; the provider-agnostic interface plus a deterministic fake provider
 and templated fallbacks; trace capture, scenario replay, and the recorded-trace-as-output-cache
 property; the validation gate reading `NewsItem.sources`. At the end of this the whole agent

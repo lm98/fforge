@@ -119,9 +119,14 @@ pub struct GameState {
     pub current_matchday: u8,
     pub last_matchday: u8,
     pub results: BTreeMap<FixtureId, (u8, u8)>,
-    /// The human's submitted lineup for the upcoming matchday, if any.
-    pub pending_lineup: Option<Lineup>,
-    /// The lineup most recently used, reused as the default next time.
+    /// Team sheets submitted for the upcoming matchday, by club
+    /// (`AGENT_MODEL.md` §3.2). A club with no entry plays its default: the
+    /// built-in policy, or for the human's club `last_lineup` first.
+    /// Emptied when the matchday advances.
+    pub pending_lineups: BTreeMap<ClubId, Lineup>,
+    /// The human club's most recently used team sheet, reused as its default
+    /// next time. Deliberately the human's alone: any other club's default
+    /// is the built-in policy reading today's squad, never a frozen sheet.
     pub last_lineup: Option<Lineup>,
     pub champion: Option<ClubId>,
     /// Minutes accrued since the last `DevelopmentTick` — the playing-time
@@ -139,13 +144,13 @@ pub struct GameState {
     /// unsigned" reading (`TRANSFER_MODEL.md` §8.2). Cleared when the player
     /// signs again (`TransferCompleted`) or retires (`PlayerRetired`).
     pub unsigned_since: BTreeMap<PlayerId, GameDate>,
-    /// The human's pre-committed transfer plan for the window currently
-    /// open, if any submitted (`TRANSFER_MODEL.md` §10's pre-commitment
-    /// model). Set by `TransferDecisionSubmitted` (overwriting whatever was
-    /// pending before), cleared by the next `TransferWindowClosed` whether
-    /// or not it was ever consumed — a plan is good for one window, never
-    /// carried into the next.
-    pub pending_transfer_decisions: Vec<TransferDecision>,
+    /// Transfer plans pre-committed for the window currently open, by club
+    /// (`TRANSFER_MODEL.md` §10, `AGENT_MODEL.md` §3.2). Set by
+    /// `TransferDecisionSubmitted` (overwriting that club's previous plan),
+    /// all cleared by the next `TransferWindowClosed` whether or not they
+    /// were consumed — a plan is good for one window. An empty plan is a
+    /// decision to do nothing and is distinct from no entry.
+    pub pending_transfer_plans: BTreeMap<ClubId, Vec<TransferDecision>>,
     /// Per-player cards accumulated this season, folded from
     /// `MatchPlayed.cards` as `(matchday, card)` — the recorded truth from
     /// which suspensions are *derived* (`MATCH_MODEL.md` §12's
@@ -192,13 +197,13 @@ impl GameState {
                     current_matchday: 1,
                     last_matchday,
                     results: BTreeMap::new(),
-                    pending_lineup: None,
+                    pending_lineups: BTreeMap::new(),
                     last_lineup: None,
                     champion: None,
                     appearances_since_tick: BTreeMap::new(),
                     club_matches_since_tick: BTreeMap::new(),
                     unsigned_since: BTreeMap::new(),
-                    pending_transfer_decisions: Vec::new(),
+                    pending_transfer_plans: BTreeMap::new(),
                     season_cards: BTreeMap::new(),
                     recent_appearances: BTreeMap::new(),
                     recent_ratings: BTreeMap::new(),
@@ -218,8 +223,9 @@ impl GameState {
             Event::GameStarted { .. } => {
                 panic!("GameStarted may only appear as the first event")
             }
-            Event::LineupSubmitted { lineup, .. } => {
-                self.pending_lineup = Some(lineup.clone());
+            Event::LineupSubmitted { lineup, club, .. } => {
+                let club = club.unwrap_or(self.player_club);
+                self.pending_lineups.insert(club, lineup.clone());
             }
             Event::MatchPlayed {
                 fixture,
@@ -280,9 +286,10 @@ impl GameState {
                 }
             }
             Event::MatchdayAdvanced { new_date, .. } => {
-                if let Some(lineup) = self.pending_lineup.take() {
+                if let Some(lineup) = self.pending_lineups.remove(&self.player_club) {
                     self.last_lineup = Some(lineup);
                 }
+                self.pending_lineups.clear();
                 self.date = *new_date;
                 self.current_matchday += 1;
                 self.prune_recent_appearances();
@@ -309,7 +316,7 @@ impl GameState {
                 self.date = *start_date;
                 self.current_matchday = 1;
                 self.results.clear();
-                self.pending_lineup = None;
+                self.pending_lineups.clear();
                 self.champion = None;
                 // Cards do not carry across the season boundary
                 // (MATCH_MODEL.md §15); injuries (`Player.injured_until`) do.
@@ -362,11 +369,13 @@ impl GameState {
             Event::FinanceTick { deltas, .. } => {
                 apply_finance_deltas(&mut self.world, deltas);
             }
-            Event::TransferDecisionSubmitted { decisions, .. } => {
-                self.pending_transfer_decisions = decisions.clone();
+            Event::TransferDecisionSubmitted {
+                club, decisions, ..
+            } => {
+                self.pending_transfer_plans.insert(*club, decisions.clone());
             }
             Event::TransferWindowClosed { .. } => {
-                self.pending_transfer_decisions.clear();
+                self.pending_transfer_plans.clear();
             }
         }
     }
@@ -422,6 +431,14 @@ impl GameState {
             .chain(&away.players)
             .map(|&pid| (pid, self.condition(pid)))
             .collect()
+    }
+
+    /// The transfer plan `club` has pre-committed for the open window —
+    /// empty both when it submitted an empty plan and when it submitted none.
+    pub fn pending_transfer_plan(&self, club: ClubId) -> &[TransferDecision] {
+        self.pending_transfer_plans
+            .get(&club)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Whether `pid` is banned for `self.current_matchday` (`MATCH_MODEL.md`
@@ -881,7 +898,7 @@ mod transfer_event_tests {
             decisions: decisions.clone(),
         });
         let after_submit = GameState::replay(&log);
-        assert_eq!(after_submit.pending_transfer_decisions, decisions);
+        assert_eq!(after_submit.pending_transfer_plan(club), decisions);
 
         log.push(Event::TransferWindowClosed {
             date: state.date,
@@ -889,12 +906,68 @@ mod transfer_event_tests {
         });
         let after_close = GameState::replay(&log);
         assert!(
-            after_close.pending_transfer_decisions.is_empty(),
+            after_close.pending_transfer_plans.is_empty(),
             "TransferWindowClosed must clear whatever was pending, consumed or not"
         );
 
         // Idempotent, deterministic replay across both new event kinds.
         assert_eq!(GameState::replay(&log), GameState::replay(&log));
+    }
+
+    /// Hard constraint 5: a log written before `LineupSubmitted` carried a
+    /// club must still load, and its team sheets belong to the human's club.
+    #[test]
+    fn a_team_sheet_event_without_a_club_belongs_to_the_human() {
+        let (mut log, state) = base_log(32);
+        let lineup = crate::match_engine::ai_pick_lineup(&state.world, state.player_club);
+        let with_club = serde_json::to_value(Event::LineupSubmitted {
+            matchday: 1,
+            lineup: lineup.clone(),
+            club: Some(state.player_club),
+        })
+        .expect("serialize");
+        let mut legacy = with_club.clone();
+        legacy["LineupSubmitted"]
+            .as_object_mut()
+            .expect("externally tagged variant")
+            .remove("club")
+            .expect("the club field is present in new logs");
+        let legacy: Event = serde_json::from_value(legacy).expect("a pre-seam event still loads");
+
+        log.push(legacy);
+        let replayed = GameState::replay(&log);
+        assert_eq!(
+            replayed.pending_lineups.get(&state.player_club),
+            Some(&lineup)
+        );
+        assert_eq!(replayed.pending_lineups.len(), 1);
+    }
+
+    #[test]
+    fn transfer_plans_are_held_per_club_and_all_expire_together() {
+        let (mut log, state) = base_log(32);
+        let mut clubs = state.world.clubs.keys().copied();
+        let (a, b) = (clubs.next().unwrap(), clubs.next().unwrap());
+        for club in [a, b] {
+            let player = state.world.club(club).players[0];
+            log.push(Event::TransferDecisionSubmitted {
+                date: state.date,
+                club,
+                decisions: vec![TransferDecision::List { player }],
+            });
+        }
+        let submitted = GameState::replay(&log);
+        assert_ne!(
+            submitted.pending_transfer_plan(a),
+            submitted.pending_transfer_plan(b)
+        );
+        assert_eq!(submitted.pending_transfer_plans.len(), 2);
+
+        log.push(Event::TransferWindowClosed {
+            date: state.date,
+            window_index: 0,
+        });
+        assert!(GameState::replay(&log).pending_transfer_plans.is_empty());
     }
 
     #[test]
@@ -914,7 +987,7 @@ mod transfer_event_tests {
         });
         let replayed = GameState::replay(&log);
         assert_eq!(
-            replayed.pending_transfer_decisions,
+            replayed.pending_transfer_plan(club),
             vec![TransferDecision::List { player: squad[1] }],
             "the latest submission must replace, not accumulate onto, the prior one"
         );
@@ -1227,7 +1300,14 @@ mod match_boundary_tests {
             &check_state.suspended_players(),
         );
         illegal.players[0] = sent_off;
-        let err = crate::commands::step(&check_state, Command::SubmitLineup(illegal)).unwrap_err();
+        let err = crate::commands::step(
+            &check_state,
+            Command::SubmitLineup {
+                club: check_state.player_club,
+                lineup: illegal,
+            },
+        )
+        .unwrap_err();
         assert_eq!(
             err,
             crate::commands::CommandError::PlayerUnavailable(sent_off)
@@ -1434,7 +1514,14 @@ mod match_boundary_tests {
         // Submitting a lineup that names them explicitly must be rejected.
         let mut illegal = filtered.clone();
         illegal.players[0] = injured;
-        let err = crate::commands::step(&after, Command::SubmitLineup(illegal)).unwrap_err();
+        let err = crate::commands::step(
+            &after,
+            Command::SubmitLineup {
+                club: after.player_club,
+                lineup: illegal,
+            },
+        )
+        .unwrap_err();
         assert_eq!(err, CommandError::PlayerUnavailable(injured));
 
         // Once the injury has fully elapsed, filtering is a no-op again —
@@ -1637,7 +1724,14 @@ mod match_boundary_tests {
             },
         }];
 
-        let submit = step(&state, Command::SubmitLineup(lineup)).expect("valid lineup");
+        let submit = step(
+            &state,
+            Command::SubmitLineup {
+                club: state.player_club,
+                lineup,
+            },
+        )
+        .expect("valid lineup");
         let mut after = state.clone();
         for e in &submit {
             after.apply(e);

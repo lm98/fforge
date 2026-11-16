@@ -48,12 +48,20 @@ pub enum Event {
     },
     /// The human manager's resolved, validated team-sheet decision for the
     /// upcoming matchday.
-    LineupSubmitted { matchday: u8, lineup: Lineup },
+    LineupSubmitted {
+        matchday: u8,
+        lineup: Lineup,
+        /// The club the sheet is for (`AGENT_MODEL.md` §3.2). `None` only in
+        /// logs written before any club but the human's could submit one,
+        /// where it means `GameStarted.player_club`.
+        #[serde(default)]
+        club: Option<ClubId>,
+    },
     /// A simulated result. Carries the two participating XIs (`home_xi` /
     /// `away_xi`) as the *resolved outcome* the fold consumes: appearances feed
     /// the Phase-3 playing-time development input (`DEVELOPMENT_MODEL.md` §3),
     /// recorded here rather than re-derived at tick time — a past matchday's
-    /// effective lineup depends on transient `pending_lineup` state that is not
+    /// effective lineup depends on transient `pending_lineups` state that is not
     /// otherwise reconstructable, so recording it is the replay-safe source.
     /// (The rich minute-by-minute match event stream stays a Trace, not a fold
     /// input, `MATCH_MODEL.md` §7.)

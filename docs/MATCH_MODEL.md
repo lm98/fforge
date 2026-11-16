@@ -418,7 +418,7 @@ domain fields.
 - **Availability becomes a fold view:** `GameState::available(pid, date)` — false while
   `injured_until` lies ahead (§14) or a derived ban is unserved (§15). `validate_lineup`
   rejects unavailable players (new `CommandError` variants); `ai_pick_lineup` filters them;
-  `effective_player_lineup` falls back to auto-pick when a remembered lineup goes stale. The
+  `effective_lineup` (then `effective_player_lineup`) falls back to auto-pick when a remembered lineup goes stale. The
   playing-time input to development upgrades from XIs to `minutes` — the deepening
   `DEVELOPMENT_MODEL.md` §3 explicitly left room for, behind the same appearances window.
 - **Log growth:** ~50 small entries per match against the ~22 `PlayerId`s already recorded —

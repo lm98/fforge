@@ -29,15 +29,17 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Submit the human club's team sheet for the upcoming matchday.
-    SubmitLineup(Lineup),
+    /// Submit `club`'s team sheet for the upcoming matchday. The human's
+    /// club and any agent-run club use the same command and the same
+    /// validation (`AGENT_MODEL.md` §3.2).
+    SubmitLineup { club: ClubId, lineup: Lineup },
     /// Simulate every fixture of the current matchday and advance the calendar.
     AdvanceMatchday,
     /// Begin a fresh season on the (developed) world once the current one is
     /// over — the multi-season continuity development needs (`DEVELOPMENT_MODEL.md`
     /// §5). Runs the offseason development ticks, then resets the calendar.
     StartNextSeason,
-    /// Submit the human club's transfer plan for the window currently open
+    /// Submit `club`'s transfer plan for the window currently open
     /// (`TRANSFER_MODEL.md` §10's pre-commitment model): validated here for
     /// shape only (targets exist, aren't already owned, prices aren't
     /// negative, sell-list entries are the club's own players), then
@@ -46,7 +48,10 @@ pub enum Command {
     /// bounds, and every other resolve-time stabilizer are checked later,
     /// inside the clearing loop itself, against whatever the world actually
     /// looks like when the window closes — not here.
-    SubmitTransferDecision(Vec<TransferDecision>),
+    SubmitTransferDecision {
+        club: ClubId,
+        decisions: Vec<TransferDecision>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +61,8 @@ pub enum CommandError {
     UnknownFormation(u8),
     DuplicatePlayers,
     NotInSquad(PlayerId),
+    /// A command names a club that is not in this world.
+    UnknownClub(ClubId),
     /// A lineup names a player who is currently unavailable — injured
     /// (`MATCH_MODEL.md` §12, §14, T10) or suspended (§15, T11).
     PlayerUnavailable(PlayerId),
@@ -83,6 +90,7 @@ impl fmt::Display for CommandError {
             CommandError::DuplicatePlayers => write!(f, "a player appears twice in the lineup"),
             CommandError::NotInSquad(p) => write!(f, "player {p} is not in your squad"),
             CommandError::PlayerUnavailable(p) => write!(f, "player {p} is not available"),
+            CommandError::UnknownClub(c) => write!(f, "club {c} does not exist"),
             CommandError::UnknownPlayer(p) => write!(f, "player {p} does not exist"),
             CommandError::AlreadyOwned(p) => write!(f, "player {p} is already on your books"),
             CommandError::NegativePrice(p) => {
@@ -113,19 +121,22 @@ pub fn step(state: &GameState, command: Command) -> Result<Vec<Event>, CommandEr
                 return Err(CommandError::SeasonOver);
             }
             match other {
-                Command::SubmitLineup(lineup) => {
-                    validate_lineup(state, &lineup)?;
+                Command::SubmitLineup { club, lineup } => {
+                    validate_club(state, club)?;
+                    validate_lineup(state, club, &lineup)?;
                     Ok(vec![Event::LineupSubmitted {
                         matchday: state.current_matchday,
                         lineup,
+                        club: Some(club),
                     }])
                 }
                 Command::AdvanceMatchday => Ok(advance_matchday(state)),
-                Command::SubmitTransferDecision(decisions) => {
-                    validate_transfer_decisions(state, &decisions)?;
+                Command::SubmitTransferDecision { club, decisions } => {
+                    validate_club(state, club)?;
+                    validate_transfer_decisions(state, club, &decisions)?;
                     Ok(vec![Event::TransferDecisionSubmitted {
                         date: state.date,
-                        club: state.player_club,
+                        club,
                         decisions,
                     }])
                 }
@@ -144,11 +155,20 @@ pub fn step(state: &GameState, command: Command) -> Result<Vec<Event>, CommandEr
 /// validation inside `market::resolve_window`'s clearing loop, checked
 /// against the world as it is when the window closes, not as it was at
 /// submission time.
+fn validate_club(state: &GameState, club: ClubId) -> Result<(), CommandError> {
+    if state.world.clubs.contains_key(&club) {
+        Ok(())
+    } else {
+        Err(CommandError::UnknownClub(club))
+    }
+}
+
 fn validate_transfer_decisions(
     state: &GameState,
+    club: ClubId,
     decisions: &[TransferDecision],
 ) -> Result<(), CommandError> {
-    let squad = &state.world.club(state.player_club).players;
+    let squad = &state.world.club(club).players;
     for d in decisions {
         match *d {
             TransferDecision::Bid { player, price, .. } => {
@@ -175,7 +195,7 @@ fn validate_transfer_decisions(
     Ok(())
 }
 
-fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandError> {
+fn validate_lineup(state: &GameState, club: ClubId, lineup: &Lineup) -> Result<(), CommandError> {
     if lineup.formation as usize >= FORMATIONS.len() {
         return Err(CommandError::UnknownFormation(lineup.formation));
     }
@@ -185,7 +205,7 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
             return Err(CommandError::DuplicatePlayers);
         }
     }
-    let squad = &state.world.club(state.player_club).players;
+    let squad = &state.world.club(club).players;
     for &pid in &lineup.players {
         if !squad.contains(&pid) {
             return Err(CommandError::NotInSquad(pid));
@@ -246,29 +266,30 @@ fn validate_lineup(state: &GameState, lineup: &Lineup) -> Result<(), CommandErro
     Ok(())
 }
 
-/// The human club's effective lineup for this matchday: the submitted one,
-/// else the last one used, else a deterministic auto-pick — each source
-/// skipped in favour of the next if it names a player who has since become
-/// unavailable (`MATCH_MODEL.md` §12, T10: "`effective_player_lineup` falls
-/// back to auto-pick when a remembered lineup goes stale"). Never fails —
-/// forgetting to set a team costs quality, not a crash.
-fn effective_player_lineup(state: &GameState) -> Lineup {
-    if let Some(lineup) = &state.pending_lineup
-        && lineup.players.iter().all(|&pid| state.available(pid))
-    {
+/// The team sheet `club` actually plays this matchday (`AGENT_MODEL.md`
+/// §3.2): the one it submitted; failing that, for the human's club the last
+/// one it used; failing that, the default — an auto-pick for the human, the
+/// built-in policy for everyone else. A remembered sheet naming a player who
+/// has since become unavailable is skipped (`MATCH_MODEL.md` §12). Never
+/// fails — not setting a team costs quality, not a crash.
+fn effective_lineup(
+    state: &GameState,
+    club: ClubId,
+    opponent: ClubId,
+    is_home: bool,
+    suspended: &BTreeSet<PlayerId>,
+) -> Lineup {
+    let usable = |lineup: &&Lineup| lineup.players.iter().all(|&pid| state.available(pid));
+    if let Some(lineup) = state.pending_lineups.get(&club).filter(usable) {
         return lineup.clone();
     }
-    if let Some(lineup) = &state.last_lineup
-        && lineup.players.iter().all(|&pid| state.available(pid))
-    {
+    if club != state.player_club {
+        return ai_pick_lineup_vs(&state.world, club, opponent, is_home, state.date, suspended);
+    }
+    if let Some(lineup) = state.last_lineup.as_ref().filter(usable) {
         return lineup.clone();
     }
-    ai_pick_lineup_available(
-        &state.world,
-        state.player_club,
-        state.date,
-        &state.suspended_players(),
-    )
+    ai_pick_lineup_available(&state.world, club, state.date, suspended)
 }
 
 /// The player's own fixture for the upcoming matchday, simulated exactly as
@@ -297,13 +318,8 @@ fn simulate_fixture(
     fixture: &Fixture,
     suspended: &BTreeSet<PlayerId>,
 ) -> (Lineup, Lineup, MatchOutcome) {
-    let lineup_for = |club: ClubId, opponent: ClubId, is_home: bool| {
-        if club == state.player_club {
-            effective_player_lineup(state)
-        } else {
-            ai_pick_lineup_vs(&state.world, club, opponent, is_home, state.date, suspended)
-        }
-    };
+    let lineup_for =
+        |club, opponent, is_home| effective_lineup(state, club, opponent, is_home, suspended);
     let home_lineup = lineup_for(fixture.home, fixture.away, true);
     let away_lineup = lineup_for(fixture.away, fixture.home, false);
     let outcome = play_match(
@@ -316,6 +332,17 @@ fn simulate_fixture(
         state.date,
     );
     (home_lineup, away_lineup, outcome)
+}
+
+/// The plans `market::resolve_window` replays instead of running the built-in
+/// policy: everything submitted, plus an empty plan for the human's club if
+/// it submitted none — "a human who says nothing gets nothing"
+/// (`TRANSFER_MODEL.md` §10). Any other club with no plan is absent and so
+/// runs `UtilityPolicy` (`AGENT_MODEL.md` §3.2).
+fn recorded_transfer_plans(state: &GameState) -> BTreeMap<ClubId, Vec<TransferDecision>> {
+    let mut plans = state.pending_transfer_plans.clone();
+    plans.entry(state.player_club).or_default();
+    plans
 }
 
 fn advance_matchday(state: &GameState) -> Vec<Event> {
@@ -575,8 +602,7 @@ fn transfer_window_events(
             &value_knobs,
             &utility_knobs,
             &market_knobs,
-            Some(state.player_club),
-            &state.pending_transfer_decisions,
+            &recorded_transfer_plans(state),
             &state.recent_ratings,
         );
         for t in &outcome.transfers {
@@ -659,6 +685,141 @@ mod transfer_decision_tests {
         log.extend(events);
     }
 
+    /// `AGENT_MODEL.md` §3.2: a club other than the human's can submit a
+    /// team sheet through the same command, and it is the sheet that club
+    /// then plays.
+    #[test]
+    fn a_rival_clubs_submitted_team_sheet_is_the_one_it_plays() {
+        let (mut log, mut state) = base_log(11);
+        let fixture = state
+            .fixtures_of_matchday(1)
+            .find(|f| f.home != state.player_club && f.away != state.player_club)
+            .expect("a fixture not involving the human")
+            .clone();
+        let rival = fixture.home;
+
+        // A legal sheet the built-in policy would not have produced.
+        let mut sheet = ai_pick_lineup_available(&state.world, rival, state.date, &BTreeSet::new());
+        sheet.players.reverse();
+        let default_xi = ai_pick_lineup_vs(
+            &state.world,
+            rival,
+            fixture.away,
+            true,
+            state.date,
+            &BTreeSet::new(),
+        )
+        .players
+        .to_vec();
+        assert_ne!(sheet.players.to_vec(), default_xi);
+
+        drive(
+            &mut state,
+            &mut log,
+            Command::SubmitLineup {
+                club: rival,
+                lineup: sheet.clone(),
+            },
+        );
+        drive(&mut state, &mut log, Command::AdvanceMatchday);
+
+        let played = log
+            .iter()
+            .find_map(|e| match e {
+                Event::MatchPlayed {
+                    fixture: id,
+                    home_xi,
+                    ..
+                } if *id == fixture.id => Some(home_xi.clone()),
+                _ => None,
+            })
+            .expect("the rival's fixture was played");
+        assert_eq!(played, sheet.players.to_vec());
+        assert!(
+            state.pending_lineups.is_empty(),
+            "a submitted sheet is good for one matchday"
+        );
+        assert_eq!(
+            state.last_lineup, None,
+            "only the human's sheet is remembered as a default"
+        );
+        assert_eq!(GameState::replay(&log), state);
+    }
+
+    #[test]
+    fn a_team_sheet_is_validated_against_the_club_it_is_for() {
+        let (_, state) = base_log(11);
+        let rival = state
+            .world
+            .clubs
+            .keys()
+            .copied()
+            .find(|&c| c != state.player_club)
+            .expect("a rival club");
+        let humans_own = ai_pick_lineup_available(
+            &state.world,
+            state.player_club,
+            state.date,
+            &BTreeSet::new(),
+        );
+        assert!(matches!(
+            step(
+                &state,
+                Command::SubmitLineup {
+                    club: rival,
+                    lineup: humans_own.clone(),
+                }
+            ),
+            Err(CommandError::NotInSquad(_))
+        ));
+        assert_eq!(
+            step(
+                &state,
+                Command::SubmitLineup {
+                    club: ClubId(u16::MAX),
+                    lineup: humans_own,
+                }
+            ),
+            Err(CommandError::UnknownClub(ClubId(u16::MAX)))
+        );
+    }
+
+    /// `AGENT_MODEL.md` §3.2's table: the human's club with no plan does
+    /// nothing; any other club with no plan runs the built-in policy, and
+    /// with an *empty* plan does nothing.
+    #[test]
+    fn only_the_human_and_clubs_with_a_recorded_plan_bypass_the_built_in_policy() {
+        let (_, mut state) = base_log(11);
+        assert_eq!(
+            recorded_transfer_plans(&state)
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![state.player_club]
+        );
+        let rival = state
+            .world
+            .clubs
+            .keys()
+            .copied()
+            .find(|&c| c != state.player_club)
+            .expect("a rival club");
+        let events = step(
+            &state,
+            Command::SubmitTransferDecision {
+                club: rival,
+                decisions: Vec::new(),
+            },
+        )
+        .expect("an empty plan is a legal plan");
+        for e in &events {
+            state.apply(e);
+        }
+        let plans = recorded_transfer_plans(&state);
+        assert_eq!(plans.get(&rival), Some(&Vec::new()));
+        assert_eq!(plans.len(), 2);
+    }
+
     #[test]
     fn rejects_a_bid_on_an_unknown_player() {
         let (_, state) = base_log(1);
@@ -666,7 +827,13 @@ mod transfer_decision_tests {
             player: PlayerId(999_999),
         }];
         assert_eq!(
-            step(&state, Command::SubmitTransferDecision(decisions)),
+            step(
+                &state,
+                Command::SubmitTransferDecision {
+                    club: state.player_club,
+                    decisions
+                }
+            ),
             Err(CommandError::UnknownPlayer(PlayerId(999_999)))
         );
     }
@@ -682,7 +849,13 @@ mod transfer_decision_tests {
             price: Money(1),
         }];
         assert_eq!(
-            step(&state, Command::SubmitTransferDecision(decisions)),
+            step(
+                &state,
+                Command::SubmitTransferDecision {
+                    club: state.player_club,
+                    decisions
+                }
+            ),
             Err(CommandError::AlreadyOwned(own))
         );
     }
@@ -706,7 +879,13 @@ mod transfer_decision_tests {
             price: Money(-1),
         }];
         assert_eq!(
-            step(&state, Command::SubmitTransferDecision(decisions)),
+            step(
+                &state,
+                Command::SubmitTransferDecision {
+                    club: state.player_club,
+                    decisions
+                }
+            ),
             Err(CommandError::NegativePrice(target))
         );
     }
@@ -725,7 +904,13 @@ mod transfer_decision_tests {
         let not_mine = state.world.club(other_club).players[0];
         let decisions = vec![TransferDecision::List { player: not_mine }];
         assert_eq!(
-            step(&state, Command::SubmitTransferDecision(decisions)),
+            step(
+                &state,
+                Command::SubmitTransferDecision {
+                    club: state.player_club,
+                    decisions
+                }
+            ),
             Err(CommandError::NotInSquad(not_mine))
         );
     }
@@ -737,10 +922,14 @@ mod transfer_decision_tests {
         let decisions = vec![TransferDecision::List { player: mine }];
 
         let submitted_at = state.date;
+        let club = state.player_club;
         drive(
             &mut state,
             &mut log,
-            Command::SubmitTransferDecision(decisions.clone()),
+            Command::SubmitTransferDecision {
+                club,
+                decisions: decisions.clone(),
+            },
         );
         assert_eq!(
             log.last(),
@@ -750,7 +939,7 @@ mod transfer_decision_tests {
                 decisions: decisions.clone(),
             })
         );
-        assert_eq!(state.pending_transfer_decisions, decisions);
+        assert_eq!(state.pending_transfer_plan(state.player_club), decisions);
 
         loop {
             let before = log.len();
@@ -767,7 +956,7 @@ mod transfer_decision_tests {
             );
         }
         assert!(
-            state.pending_transfer_decisions.is_empty(),
+            state.pending_transfer_plan(state.player_club).is_empty(),
             "a window closing must clear the pending plan"
         );
     }
@@ -776,10 +965,14 @@ mod transfer_decision_tests {
     fn replay_reconstructs_identical_state_across_a_submitted_plan_and_window_close() {
         let (mut log, mut state) = base_log(6);
         let mine = state.world.club(state.player_club).players[0];
+        let club = state.player_club;
         drive(
             &mut state,
             &mut log,
-            Command::SubmitTransferDecision(vec![TransferDecision::List { player: mine }]),
+            Command::SubmitTransferDecision {
+                club,
+                decisions: vec![TransferDecision::List { player: mine }],
+            },
         );
         loop {
             let before = log.len();

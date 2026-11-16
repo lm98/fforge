@@ -675,7 +675,7 @@ fn submit_player_clubs_ai_equivalent_plan(
     let obs = observe(world, club, today, &valuations, dev_knobs, utility_knobs);
     let decisions = UtilityPolicy::new(*utility_knobs).transfer_decisions(&obs);
     session
-        .execute(Command::SubmitTransferDecision(decisions), &mut [])
+        .execute(Command::SubmitTransferDecision { club, decisions }, &mut [])
         .expect("submit player_club's AI-equivalent transfer plan");
 }
 

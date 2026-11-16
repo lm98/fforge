@@ -80,6 +80,11 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 - **Affordability is checked at resolve time** (`market::filter_affordable`), not at submit
   time. `validate_transfer_decisions` only checks shape, because a human plan is replayed against
   a world that has moved on since it was submitted.
+- **Any club can submit a team sheet or a transfer plan; what happens when one doesn't depends
+  on the seat** (`AGENT_MODEL.md` §3.2). The human's club reuses its last sheet and makes no
+  transfers; every other club falls back to the built-in policy. `commands::effective_lineup`
+  and `commands::recorded_transfer_plans` are the only two places that rule is written. The core
+  never records who is agent-controlled.
 - **A suspension is one matchday wide by construction.** `is_suspended` compares against
   `current_matchday - 1` exactly, so there is no "ban served" flag to maintain.
 - **The harnesses live in `fforge-harness`, not here.** This crate prints nothing and must not
