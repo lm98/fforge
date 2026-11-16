@@ -11,7 +11,8 @@ implement, and resolves the seven items `BACKLOG.md` §3.1 lists.
 
 **Draft status.** Every decision below carries one of three marks:
 
-- **Settled** — follows from an existing note or from code already merged; restated, not reopened.
+- **Settled** — follows from an existing note, from merged code, or from an owner decision
+  (marked as such); restated, not reopened.
 - **Proposed** — this note's recommendation, with its reasoning. Stands unless overruled.
 - **Open** — a call of taste or scope that the reasoning does not decide. Collected in §14.
 
@@ -26,8 +27,8 @@ implement, and resolves the seven items `BACKLOG.md` §3.1 lists.
   the evaluation axes and the ablation design.
 - **Deferred:** negotiation dialogue and multi-round bargaining (`TRANSFER_MODEL.md` §1 defers
   the rounds themselves); press conferences and any agent↔human conversation; agent-authored
-  long-term memory (§10.2); agents for every club (§6 budgets a few); a PettingZoo-conformant
-  wrapper (§3.4); player agents.
+  long-term memory (§10.2); learned fast policies (§2.4); scouting upgrades (§5.2 leaves the
+  hook); a PettingZoo-conformant wrapper (§3.4); player agents.
 
 ### 1.1 What already exists
 
@@ -49,24 +50,107 @@ introduces the smallest surface that makes §7 implementable.
 
 ## 2. The roster
 
-**Proposed.** Three agent roles in v1, in build order:
+### 2.1 Two speeds of agent
 
-| Role | Decides | Decision value | Baseline it is swapped against |
-|---|---|---|---|
-| **Journalist** | which facts to report, and the prose | `Article { text, claims }` (§8) | `news::TemplateRenderer` |
-| **Manager** (rival clubs) | team sheet, tactics, substitution plan; the window's transfer plan | `Lineup`; `Vec<TransferDecision>` | `ai_pick_lineup_vs`; `UtilityPolicy` |
-| **Board** (the human's own club) | a season objective and a reaction to results | `BoardStance` (§9.4) | a rule-based stance |
+**Settled (owner decision, with the reasoning recorded).** Agents come in two kinds, split by
+what the work needs rather than by role:
 
-The journalist is first because it is read-only on the decision side: it exercises the provider,
-the trace and the gate with no effect on the simulation until §9's feedback is switched on. The
-manager is second and is the ablation's subject. The board is last and smallest.
+- **Fast policies ("system 1")** make the frequent, structured decisions: team sheet, tactics,
+  in-match plan, transfer plan. They are cheap, deterministic functions of an observation, run
+  for *every* club on *every* matchday, and never call a language model.
+- **Language models ("system 2")** do what needs text or deliberation: writing, and setting the
+  slow-moving *intent* a fast policy then executes.
+
+The split exists because the two workloads have opposite shapes. A league makes roughly 760
+team-sheet decisions and 40 transfer plans a season; almost all are routine, and a language model
+is an expensive and slow way to make a routine decision. A season also contains a handful of
+moments where a manager's *character* should show — what kind of side he builds, how he reacts to
+a bad run — and those are few, verbal, and exactly what a language model is good at.
+
+**The connection between the two is a `ManagerStance`** (§2.3): a small, bounded, typed value a
+language model sets a few times a season, which conditions that club's fast policy on every
+decision until it is next set. Deliberation is rare and expensive; execution is constant and
+free. That is how every one of the nineteen rival clubs can have a distinct manager on a budget
+that would otherwise pay for three.
+
+### 2.2 The roles
+
+| Role | Speed | Decides | Decision value | Baseline |
+|---|---|---|---|---|
+| **Journalist** | LLM | which facts to report, and the prose | `Article { text, claims }` (§8) | `news::TemplateRenderer` |
+| **Manager's intent** | LLM, a few times a season | how his side should play and trade | `ManagerStance` (§2.3) | the neutral stance |
+| **Manager's execution** | fast policy, every decision | team sheet, tactics, plan; transfer plan | `Lineup`; `Vec<TransferDecision>` | the same policy at the neutral stance |
+| **Board** (the human's club) | LLM, monthly | a season objective and a reaction to results | `BoardStance` (§9.4) | a rule-based stance |
+
+The journalist is built first because it is read-only on the decision side: it exercises the
+provider, the trace and the gate with no effect on the simulation until §9's feedback is switched
+on. The manager is second and is the ablation's subject. The board is last and smallest.
 
 **The human is the manager of their own club and is never replaced by an agent.** Agents play the
 people around them: rival managers, their own board, the press.
 
+**There is no architectural limit on how many clubs are agent-managed.** The number is
+configuration (§6). With intent and execution split, the natural default is *all* rivals.
+
 **Scouts are not agents in v1.** Scouting is the fog-of-war function of §5 — a deterministic
-degradation of what an observer sees — not a persona that reasons. A scout *persona* that writes
-reports from the fogged view is a natural later addition and needs nothing new from the core.
+degradation of what an observer sees — not a persona that reasons. Scouting *upgrades* that
+narrow the fog (§5.2) are a planned extension and need no agent either.
+
+### 2.3 The stance
+
+**Proposed.** A stance is a bounded adjustment to the knob tables the built-in policies already
+read (`AiTacticKnobs`, `UtilityKnobs`), plus the one new preference fog makes meaningful:
+
+```rust
+pub struct ManagerStance {
+    pub mentality: Lean,      // shifts the strength-gap thresholds: readier to attack, or to sit
+    pub tempo: Lean,
+    pub width: Lean,
+    pub pressing: Lean,
+    pub rotation: Lean,       // how readily tired legs are rested
+    pub youth: Lean,          // weight on succession and potential when buying
+    pub ambition: Lean,       // the quality target relative to the club's reputation
+    pub risk: Lean,           // which end of a scouted range he prices on (§5.4)
+}
+
+pub enum Lean { StrongAgainst, Against, Neutral, Toward, StrongToward }
+```
+
+- **Typed and closed**: five steps on eight axes. Every value is legal, so a stance cannot fail
+  validation; the worst a language model can do is choose badly.
+- **Recorded**: `Command::SetManagerStance { club, stance }` → `Event::ManagerStanceSet`, folded
+  into `GameState.stances: BTreeMap<ClubId, ManagerStance>`. The policies read it from state, so
+  they stay pure and a replay needs no model.
+- **`Neutral` on every axis is the identity**: the policies behave exactly as today, bit for
+  bit. This is the stance's identity setting and joins the list in `fforge-core/CLAUDE.md`.
+- **Each `Lean` maps to a fixed multiplier or threshold shift in a `StanceKnobs` table.** The
+  mapping is calibrated once so that no stance dominates — the same non-dominance requirement
+  tactics had to meet, and measured the same way (§12.2).
+
+A stance is what a persona *does*. The persona (§10) is who the manager is; the stance is that
+character rendered into numbers the simulation can act on.
+
+### 2.4 Learned policies — where they fit, and why not yet
+
+The fast policy in v1 is the existing utility policy, parameterised by a stance. A *learned*
+fast policy — a small network or tree model trained in the simulation — is the obvious next step
+and the seam is already the right shape for it: it is another `ClubPolicy` and another lineup
+picker, taking the same observation and the stance as conditioning input.
+
+**Proposed: do not build it in Phase 5.** Three reasons, in order of weight:
+
+1. **It needs a training pipeline that does not exist** — rollouts, a reward, a trainer, weight
+   storage — and `DESIGN.md` §2 puts the game before the platform. The parameterised utility
+   policy gives the whole two-speed architecture with nothing to train.
+2. **A learner will find whatever is dominant in the simulation.** That is a hazard for the game
+   and a gift for calibration: a policy trained to win is the best dominance detector available,
+   and would have found the tactics imbalances in hours rather than two calibration passes. It
+   belongs in `fforge-harness` first, as a probe, before it belongs in the game.
+3. **Where fog leaves no signal, learning has nothing to learn** (§5.4). The gain over a
+   well-set utility policy is real but bounded, and should be measured before it is assumed.
+
+When it is built it enters the ablation as one more rung (§12.2), and the comparison between a
+trained policy and a language model on the same decisions is a result worth having either way.
 
 ---
 
@@ -85,6 +169,7 @@ a typed, validated value with a `Command` that submits it and an `Event` that re
 |---|---|---|---|
 | Team sheet, tactics, in-match plan | `Lineup` | `SubmitLineup` | `LineupSubmitted` |
 | Transfer plan | `Vec<TransferDecision>` | `SubmitTransferDecision` | `TransferDecisionSubmitted` |
+| Manager's intent | `ManagerStance` | `SetManagerStance` (new, §2.3) | `ManagerStanceSet` (new) |
 | Article | `Article` | `PublishArticle` (new, §8) | `NarrativeBeat`s (new, §9) |
 | Board stance | `BoardStance` | `SetBoardStance` (new, §9.4) | `BoardStanceSet` (new) |
 
@@ -173,6 +258,12 @@ stages.** One matchday:
 5. REPORT    journalist stage: gather → invoke → PublishArticle, on the post-advance state
 ```
 
+**Only language-model seats appear in stages 1–3.** A fast policy is not invoked by the driver
+at all: it runs inside the pure advance, where the built-in policies already run, and reads its
+club's stance from `GameState`. On most matchdays stages 1–3 are therefore empty for managers —
+a stance is due only at its fixed points and triggers (§6) — and the stage carries the
+journalist and, monthly, the board.
+
 Three properties fall out of the staging:
 
 - **Simultaneity.** Every seat in a stage observes the same frozen `S`. No agent sees another's
@@ -216,66 +307,95 @@ perceived valuation is that same function over degraded inputs — a wrapper, no
 
 ### 5.1 What is hidden
 
-**Proposed:** an observer sees a player's 25 performance attributes as they are, and never sees
-the fields `ATTRIBUTE_SCHEMA.md` already marks hidden: `Character.potential` (PA), the rest of
-`Character`, and `DevProfile` (`E`, `φ`). In their place the observation carries a **scouted
-estimate** of PA and nothing else.
+**Settled (owner decision).** What an observer knows depends on whose player it is:
 
-Visible attributes are left exact on purpose. Fogging them too would be more realistic but would
-inject noise into every lineup decision and every CA reading, and the question Phase 5 exists to
-ask — can an agent act well under uncertainty about a player's *future* — is fully posed by PA
-alone. One hidden quantity, one knob set, one thing to calibrate.
+| | Own players | Everyone else's |
+|---|---|---|
+| Performance attributes, and so current ability | exact | **fogged** |
+| Potential | **fogged** | **fogged**, more widely |
+| Market value | follows from the above | **fogged** |
+| `Character`, `DevProfile` | never shown | never shown |
+
+Nobody sees a true potential for anyone, their own squad included. Nobody sees a true current
+ability or a true value for a player at another club. **Every fogged quantity is presented as a
+range, and the width of the range is the uncertainty.**
 
 ### 5.2 The estimate
 
+Each observer holds two hidden offsets per player per season, drawn from its own stream:
+
 ```
-pa_hat(observer, player, season) = PA + σ(observer, player) · z
-z = standard normal from derive_stream(seed, SCOUT_NS | observer | player | season)
+(z_now, z_pot) = two standard normals from derive_stream(seed, SCOUT_NS | observer | player | season)
+
+attributes seen  = true attributes + σ_now · z_now      one shift for all 25, clamped to the scale
+ability seen     = current_ability(attributes seen)     the same function as everywhere else
+potential seen   = PA + σ_pot · z_pot                   clamped to [ability seen, 100]
 ```
 
-- **Deterministic and derived, never stored.** The estimate is a pure function of the seed and
-  of facts already in the world, exactly as condition is (`MATCH_MODEL.md` §13). Nothing is added
-  to `Player` or `Club`. Hard constraint 1 holds by construction.
-- **Stable within a season.** The draw is keyed by season, not by date. An observer who looks
-  twice sees the same number, so repeated looking cannot average the noise away.
-- **Independent across observers.** Each club draws its own `z`. Twenty clubs now hold twenty
-  different opinions of the same teenager — the divergence the transfer market has lacked.
-- **`σ` shrinks with what is genuinely knowable:** with the player's age (a 27-year-old's ceiling
-  is nearly his present), for the observer's own players (daily contact), and with the
-  observing club's `reputation` as a stand-in for scouting reach. All three are knobs in a new
-  `ScoutKnobs` table, plausibility-picked and then read on the harness like every other table.
-- The estimate is clamped to `[best_role_ca, 100]`: nobody scouts a ceiling below the present.
+- **One shift, not twenty-five.** A scout misjudges a player's *level*, not each attribute
+  independently. Shifting every attribute together keeps the player's shape — who is quick, who
+  can pass — legible while his overall standing is uncertain, and it means perceived ability is
+  `current_ability` of what was seen: one encoding of ability, as hard constraint 4 requires.
+- **Deterministic and derived, never stored.** The estimate is a pure function of the seed and of
+  facts already in the world, exactly as condition is (`MATCH_MODEL.md` §13). Nothing is added to
+  `Player` or `Club`.
+- **Stable within a season.** The draw is keyed by season, not by date. Looking twice shows the
+  same thing, so repeated looking cannot average the noise away.
+- **Independent across observers.** Twenty clubs hold twenty opinions of the same teenager — the
+  divergence the transfer market has lacked.
+- **For an observer's own players `σ_now` is zero** and `σ_pot` is at its smallest.
 
-Perceived value is then `value()` evaluated with `pa_hat` in place of PA and a *neutral*
-development profile in place of the hidden one. Same function, degraded inputs.
+**The range.** An observation carries `Range { lo, hi }` for each fogged quantity: the estimate
+plus and minus `k · σ`. The value range is `value()` evaluated at the low and high corners, which
+is sound because value is monotone in both ability and potential.
+
+**Proposed: `k` is chosen so the truth lies inside the range about nine times in ten, not
+always.** A range that always contains the truth is a guarantee, and a guarantee can be gamed —
+bid as though the top of every range were real and you can never be badly wrong. A range that is
+occasionally wrong is what makes a scouting report a judgement rather than a bound, and is the
+only version in which a flop can surprise anyone.
+
+**What narrows it.** `σ` is the product of terms in a `ScoutKnobs` table:
+
+- the player's **age** — a 27-year-old's ceiling is nearly his present;
+- **familiarity** — own players least, then players in the same league, widest for the unseen;
+- the observer's **scouting level**. In v1 this is derived from `Club.reputation`. It is the
+  hook for the planned upgrades: investment in scouting becomes a recorded fact that lowers this
+  term, with no change to the model above.
 
 ### 5.3 Who is fogged
 
-**Proposed: everyone who decides** — LLM managers, the built-in `UtilityPolicy` clubs, and the
-human. Three reasons:
+**Settled (owner decision): everyone who decides** — the human, the fast policies of every club,
+and any language model. Three reasons, recorded because the consequences are large:
 
-1. The ablation compares an agent against the utility baseline. If only the agent is fogged the
-   comparison measures the handicap, not the agent.
+1. The ablation compares stances and policies against a baseline. If only one side is fogged the
+   comparison measures the handicap.
 2. Uniform omniscient valuation is the leading explanation for transfer volume sitting below
    target through three re-banks (`BACKLOG.md` §4.1): with every club pricing off the same
    `value()`, clubs converge on the same targets. Divergent estimates are the proposed cure.
-3. A human who sees true PA while every rival guesses is playing a different, easier game.
+3. A human who sees truth while every rival guesses is playing a different, easier game.
 
-**This re-rolls the market.** Fogging the built-in policy changes every AI club's decisions, so
-`bin/market` must be re-banked and its guard re-read. Predictions, written down first as the
-calibration discipline requires:
+**Policies act on ranges, and `risk` says how** (§2.3): a cautious manager prices a target near
+the bottom of its range, a gambler near the top, the neutral stance on the midpoint.
+
+**This re-rolls two harnesses.** The transfer policy now reads fogged candidates, and the tactics
+policy reads a fogged opponent strength. Predictions, written down first:
 
 - transfers per club per window **rises** from 1.88, toward the 2–5 band;
 - talent concentration (`top3_share_of_top20`) **falls** from its omniscient upper bound;
-- the wonderkid flop rate as *experienced by buyers* (paid like a star, peaked as a squad
-  player) becomes non-zero and is a new reported row;
-- development and match readings do **not** move — fog touches no engine.
+- the buyer's-eye flop rate (paid like a star, peaked as a squad player) becomes non-zero and is
+  a new reported row;
+- `bin/calibrate`'s league aggregates move **within their per-seed spread**: an opponent's
+  strength is a mean over eleven players, so its error is about `σ_now / √11`, and only fixtures
+  sitting on a mentality threshold can flip;
+- development readings do **not** move — fog touches no engine.
 
 If volume does not rise, the §4.1 hypothesis is refuted and the cap is elsewhere in the clearing
 loop. That would be a finding to record, not a reason to turn the noise up.
 
-How the human's fog is *presented* (a range, a star band, a scout's sentence) is a layer-5
-question and is **open** (§14).
+**In the UI** every fogged figure is shown as its range, never as a point. Squad, scouting and
+transfer screens change; the snapshots are re-pinned once. Whether a wide range also gets a
+verbal gloss is a presentation detail left to `UI_TOOLKIT_EVIDENCE.md`'s findings.
 
 ### 5.4 The finding this must reckon with
 
@@ -289,8 +409,8 @@ exploitable signal about PA beyond the obvious.** No agent, however good, can se
 fog by reasoning harder over attributes. Two consequences:
 
 - **The skill available at 16–18 is not estimation, it is decision-making under a known-noisy
-  estimate**: how much to pay given `pa_hat` and its uncertainty, how many lottery tickets to
-  hold, when to sell one. The transfer axis of the ablation must score *that* (§12.2), not
+  estimate**: how much to pay given a range, how many lottery tickets to hold, when to sell one.
+  In stance terms this is the `risk` axis, and the band is where it earns or loses its keep. The transfer axis of the ablation must score *that* (§12.2), not
   estimation accuracy.
 - **The 16–18 band is a ready-made overconfidence probe.** An agent that claims to have
   identified a wonderkid from his attributes at 17 is asserting skill that the data provably does
@@ -300,33 +420,46 @@ fog by reasoning harder over attributes. Two consequences:
 
 ## 6. The cost budget
 
-**Proposed: a hard per-season call budget, set in configuration, enforced by the driver.** A
-38-matchday season with `K` agent-managed rival clubs:
+**Settled (owner decision): the number of agent-managed clubs is configuration, with no
+architectural cap.** The budget below is what keeps any chosen number affordable.
 
-| Call | Frequency | Per season, `K = 3` |
+**Proposed: a per-season call budget, set in configuration, enforced by the driver.** With
+intent and execution split (§2.1), a 38-matchday season with *every* rival agent-managed:
+
+| Call | Frequency | Per season, 19 rivals |
 |---|---|---|
-| Manager: team sheet + tactics + plan (one call) | per rival per matchday | 114 |
-| Manager: transfer plan | per rival per window | 6 |
+| Manager's intent: stance | pre-season, each window, and on a trigger (below) | ~76 |
 | Journalist: the human's match | per matchday | 38 |
 | Journalist: league round-up | per matchday | 38 |
 | Board: stance | monthly | ~10 |
-| **Total** | | **~206, about 5.4 per matchday** |
+| **Total** | | **~162, about 4.3 per matchday** |
+
+The fast policies cost nothing and are not in the table. For comparison, having a language model
+pick three rivals' team sheets every matchday would cost 114 calls for three characters; the
+stance model buys nineteen for 76.
+
+**A stance is revisited on a trigger, not on a timer.** Outside the fixed points, a manager
+reconsiders when something happens *to* him: a run of results crossing a threshold, a board
+stance change, a first-team player lost for months. Triggers are events, never continuous
+levels — `DESIGN.md` §7's first rule applied to cost — and each club is capped per season.
 
 Rules that keep it there:
 
-- **One call per decision, not per field.** A manager returns the whole `Lineup` at once.
 - **Skip when nothing changed.** If a seat's observation hashes equal to the one behind its last
-  decision, the last decision is reused and no call is made. A settled squad between injuries
-  costs nothing. The hash and the reuse are recorded in the trace.
-- **Routine prose on the cheap model**; the manager on the capable one. Model choice is per role,
-  in configuration, and recorded per trace.
+  decision, the last decision stands and no call is made. Recorded in the trace.
+- **Routine prose on the cheap model**; intent on the capable one. Model choice is per role, in
+  configuration, recorded per trace.
 - **A deterministic degradation order when the budget runs short:** league round-up first, then
-  the board, then the human's match report, and managers last — narrative degrades to templates
-  before decisions degrade to the baseline.
+  the board, then the human's match report, and manager intent last.
 - **One retry at most**, and only for a parse failure (§7). Never for a validation failure: an
-  illegal decision is a datum, and retrying until legal would hide the rate the research wants.
+  illegal output is a datum, and retrying until legal would hide the rate the research wants.
 
-`K` and the budget are **open** (§14); 3 and 250 are the proposed defaults.
+**Direct mode**, in which a language model picks a club's team sheet and transfer plan itself
+instead of setting a stance, remains available as configuration for a chosen few clubs. It is an
+experimental arm of the ablation (§12.2), not the default, and it is where the cost goes if it
+is switched on.
+
+Defaults: all rivals stance-managed, none in direct mode, budget 250.
 
 ---
 
@@ -373,7 +506,8 @@ layer's equivalent of the neutral-tactics invariant, and the first test written.
 
 | Role | Fallback | Mechanism |
 |---|---|---|
-| Manager | built-in policy | do not submit (§3.2) |
+| Manager's intent | the stance already in force, or neutral | do not submit |
+| Manager (direct mode) | the fast policy | do not submit (§3.2) |
 | Journalist | `TemplateRenderer` | publish the template article and its claims |
 | Board | rule-based stance | do not submit |
 
@@ -511,16 +645,47 @@ Club sentiment has no match-engine consumer in v1. It feeds the board (§9.4) an
 
 **The natural negatives `DESIGN.md` asks for** (a thrashing galvanises) belong in the valence
 table: `Humiliation` can carry a short positive rebound after its negative. Their sizes are the
-"narrative influence model" `DESIGN.md` §10 lists as a calibration-and-taste problem, and they
-stay **open** (§14) — but the *shape* that makes any choice safe is now fixed.
+"narrative influence model" `DESIGN.md` §10 lists as a calibration-and-taste problem; §9.5 fixes
+the requirement they are calibrated to.
 
 ### 9.4 The board
 
 `BoardStance { objective: Objective, patience: u8 }`, set monthly, is presentation and pressure in
 v1: it tells the human what is expected and how close the board is to losing faith, reading club
-sentiment and the table. **Proposed: it has no power to sack the human or cut the budget in v1.**
+sentiment and the table. **Settled (owner decision): it has no power to sack the human or cut the budget in v1.**
 Those are large mechanical effects that deserve their own stabilisers and their own calibration
 pass, and nothing else in Phase 5 depends on them.
+
+### 9.5 Tangible, and provably not runaway
+
+**Settled (owner decision): narrative must have a tangible positive or negative effect without
+inducing an endless feedback loop.** Both halves are made testable.
+
+**Tangible.** At full sentiment a player's expected rating shifts by a margin a player of the
+game would notice over a month — the calibration target is **about a quarter of a rating point**
+at saturation, decaying with a half-life of **about three weeks**. Below that the system is
+decoration; far above it, the press picks the team.
+
+**Not runaway.** The loop is *result → beat → sentiment → performance → result*. Its gain is the
+product of four bounded terms: a result produces at most one beat per subject (§9.2, rule 2); a
+beat's valence is a table constant; sentiment is clamped at `S_max`; and the performance shift
+is `narrative_scale · sentiment`. The requirement is that **one extra defeat raises the expected
+number of further defeats attributable to narrative by well under one** — loop gain below one —
+so every disturbance dies out geometrically. The clamp guarantees boundedness even if the gain
+were misjudged; the gain condition guarantees there is no slow drift toward the clamp.
+
+Three pooled guards in `fforge-harness`, comparing seasons with narrative on against the same
+seeds with it off:
+
+1. **No amplification:** the spread of final league points does not widen beyond its per-seed
+   noise. Runaway shows up as the strong pulling away and the weak collapsing.
+2. **No streak inflation:** the distribution of winning and losing run lengths stays in band.
+   This is the direct signature of a result feeding the next result.
+3. **Return to baseline:** after an injected shock — a block of beats on one club — its results
+   recover to the no-narrative trajectory within a few half-lives.
+
+Guard 3 is the one that distinguishes "bounded" from "stable", and it is the reason beats are
+recorded events: a shock can be injected into a replay without touching any engine.
 
 ---
 
@@ -545,7 +710,8 @@ invokes anything; a counterfactual run names the persona set it used in its trac
 them out of the domain model also honours `fforge-domain`'s freeze.
 
 Traits are a closed enum rather than free text so that persona-consistency probes (§12.4) have
-something definite to test against.
+something definite to test against — and the first such probe is free: a `YouthFirst` manager who
+sets `youth: Against` has contradicted his own sheet, and the trace shows it.
 
 ### 10.2 Memory
 
@@ -615,10 +781,24 @@ ladder of comparators, all under the same fog:
 
 | Policy | Role |
 |---|---|
-| random-legal | the floor |
-| built-in utility | the baseline the agent must justify itself against |
-| LLM agent | the subject |
-| utility with fog removed | the ceiling: what perfect information is worth |
+| random-legal decisions | the floor |
+| fast policy, neutral stance | the baseline everything must justify itself against |
+| fast policy, random stance | separates "a stance helps" from "any change helps" |
+| fast policy, best fixed stance for that squad | what a perfect stance-setter would achieve |
+| fast policy, LLM-set stance | **the default subject** |
+| LLM in direct mode | the expensive arm: is per-decision deliberation worth its cost? |
+| learned fast policy (§2.4, later) | a trained policy on the same decisions |
+| fast policy with fog removed | the ceiling: what perfect information is worth |
+
+The stance model makes the first question sharper than "is the LLM better than the baseline".
+It becomes: **does an LLM choose a stance that suits its squad** — close to the best fixed stance
+and above a random one — and does that survive a change of squad? The direct-mode arm then
+prices the alternative.
+
+**A precondition, inherited from tactics:** the stance axes must be calibrated to non-dominance
+first. If one stance is simply best, "the LLM chose well" and "the LLM chose the dominant
+setting" are indistinguishable, and a random-stance arm that scores as well as the LLM arm
+would be the tell.
 
 **Tactics axis — settled by `TACTICS_MODEL.md` §9:** non-dominance is squad-conditional, so the
 measure is *does the agent match tactics to its squad*, scored as expected-points share against
@@ -657,12 +837,15 @@ traces exist to look at; designing rubrics before seeing output is designing ahe
 The deterministic half — `BACKLOG.md` §3.2. No LLM, no network, everything offline:
 
 1. The control seam (§3.2). *Identity test: the whole existing suite, untouched.*
-2. Fog-of-war (§5) for every decider, then re-bank `bin/market` against §5.3's predictions.
+2. Fog-of-war (§5) for every decider and in the UI, then re-bank `bin/market` and `bin/calibrate`
+   against §5.3's predictions.
+2b. `ManagerStance` (§2.3) at neutral, then calibrate `StanceKnobs` to non-dominance.
+   *Identity test: golden baselines and all three harnesses, untouched at neutral.*
 3. Observation builders and the `info` payload.
 4. `fforge-agents`: the driver, the `Provider` trait, the fake provider's four modes.
    *Identity test: a `Baseline` season is byte-identical to a no-agent season.*
-5. Claims, the gate, `NarrativeBeat`, sentiment at `narrative_scale: 0.0`.
-   *Identity test: golden baselines.*
+5. Claims, the gate, `NarrativeBeat`, sentiment at `narrative_scale: 0.0`, and §9.5's three
+   guards. *Identity test: golden baselines.*
 6. The trace store and scenario replay.
 7. The real-season match harness (§12.2).
 
@@ -671,28 +854,30 @@ unchanged from the player's seat except that the transfer market is fogged. That
 which to inspect the seams before spending a token.
 
 The agent half — `BACKLOG.md` §3.3: a real provider; the journalist; switch on `narrative_scale`
-and calibrate it; the manager and the ablation; the board.
+and calibrate it to §9.5; LLM-set stances and the ablation; the board. Narrative can be switched
+on with templates alone, before any language model exists, since templates make claims too.
 
 ---
 
 ## 14. Open questions
 
-Calls this note's reasoning does not make. Each has a proposed default so that work is never
-blocked on it.
+**Answered by the owner and now settled in the text:** the number of agent-managed clubs is
+configurable with no cap (§2.2, §6); everyone is fogged, the human included, and fog is shown as
+ranges with scouting upgrades to narrow them later (§5); the board does not act in v1 (§9.4);
+narrative must be tangible without running away (§9.5); decisions go to fast policies and text
+to language models (§2.1).
 
-1. **How many rival managers are agents (`K`), and which?** Default 3: the clubs nearest the
-   human in the table, re-chosen each season. Alternatives: fixed rivals for continuity of
-   character; the top of the table for visibility.
-2. **Is the human fogged?** Default yes (§5.3). The alternative — the human sees truth, as a
-   difficulty setting — is cheap to offer later because fog is a wrapper.
-3. **How is the human's fog shown?** A numeric range, a star band, or a scout's sentence. A
-   presentation question with real effect on feel; `UI_TOOLKIT_EVIDENCE.md` should inform it.
-4. **The valence table and its rebounds** (§9.3) — `DESIGN.md` §10's narrative influence model.
-   Taste, then calibration. Nothing structural waits on it.
-5. **Is one sentiment consumer enough?** Default yes for v1. The obvious second is club sentiment
-   nudging `Club.reputation`, which touches revenue and transfer consent and is therefore a much
-   larger loop to stabilise.
-6. **Should the board ever act** (budget, dismissal)? Default no in v1 (§9.4).
-7. **Which provider and models.** Deliberately not decided here; the interface is the decision.
-8. **Does a journalist have a house style per outlet?** Personas support it; whether several
+**Still open.** Each has a proposed default, so no work is blocked.
+
+1. **Should a range always contain the truth?** Default no — about nine in ten (§5.2). The
+   alternative is friendlier and removes most of the risk the fog exists to create.
+2. **The stance's eight axes** (§2.3). Are these the right eight, and is five steps the right
+   grain? More axes mean more character and a harder non-dominance calibration.
+3. **Stance triggers and their per-season cap** (§6). Which events make a manager reconsider.
+4. **Is one sentiment consumer enough?** Default yes for v1. The obvious second is club sentiment
+   nudging `Club.reputation`, which touches revenue and transfer consent and is a much larger
+   loop to stabilise.
+5. **When to build a learned fast policy** (§2.4). Default: after Phase 5, in the harness first.
+6. **Which provider and models.** Deliberately not decided here; the interface is the decision.
+7. **Does a journalist have a house style per outlet?** Personas support it; whether several
    outlets are worth the budget is a game-feel question.
