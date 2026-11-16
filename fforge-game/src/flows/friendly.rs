@@ -49,8 +49,9 @@ pub fn watch_friendly_flow(session: &Session, p: Palette) {
     // Your own XI is whatever you have already submitted, so the sandbox tries
     // *your* team rather than the assistant's. Only the tactics are re-asked.
     let base: Lineup = s
-        .pending_lineup
-        .clone()
+        .pending_lineups
+        .get(&mine)
+        .cloned()
         .or_else(|| s.last_lineup.clone())
         .unwrap_or_else(|| match_engine::ai_pick_lineup_available(world, mine, s.date, &suspended));
     let Some(chosen) = tactics::pick(base.tactics, tactics::assistant_pick(session), p) else {

@@ -106,7 +106,7 @@ pub fn render(session: &Session, unread: usize, p: Palette) -> String {
 fn outstanding(session: &Session, unread: usize) -> Vec<(String, Sem)> {
     let s = &session.state;
     let mut lines = Vec::new();
-    lines.push(if s.pending_lineup.is_some() {
+    lines.push(if s.pending_lineups.contains_key(&s.player_club) {
         ("  team sheet submitted".to_string(), Sem::Ok)
     } else if s.last_lineup.is_some() {
         (
@@ -126,8 +126,9 @@ fn outstanding(session: &Session, unread: usize) -> Vec<(String, Sem)> {
             Sem::Warn,
         ));
     }
-    if !s.pending_transfer_decisions.is_empty() {
-        let n = s.pending_transfer_decisions.len();
+    let plan = s.pending_transfer_plan(s.player_club);
+    if !plan.is_empty() {
+        let n = plan.len();
         let plural = if n == 1 { "" } else { "s" };
         lines.push((
             format!("  {n} transfer decision{plural} lodged for the window close"),

@@ -223,21 +223,39 @@ pending decision: a manager does not see the opponent's submitted team sheet.
 
 ### 3.2 The control seam in the log
 
-Today the log knows one controlled club: `GameStarted.player_club`, `GameState.pending_lineup`
-(a single `Option`), and `LineupSubmitted` with no club field. Everything else is the built-in
-policy. Agents need the fold to hold a pending decision for *several* clubs.
+Before this seam the log knew one controlled club: `GameStarted.player_club`, a single
+`GameState.pending_lineup`, and `LineupSubmitted` with no club field. Everything else was the
+built-in policy. Agents need the fold to hold a pending decision for *several* clubs.
 
-**Proposed:**
+**Settled, and implemented** (step 1 of §13):
 
+- `Command::SubmitLineup` and `SubmitTransferDecision` name the `club` they are for, and
+  validation runs against that club's squad. A club outside the world is `UnknownClub`.
 - `LineupSubmitted` gains `club: Option<ClubId>` with `#[serde(default)]`; `None` means the
-  log's `player_club`, so every existing save loads unchanged (hard constraint 5).
-- `GameState.pending_lineup`/`last_lineup` become `BTreeMap<ClubId, Lineup>`;
-  `pending_transfer_decisions` becomes `BTreeMap<ClubId, Vec<TransferDecision>>`.
-- `Command::SubmitLineup` and `SubmitTransferDecision` gain a `club`. The existing rule
-  generalises without change: **a club with a pending decision plays it; a club without one
-  plays the built-in policy.** `effective_player_lineup` becomes `effective_lineup(state, club)`.
-- `market::resolve_window`'s `human_club: Option<ClubId>` becomes the set of clubs with a
-  recorded plan. `RecordedPolicy` is already the right mechanism.
+  log's `player_club`, so every existing save loads unchanged (hard constraint 5). New events
+  always carry `Some`.
+- `GameState.pending_lineups: BTreeMap<ClubId, Lineup>` and
+  `pending_transfer_plans: BTreeMap<ClubId, Vec<TransferDecision>>` hold what has been
+  submitted. Lineups are consumed by the matchday they were submitted for; transfer plans by
+  the window's close.
+- `market::resolve_window` takes the map of recorded plans. A club in the map replays its plan
+  through `RecordedPolicy`; a club not in it runs `UtilityPolicy`.
+
+**The rule for a club that has submitted nothing differs by seat, deliberately:**
+
+| | Team sheet | Transfer plan |
+|---|---|---|
+| **The human's club** | last sheet used if still valid, else an auto-pick | **nothing happens** |
+| **Any other club** | the built-in policy | the built-in policy |
+
+The human's row is unchanged from before this seam: `TRANSFER_MODEL.md` §10's "a human who says
+nothing gets nothing" is a decision about the *player's* agency and stays. The other row is what
+makes not-submitting a safe fallback for an agent. A non-human club's last sheet is *not* reused:
+an agent that stops answering should fall back to a policy that reads today's squad, not to a
+frozen team sheet. For that reason `last_lineup` stays a single value, the human's.
+
+An **empty** recorded transfer plan is a decision — "do nothing this window" — and is distinct
+from no plan. For the human's club the two coincide; for any other club they do not.
 
 **The core does not record which clubs are agent-controlled, and must not.** Control is a
 property of the *driver* (§4), not of the world. The log holds decisions; who authored one is
@@ -913,7 +931,7 @@ traces exist to look at; designing rubrics before seeing output is designing ahe
 
 The deterministic half — `BACKLOG.md` §3.2. No LLM, no network, everything offline:
 
-1. The control seam (§3.2). *Identity test: the whole existing suite, untouched.*
+1. The control seam (§3.2). *Identity test: the whole existing suite, untouched.* **Done.**
 2. Fog-of-war (§5) for every decider and in the UI, then re-bank `bin/market` and `bin/calibrate`
    against §5.3's predictions.
 2b. `ManagerStance` (§2.3) at neutral, then calibrate `StanceKnobs` to non-dominance.

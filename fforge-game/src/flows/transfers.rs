@@ -132,7 +132,10 @@ pub fn build_transfer_context(session: &Session) -> TransferContext {
 /// no `Session` state.
 pub fn transfer_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     let mut ctx = build_transfer_context(session);
-    let mut draft: Vec<TransferDecision> = session.state.pending_transfer_decisions.clone();
+    let mut draft: Vec<TransferDecision> = session
+        .state
+        .pending_transfer_plan(session.state.player_club)
+        .to_vec();
     loop {
         print_transfer_header(session, &ctx, &draft, p);
         println!("[1] Browse targets  [2] My squad  [3] Shortlist  [4] Submit  [q] Back");
@@ -194,7 +197,7 @@ fn print_transfer_header(
             headroom_sem(wage_room)
         )
     );
-    let status = if *draft == s.pending_transfer_decisions {
+    let status = if draft == s.pending_transfer_plan(s.player_club) {
         if draft.is_empty() {
             "nothing submitted"
         } else {
@@ -476,7 +479,10 @@ fn decision_summary(world: &World, d: TransferDecision) -> String {
 
 fn submit_draft(session: &mut Session, o: &mut Observers, draft: &[TransferDecision]) {
     match session.execute(
-        Command::SubmitTransferDecision(draft.to_vec()),
+        Command::SubmitTransferDecision {
+            club: session.state.player_club,
+            decisions: draft.to_vec(),
+        },
         &mut o.all(),
     ) {
         Ok(_) => println!(

@@ -158,7 +158,13 @@ pub fn set_lineup_flow(session: &mut Session, o: &mut Observers, p: Palette) {
     if prompt_choice("Confirm? [y/n] ", &["y", "n"]) != "y" {
         return;
     }
-    match session.execute(Command::SubmitLineup(lineup), &mut o.all()) {
+    match session.execute(
+        Command::SubmitLineup {
+            club: session.state.player_club,
+            lineup,
+        },
+        &mut o.all(),
+    ) {
         Ok(_) => println!(
             "Lineup submitted for matchday {}.",
             session.state.current_matchday

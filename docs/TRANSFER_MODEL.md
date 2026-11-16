@@ -293,8 +293,8 @@ symmetry is not decorative — it means `commands::step` grows one more tick emi
 | `YouthIntake` | insert players into `World.players`; push ids onto the club's roster |
 | `PlayerRetired` | remove from roster; `contract = None`; mark retired (see §8.2) |
 | `FinanceTick` | integer-add each delta to the club's `balance` |
-| `TransferDecisionSubmitted` | `pending_transfer_decisions = decisions` (overwrites) — §10 |
-| `TransferWindowClosed` | `pending_transfer_decisions.clear()` — §10 |
+| `TransferDecisionSubmitted` | `pending_transfer_plans[club] = decisions` (overwrites that club's) — §10 |
+| `TransferWindowClosed` | `pending_transfer_plans.clear()` — §10 |
 
 Rosters are `Vec<PlayerId>`; keep them **sorted** after mutation so the fold's output is
 order-independent and `GameState` equality stays meaningful across replay paths.
@@ -707,7 +707,7 @@ nothing — §6's `UtilityPolicy` never steps in on their behalf, by design; a s
 market does exactly what they did before this seam existed.
 
 ```rust
-Command::SubmitTransferDecision(Vec<TransferDecision>)   // → Event::TransferDecisionSubmitted { date, club, decisions }
+Command::SubmitTransferDecision { club, decisions }   // → Event::TransferDecisionSubmitted { date, club, decisions }
 ```
 
 It slots into the identical propose-then-validate gate as `Command::SubmitLineup`:
@@ -732,7 +732,9 @@ It slots into the identical propose-then-validate gate as `Command::SubmitLineup
   verbatim, every round, never adapting — the same substitution seam Phase 5's LLM agents will use.
   The human's club runs it; every other club still runs `UtilityPolicy`. A club with nothing submitted
   gets an empty list from it — never a `UtilityPolicy` fallback.
-- **`GameState.pending_transfer_decisions`** holds the current plan, set by
+- **`GameState.pending_transfer_plans`** holds each club's current plan (per club since
+  `AGENT_MODEL.md` §3.2 opened the seam to clubs other than the human's; the human's rules in this
+  section are unchanged), set by
   `Event::TransferDecisionSubmitted` (overwriting whatever was pending) and cleared by
   `Event::TransferWindowClosed` — emitted unconditionally for every window boundary crossed, even one
   that clears zero transfers, so a plan is good for exactly the one window it was pending for, never

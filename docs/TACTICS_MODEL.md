@@ -450,7 +450,8 @@ pub struct Lineup {
   together, and recorded together. A separate `TacticsSubmitted` event would create
   pairing/ordering state ("which tactics apply to which matchday?") — exactly the transient
   `pending_lineup` problem, duplicated.
-- `Command::SubmitLineup(Lineup)` and `Event::LineupSubmitted` are **unchanged in shape** —
+- `Command::SubmitLineup` and `Event::LineupSubmitted` are **unchanged in shape** by tactics (they
+  later gained a `club`, `AGENT_MODEL.md` §3.2) —
   the payload widens, the seam does not move. Validation gains nothing: a `Tactics` value is
   valid by construction (closed enums).
 - **Replay-safety** follows the existing pattern exactly: the human's resolved `Lineup`

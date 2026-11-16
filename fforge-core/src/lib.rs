@@ -254,7 +254,13 @@ mod tests {
                     sub_plan: Vec::new(),
                 };
                 session
-                    .execute(Command::SubmitLineup(lineup), &mut [])
+                    .execute(
+                        Command::SubmitLineup {
+                            club: session.state.player_club,
+                            lineup,
+                        },
+                        &mut [],
+                    )
                     .expect("submit youth-first XI");
                 while !session.state.season_over() {
                     session

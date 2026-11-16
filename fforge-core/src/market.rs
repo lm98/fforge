@@ -15,11 +15,11 @@
 //! `unfilled_needs` are a Trace — the journalist agent's raw material
 //! ("City's third bid rejected") — kept, but never fed to the fold.
 //!
-//! **Human decisions** (`TRANSFER_MODEL.md` §10's pre-commitment model,
-//! promoted from "the seam is left open"): `resolve_window`'s `human_club`
-//! substitutes `club_ai::RecordedPolicy` for that one club, replaying
-//! whatever was pre-committed via `Command::SubmitTransferDecision`
-//! unchanged in every round; every other club still runs `UtilityPolicy`.
+//! **Pre-committed plans** (`TRANSFER_MODEL.md` §10, `AGENT_MODEL.md` §3.2):
+//! for every club in `resolve_window`'s `recorded_plans`, a
+//! `club_ai::RecordedPolicy` replays whatever that club pre-committed via
+//! `Command::SubmitTransferDecision`, unchanged in every round; every club
+//! not in the map runs `UtilityPolicy`.
 //! `filter_affordable` applies the same resolve-time affordability/squad-
 //! bounds/GK-floor gate to every club's decisions regardless of which
 //! policy produced them — a no-op for `UtilityPolicy` output (already
@@ -166,13 +166,10 @@ pub struct WindowOutcome {
 /// transfers so later rounds see updated squads, cash, and committed wages,
 /// exactly as a real window would.
 ///
-/// `human_club`/`human_decisions` are §10's pre-commitment seam: when
-/// `human_club` is `Some(club)`, that one club's decisions each round are
-/// `human_decisions` replayed verbatim via `RecordedPolicy` rather than
-/// `UtilityPolicy`'s own fresh-each-round reasoning — every other club is
-/// unaffected. `human_club: None` (every existing caller before this seam
-/// existed, and any context that wants a pure all-AI league) reproduces the
-/// prior behaviour exactly.
+/// `recorded_plans` is the pre-commitment seam (`TRANSFER_MODEL.md` §10,
+/// `AGENT_MODEL.md` §3.2): a club in the map has its plan replayed verbatim
+/// every round via `RecordedPolicy`; a club not in it runs `UtilityPolicy`'s
+/// own fresh-each-round reasoning. An empty map is a pure all-AI league.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_window(
     world: &World,
@@ -183,8 +180,7 @@ pub fn resolve_window(
     value_knobs: &ValueKnobs,
     utility_knobs: &UtilityKnobs,
     market_knobs: &MarketKnobs,
-    human_club: Option<ClubId>,
-    human_decisions: &[TransferDecision],
+    recorded_plans: &BTreeMap<ClubId, Vec<TransferDecision>>,
     recent_ratings: &BTreeMap<PlayerId, Vec<u8>>,
 ) -> WindowOutcome {
     // Step 1 (§5): freeze the world snapshot and the valuation cache. Every
@@ -196,7 +192,10 @@ pub fn resolve_window(
     let ctx = MarketContext::from_world(world, value_knobs, recent_ratings);
     let valuations = value_all(world, today, &ctx, value_knobs, dev);
     let ai_policy = UtilityPolicy::new(*utility_knobs);
-    let human_policy = RecordedPolicy::new(human_decisions.to_vec());
+    let recorded: BTreeMap<ClubId, RecordedPolicy> = recorded_plans
+        .iter()
+        .map(|(&club, plan)| (club, RecordedPolicy::new(plan.clone())))
+        .collect();
 
     let mut work_world = world.clone();
     let mut transfers = Vec::new();
@@ -223,10 +222,9 @@ pub fn resolve_window(
         let mut club_decisions: Vec<(ClubId, Vec<TransferDecision>)> = Vec::new();
         for &club in &club_ids {
             let obs = observe(&work_world, club, today, &valuations, dev, utility_knobs);
-            let raw_decisions = if Some(club) == human_club {
-                human_policy.transfer_decisions(&obs)
-            } else {
-                ai_policy.transfer_decisions(&obs)
+            let raw_decisions = match recorded.get(&club) {
+                Some(policy) => policy.transfer_decisions(&obs),
+                None => ai_policy.transfer_decisions(&obs),
             };
             let decisions = filter_affordable(&obs, &raw_decisions, utility_knobs);
             for d in &decisions {
@@ -681,8 +679,7 @@ mod tests {
             &ValueKnobs::default(),
             &relaxed_utility_knobs(),
             &market_knobs,
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -725,8 +722,7 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let b = resolve_window(
@@ -738,8 +734,7 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_eq!(
@@ -773,8 +768,7 @@ mod tests {
             &ValueKnobs::default(),
             &uk,
             &market_knobs,
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let world_b = two_bidder_world(1, 0); // ClubId(1) = high reputation
@@ -787,8 +781,7 @@ mod tests {
             &ValueKnobs::default(),
             &uk,
             &market_knobs,
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -822,8 +815,7 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let mut seen = BTreeSet::new();
@@ -853,8 +845,7 @@ mod tests {
             &ValueKnobs::default(),
             &knobs,
             &MarketKnobs::default(),
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -916,8 +907,7 @@ mod tests {
             &vk,
             &uk,
             &market_knobs,
-            None,
-            &[],
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
 
@@ -937,8 +927,7 @@ mod tests {
             &vk,
             &uk,
             &market_knobs,
-            Some(ClubId(0)),
-            &ai_decisions,
+            &BTreeMap::from([(ClubId(0), ai_decisions.to_vec())]),
             &BTreeMap::new(),
         );
 
@@ -971,8 +960,7 @@ mod tests {
             &ValueKnobs::default(),
             &relaxed_utility_knobs(),
             &MarketKnobs::default(),
-            Some(human),
-            &decisions,
+            &BTreeMap::from([(human, decisions)]),
             &BTreeMap::new(),
         );
 
@@ -1000,8 +988,7 @@ mod tests {
             &ValueKnobs::default(),
             &UtilityKnobs::default(),
             &MarketKnobs::default(),
-            Some(human),
-            &[],
+            &BTreeMap::from([(human, Vec::new())]),
             &BTreeMap::new(),
         );
         assert!(
