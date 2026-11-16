@@ -275,25 +275,43 @@ fn season_end_snapshot() {
 /// Every screen, rendered both ways, for the whole-suite invariants below.
 ///
 /// **The fixture depth is load-bearing.** `the_screens_with_an_axis_actually_colour`
-/// needs a session where each screen's axis has something to *say*: a squad
-/// with nobody injured, suspended, or tired is correctly all `Sem::Ok` on the
-/// availability screen, and `Ok` costs no ink by design. Twelve matchdays is
-/// deep enough for real cards and layoffs to have accumulated.
+/// needs a session where each screen's axis has something to *say*. For the
+/// availability screen that cannot be a fixed matchday: a squad with nobody
+/// injured or suspended is correctly all `Sem::Ok`, `Ok` costs no ink by
+/// design, and which matchday has a casualty moves whenever results re-roll.
+/// `someone_unavailable` searches for one instead of pinning one.
+/// The fixed-seed season advanced to the first matchday on which one of the
+/// human club's players is injured or suspended.
+fn someone_unavailable() -> Session {
+    let log = new_game(SEED, &WorldGenConfig::default(), MY_CLUB);
+    let mut session = Session::from_events(log, &mut []);
+    while !session.state.season_over() {
+        session
+            .execute(Command::AdvanceMatchday, &mut [])
+            .expect("advance within the season");
+        let s = &session.state;
+        if s.world
+            .club(MY_CLUB)
+            .players
+            .iter()
+            .any(|&pid| !s.available(pid))
+        {
+            return session;
+        }
+    }
+    panic!("a whole season passed with nobody in the squad ever unavailable")
+}
+
 fn every_screen(p: Palette) -> Vec<(&'static str, String)> {
-    // S1b (`MATCH_MODEL.md` §16's bench-selection/default-plan policy):
-    // `ai_pick_lineup`'s bench-player Consistency/ambient-injury pre-rolls
-    // shift the per-fixture RNG draw sequence for every match, including
-    // the human's own auto-picked one — a real, documented consequence of
-    // the policy landing (see the crate's own S1b measurement notes), not a
-    // formatting regression. At the old matchday count (12) this fixed
-    // seed's availability screen flickered between colourable and not;
-    // 20 sits well inside the stably-colourable range.
     let (session, telemetry) = fixture(20);
     let news = news_fixture(20);
     let (finished, finished_telemetry) = finished_season();
     vec![
         ("squad", squad::render(&session, p)),
-        ("availability", availability::render(&session, p)),
+        (
+            "availability",
+            availability::render(&someone_unavailable(), p),
+        ),
         ("inbox", inbox::render(&session, &news, 4, p)),
         ("finances", finances::render(&session, p)),
         ("table", table::render(&session, p)),

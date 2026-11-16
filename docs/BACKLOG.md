@@ -195,6 +195,22 @@ conservative by construction), so its downstream match-shape effects (late goals
 noise while non-XI minutes rose more than predicted simply because *any* bench player now gets on the
 pitch at all, which was previously impossible. Not re-fit — a reading, not a target.
 
+**4.4 — The league is far more lopsided than the pooled readings suggest.** Pooled goals per match
+(2.50) and H/D/A are in band, but they average over a distribution that is not. In the fixed-seed
+season the game's own snapshot plays, the champions score 168 and concede 4 in 38 matches while the
+bottom club scores 8 and concedes 145; before fog-of-war the same fixture had a club finish a season
+without scoring. `bin/calibrate` shows why: a side nine points of lineup strength better takes 90% of
+the expected points where the Elo reference of `MATCH_MODEL.md` §10 item 6 says 63%, and the gap
+between the two curves peaks at 0.28. That item calls the steepness acceptable because the curve is
+"a discrimination check, not a fit target", and the guard only bounds it. Nobody has yet asked what
+it does to a league table. Filed with the reading; not chased. It matters for Phase 5 because a
+manager's stance can only show up in results if results are not already decided by squad strength.
+
+**4.5 — Resolving a transfer window is about 2.2× slower under fog-of-war** (`AGENT_MODEL.md` §5.5).
+Every club now values the market for itself. Lazy appraisal of only the players a club could pay for
+recovered a third of the cost; the rest is `valuation::project_ca_series`, which integrates each
+player's whole projected career month by month. The slow market guard and `bin/market` pay for it.
+
 ---
 
 ## 5. Known gaps and filed divergences

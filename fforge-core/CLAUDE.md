@@ -28,7 +28,7 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
    namespace and its own stream, and draws in a fixed order whether or not the draw is used.
 4. **Every feature layered on the match engine has an identity setting** (`Tactics::neutral()`,
    empty `bench`/`sub_plan`, `consistency_sigma_max: 0.0`, `injury_rate: 0.0`, `foul_rate: 0.0`,
-   an empty `conditions` map) under which `play_match` reproduces the pinned Phase-2a baseline
+   an empty `conditions` map, and for everything that reads players, `ScoutKnobs::omniscient()`) under which `play_match` reproduces the pinned Phase-2a baseline
    bit for bit (`match_engine::golden`). A new feature adds its identity to those tests. Note
    that `ai_pick_lineup` fills a real bench and plan, so a test wanting the identity clears them.
 5. **Events versus Traces.** An `Event` is folded and persisted. A Trace is derived, rich and
@@ -54,13 +54,14 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 | `news` | `NewsObserver`: event-derived items, state-condition items (`check_conditions`, edge-triggered) and rejected-bid items, each carrying `sources: Vec<EventRef>` provenance; `TemplateRenderer` |
 | `rng` | xoshiro256** and `derive_stream` — the crate's only randomness |
 | `schedule` | `double_round_robin` |
+| `scouting` | fog-of-war (`AGENT_MODEL.md` §5): `ScoutKnobs`, `Scout::sight` (one club's view of one player), `seen_world`/`seen_squad`, `Range`. Pure and derived; nothing is stored |
 | `worldgen` | `generate`; `gen_player` draws PA first and seeds attributes on the age envelope beneath it through `SeedTables`, which calls `development`'s own ceiling machinery (`DEVELOPMENT_MODEL.md` §8) |
 | `match_engine` | `play_match`, `MatchRngs`, `MatchOutcome`; AI selection (`ai_pick_lineup`, `ai_pick_lineup_available`, `ai_pick_lineup_vs`, `ai_pick_tactics`, `ai_pick_bench_and_plan`). Submodules: `zone`, `knobs`, `contest`, `tactics`, `resolve` (the possession loop; `Kickoff`, `Team`, `Pitch`, `Attack` and `Ledger` are its context structs — extend those rather than adding parameters), `ratings`, `stream`, `golden` (test-only baseline) |
 | `condition` | the pure condition/recovery law; `GameState::condition` is its only caller |
 | `development` | `DevKnobs`, the age envelope, `tick_changes`, `attr_rate`, `phys_lmax`, `apply_attr_step` |
 | `valuation` | `value`/`value_all`, `project_ca*`, `ValueKnobs`, `MarketContext` — prices, never decides |
 | `club_ai` | the `ClubPolicy` trait (`ClubObservation` in, `TransferDecision`s out), `UtilityPolicy` for AI clubs, `RecordedPolicy` replaying the human's pre-committed plan |
-| `market` | `resolve_window`: the deferred-acceptance clearing loop; window dates |
+| `market` | `resolve_window`: the deferred-acceptance clearing loop; `WindowView`, the window's frozen picture of what every club believes and asks; window dates |
 | `finance` | `finance_deltas`, `FinanceKnobs` |
 | `pool` | youth intake and retirement at the summer window, `PoolKnobs` |
 
@@ -80,6 +81,13 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 - **Affordability is checked at resolve time** (`market::filter_affordable`), not at submit
   time. `validate_transfer_decisions` only checks shape, because a human plan is replayed against
   a world that has moved on since it was submitted.
+- **Every decider is fogged** (`AGENT_MODEL.md` §5). A policy never reads another club's
+  player from `World` directly: it reads him through `scouting` (`GameState::squad_as_seen_by`,
+  `market::WindowView::observe`). Reading the true world in a new policy silently makes that
+  policy omniscient. Truth is for the fold, the engines and the harness's `info`.
+- **A club appraises only players within its means.** `Candidate.value` is `Money(0)` for one
+  it could not pay for (`club_ai::observe_as`); valuing a player is the market's hot path and
+  under fog every club has to do its own. `ClubObservation::within_means` is the one test.
 - **Any club can submit a team sheet or a transfer plan; what happens when one doesn't depends
   on the seat** (`AGENT_MODEL.md` §3.2). The human's club reuses its last sheet and makes no
   transfers; every other club falls back to the built-in policy. `commands::effective_lineup`

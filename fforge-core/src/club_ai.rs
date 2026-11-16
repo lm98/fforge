@@ -63,6 +63,8 @@ pub struct Candidate {
     /// `None` = a free agent.
     pub club: Option<ClubId>,
     pub role: Role,
+    /// What the observing club thinks he is worth — or `Money(0)` if he is
+    /// beyond its means and so was never appraised (`observe_as`).
     pub value: Money,
     pub asking_price: Money,
     pub wage: Money,
@@ -82,6 +84,34 @@ pub struct ClubObservation {
     pub committed_wages: Money,
     pub squad: Vec<SquadMember>,
     pub candidates: Vec<Candidate>,
+}
+
+impl ClubObservation {
+    /// Whether a signing at `ask` and `wage` is within this club's means
+    /// right now: cash above the reserve floor, and room under the wage
+    /// budget. The one encoding of that test — the buying policy filters on
+    /// it, and `observe_as` appraises only the candidates that pass it.
+    pub fn within_means(&self, ask: Money, wage: Money, knobs: &UtilityKnobs) -> bool {
+        within_means(
+            self.balance,
+            self.wage_budget,
+            self.committed_wages,
+            ask,
+            wage,
+            knobs,
+        )
+    }
+}
+
+fn within_means(
+    balance: Money,
+    wage_budget: Money,
+    committed_wages: Money,
+    ask: Money,
+    wage: Money,
+    knobs: &UtilityKnobs,
+) -> bool {
+    ask.0 <= balance.0 - knobs.cash_reserve_floor.0 && wage.0 <= wage_budget.0 - committed_wages.0
 }
 
 /// `fn transfer_decisions(&self, obs) -> Vec<TransferDecision>` — the
@@ -309,7 +339,7 @@ impl UtilityPolicy {
         let mut scored: Vec<(bool, f64, &Candidate)> = obs
             .candidates
             .iter()
-            .filter(|c| c.asking_price.0 <= spendable && c.wage.0 <= wage_room)
+            .filter(|c| obs.within_means(c.asking_price, c.wage, &self.knobs))
             .filter_map(|c| {
                 let surplus = (c.value.0 - c.asking_price.0) as f64;
                 if violations.contains(&c.role) {
@@ -487,11 +517,25 @@ impl ClubPolicy for RecordedPolicy {
     }
 }
 
-/// Build a `ClubObservation` from the world (§6.1: reading `World` happens
-/// here, at the edge — the seam `ClubPolicy` itself never crosses).
-/// `valuations` is the §2.7 frozen-snapshot cache (`valuation::value_all`),
-/// computed once per window and shared by every club's observation so they
-/// all price against the same world.
+/// The posted price of a player his owner values at `value`
+/// (`AGENT_MODEL.md` §5.3). Under fog this is what makes a trade possible at
+/// all: a buyer who rates a player above his seller's ask sees a surplus.
+pub fn asking_price(value: Money, knobs: &UtilityKnobs) -> Money {
+    Money((value.0 as f64 * knobs.asking_markup).round() as i64)
+}
+
+/// What one club can see of the market's players (`AGENT_MODEL.md` §5): the
+/// world as it sees it, its valuation of a player under that view, and the
+/// posted price list every club shares.
+#[derive(Clone, Copy)]
+pub struct MarketSight<'a> {
+    pub seen: &'a World,
+    pub appraise: &'a dyn Fn(PlayerId) -> Money,
+    pub asks: &'a BTreeMap<PlayerId, Money>,
+}
+
+/// `observe_as` with no fog: the club sees `world` itself and every ask is
+/// the shared valuation times the markup. The identity of §5.
 pub fn observe(
     world: &World,
     club: ClubId,
@@ -500,6 +544,40 @@ pub fn observe(
     dev: &DevKnobs,
     knobs: &UtilityKnobs,
 ) -> ClubObservation {
+    let asks: BTreeMap<PlayerId, Money> = valuations
+        .iter()
+        .map(|(&pid, &value)| (pid, asking_price(value, knobs)))
+        .collect();
+    let market = MarketSight {
+        seen: world,
+        appraise: &|pid| valuations.get(&pid).copied().unwrap_or(Money(0)),
+        asks: &asks,
+    };
+    observe_as(world, club, today, &market, dev, knobs)
+}
+
+/// Build a `ClubObservation` (§6.1: reading `World` happens here, at the
+/// edge — the seam `ClubPolicy` itself never crosses). Squads, contracts and
+/// money are read from `world`; what a player *is* — attributes, and so role,
+/// ability and projection — is read through `market`, the club's own fogged
+/// view, frozen for the window (§2.7).
+///
+/// Only a candidate `within_means` is appraised: valuing a player is the
+/// expensive part of an observation, and a club has no use for an opinion on
+/// one it cannot pay for. Such a candidate carries `value: Money(0)`.
+pub fn observe_as(
+    world: &World,
+    club: ClubId,
+    today: GameDate,
+    market: &MarketSight,
+    dev: &DevKnobs,
+    knobs: &UtilityKnobs,
+) -> ClubObservation {
+    let MarketSight {
+        seen,
+        appraise,
+        asks,
+    } = *market;
     let c = world.club(club);
     // One batched projection for the whole squad (`valuation::project_ca_batch`)
     // rather than one `project_ca` call per member: the knob-derived
@@ -508,7 +586,7 @@ pub fn observe(
     // rebuilding them per member would redo the same work dozens of times a
     // window.
     let projections = project_ca_batch(
-        world,
+        seen,
         c.players.iter().copied(),
         today,
         SUCCESSION_HORIZON_YEARS,
@@ -519,7 +597,7 @@ pub fn observe(
         .iter()
         .map(|&pid| {
             let p = world.player(pid);
-            let (role, current_ca) = best_role(&p.attributes, &ROLE_WEIGHTS);
+            let (role, current_ca) = best_role(&seen.player(pid).attributes, &ROLE_WEIGHTS);
             let projected_ca = projections[&pid];
             let (wage, years_left_on_contract) = match p.contract {
                 Some(contract) => (
@@ -551,16 +629,25 @@ pub fn observe(
         .values()
         .filter(|p| !p.retired && !squad_set.contains(&p.id))
         .map(|p| {
-            let (role, _) = best_role(&p.attributes, &ROLE_WEIGHTS);
-            let value = valuations.get(&p.id).copied().unwrap_or(Money(0));
-            let asking_price = Money((value.0 as f64 * knobs.asking_markup).round() as i64);
+            let (role, _) = best_role(&seen.player(p.id).attributes, &ROLE_WEIGHTS);
+            let asking_price = asks.get(&p.id).copied().unwrap_or(Money(0));
+            let wage = p.contract.map(|c| c.wage).unwrap_or(Money(0));
+            let affordable = within_means(
+                c.finances.balance,
+                c.finances.wage_budget,
+                Money(committed_wages),
+                asking_price,
+                wage,
+                knobs,
+            );
+            let value = if affordable { appraise(p.id) } else { Money(0) };
             Candidate {
                 player: p.id,
                 club: world.club_of(p.id),
                 role,
                 value,
                 asking_price,
-                wage: p.contract.map(|c| c.wage).unwrap_or(Money(0)),
+                wage,
             }
         })
         .collect();

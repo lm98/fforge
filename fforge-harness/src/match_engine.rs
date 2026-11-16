@@ -889,7 +889,9 @@ pub fn run_squad_conditional_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fforge_core::DevKnobs;
     use fforge_core::match_engine::MatchEvent;
+    use fforge_core::scouting::{self, ScoutKnobs};
     use fforge_domain::PlayerId;
 
     /// The T7-R regression guard for `TACTICS_MODEL.md` §9 item 6's
@@ -1464,6 +1466,15 @@ mod tests {
                 let suspended = std::collections::BTreeSet::new();
                 let home_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
                     &world,
+                    &scouting::seen_squad(
+                        &world,
+                        seed,
+                        fixture.home,
+                        fixture.away,
+                        start,
+                        &ScoutKnobs::default(),
+                        &DevKnobs::default(),
+                    ),
                     fixture.home,
                     fixture.away,
                     true,
@@ -1472,6 +1483,15 @@ mod tests {
                 );
                 let away_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
                     &world,
+                    &scouting::seen_squad(
+                        &world,
+                        seed,
+                        fixture.away,
+                        fixture.home,
+                        start,
+                        &ScoutKnobs::default(),
+                        &DevKnobs::default(),
+                    ),
                     fixture.away,
                     fixture.home,
                     false,

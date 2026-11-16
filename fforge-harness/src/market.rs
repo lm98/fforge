@@ -43,10 +43,12 @@
 //! re-fit is a human reading these numbers and editing the knob tables
 //! (`TRANSFER_MODEL.md` §9).
 
-use fforge_core::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy, observe};
+use fforge_core::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy};
 use fforge_core::development::DevKnobs;
 use fforge_core::event::Event;
+use fforge_core::market::WindowView;
 use fforge_core::observer::EventObserver;
+use fforge_core::scouting::ScoutKnobs;
 use fforge_core::state::{GameState, league_table};
 use fforge_core::valuation::{MarketContext, ValueKnobs, value_all};
 use fforge_core::{Command, Session, WorldGenConfig, new_game};
@@ -668,11 +670,20 @@ fn submit_player_clubs_ai_equivalent_plan(
     if !window_will_close_on_next_advance(&session.state) {
         return;
     }
-    let world = &session.state.world;
-    let today = session.state.date;
-    let ctx = MarketContext::from_world(world, value_knobs, &session.state.recent_ratings);
-    let valuations = value_all(world, today, &ctx, value_knobs, dev_knobs);
-    let obs = observe(world, club, today, &valuations, dev_knobs, utility_knobs);
+    // The same fogged view the clearing loop gives every AI club
+    // (`AGENT_MODEL.md` §5.3), so club 0 decides as its nineteen rivals do.
+    let state = &session.state;
+    let view = WindowView::new(
+        &state.world,
+        state.date,
+        state.seed,
+        dev_knobs,
+        value_knobs,
+        utility_knobs,
+        &ScoutKnobs::default(),
+        &state.recent_ratings,
+    );
+    let obs = view.observe(&state.world, club);
     let decisions = UtilityPolicy::new(*utility_knobs).transfer_decisions(&obs);
     session
         .execute(Command::SubmitTransferDecision { club, decisions }, &mut [])

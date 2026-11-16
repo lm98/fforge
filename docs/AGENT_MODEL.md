@@ -461,6 +461,44 @@ fog by reasoning harder over attributes. Two consequences:
   identified a wonderkid from his attributes at 17 is asserting skill that the data provably does
   not support. That is measurable, and it is a more interesting research reading than a win rate.
 
+### 5.5 As implemented
+
+Step 2 of §13 is done: `fforge-core::scouting` and `market::WindowView`. What the code settled
+that the sections above left open or got wrong:
+
+- **The asking price is the seller's opinion, not the buyer's.** Before fog every club priced a
+  player off one shared value, so "ask" and "value" were the same number scaled by
+  `asking_markup`. Under fog that would have made every buyer's surplus a constant fraction of
+  its own estimate again. A player's ask is now his *owner's* valuation times the markup — one
+  posted price list that every club reads — and a buyer's surplus is its view against the
+  seller's. A free agent asks his true worth: he knows himself. This is the mechanism §5.3's
+  first prediction rests on, and it was missing from the design until the code needed it.
+- **A club appraises only players within its means.** Valuing a player integrates his whole
+  projected career and is the market's hot path; under fog all twenty clubs must do their own.
+  The buying policy already discards anyone it cannot pay for before reading his value, so
+  `club_ai::observe_as` skips the appraisal for those and records `value: Money(0)`.
+  `ClubObservation::within_means` is the one statement of that test, shared by both. Appraisals
+  are computed on first use and remembered for the window, which cannot change a result because
+  a value is a pure function of the frozen view.
+- **What it costs.** A window is still about 2.2× slower to resolve than it was, because clubs
+  can afford most of the market and so appraise most of it. `valuation::project_ca_series` is
+  the place to look if that needs to come down.
+- **A sighting is a whole `Player`.** `Scout::sight` returns the player as seen — attributes
+  shifted, potential replaced, `Character` and `DevProfile` neutralised to their midpoints — so
+  every function that reads a player reads a sighting unchanged, and "same function, degraded
+  inputs" is literally what runs. `seen_world` is the world with every player swapped for his
+  sighting; `seen_squad` is one opponent's squad alone, which is all a team sheet needs.
+- **The identity is exact.** `ScoutKnobs::omniscient()` shows every observer the world itself,
+  borrowed rather than copied, and every pre-fog test of the market runs at it unchanged.
+- **Where the human sees it.** The squad screen shows potential and value as ranges with exact
+  ability; the transfer screens show ability, potential and value as ranges for every player at
+  another club. `GameState::scout_reports` is the one source for both: the value range is
+  `value()` at the pessimistic and optimistic corners of the sighting.
+- **One deliberate exception:** the club picker on the new-game screen still shows every club's
+  true squad strength. No club has been chosen yet, so there is no observer to fog for.
+- **Not built:** the buyer's-eye flop rate row promised in §5.3. It needs each transfer's fee
+  tracked against the player's later peak, which is harness work of its own.
+
 ---
 
 ## 6. The cost budget

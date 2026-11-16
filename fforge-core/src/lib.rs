@@ -26,6 +26,7 @@ pub mod observer;
 pub mod pool;
 pub mod rng;
 pub mod schedule;
+pub mod scouting;
 pub mod session;
 pub mod state;
 pub mod valuation;
@@ -45,8 +46,9 @@ pub use market::{
 pub use match_engine::{Card, CardOutcome, InjuryOutcome, MatchOutcome};
 pub use observer::{EventObserver, SeasonTelemetry};
 pub use pool::{PoolKnobs, YOUTH_STREAM_NS, summer_pool_events};
+pub use scouting::ScoutKnobs;
 pub use session::{Session, load_log, save_log};
-pub use state::{GameState, TableRow, league_table};
+pub use state::{GameState, ScoutReport, TableRow, league_table};
 pub use valuation::{MarketContext, ValueKnobs, project_ca, project_ca_batch, value, value_all};
 pub use worldgen::{SQUAD_TEMPLATE, WorldGenConfig, generate};
 

@@ -1,20 +1,20 @@
 
  Pos Name                  CA  Cond Cards  Status
+ CM  Pietro Fontana        70  100% 5Y     Suspended for this matchday
+ W   Sandro Mensah         66  100% 5Y     Suspended for this matchday
  FB  Matteo Greco          71  100% 3Y     Fit
  AM  Ousmane Mensah        71  100%        Fit
- CB  Harry Mori            70  100%        Fit
- CM  Pietro Fontana        70  100% 3Y     Fit
- CB  Rafael Ward           70  100% 1Y     Fit
+ CB  Harry Mori            70  100% 1Y     Fit
+ CB  Rafael Ward           70  100% 3Y     Fit
  CM  Ousmane Gallo         68  100% 4Y     Fit
- DM  Sandro Kovac          67  100% 4Y     Fit
+ DM  Sandro Kovac          67  100% 3Y     Fit
  FB  Tommaso Vitale        67  100% 2Y     Fit
  GK  Dario Mori            66  100%        Fit
- W   Sandro Mensah         66  100% 2Y     Fit
  W   Pedro Diallo          65  100%        Fit
  FB  Owen Morales          64  100%        Fit
  DM  Bruno Ferrari         63  100%        Fit
- FB  Karl Barbieri         63  100% 1Y     Fit
- CM  Petar Pereira         63  100% 1Y     Fit
+ FB  Karl Barbieri         63  100%        Fit
+ CM  Petar Pereira         63  100%        Fit
  AM  Andrea Ortega         62  100%        Fit
  GK  Ousmane Carvalho      61  100%        Fit
  ST  Rui Pereira           60  100%        Fit
@@ -26,4 +26,4 @@
  FB  Franco Rinaldi        42  100%        Fit
  CM  Sami Moretti          36  100%        Fit
  ST  Enzo Babic            27  100%        Fit
- 26 of 26 available to pick.
+ 24 of 26 available to pick.

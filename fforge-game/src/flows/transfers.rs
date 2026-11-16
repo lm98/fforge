@@ -16,12 +16,12 @@ use crate::Observers;
 use crate::input::{prompt_choice, prompt_money, prompt_number, read_line_or_abort};
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
-use crate::render::{date, money};
+use crate::render::{date, money, money_range, range};
 use fforge_core::{
-    ClubObservation, Command, DevKnobs, MarketContext, Session, TransferDecision, UtilityKnobs,
-    ValueKnobs,
+    ClubObservation, Command, DevKnobs, ScoutKnobs, ScoutReport, Session, TransferDecision,
+    UtilityKnobs, ValueKnobs,
     club_ai::{Candidate, SquadMember},
-    observe, value_all,
+    market::WindowView,
 };
 use fforge_domain::{GameDate, Money, PlayerId, Role, World};
 use std::collections::BTreeMap;
@@ -35,7 +35,11 @@ use std::collections::BTreeMap;
 /// only re-prices once, at close.
 pub struct TransferContext {
     pub obs: ClubObservation,
-    pub valuations: BTreeMap<PlayerId, Money>,
+    /// What the club's scouts make of every player it might buy or sell:
+    /// the ranges shown in place of the hidden truth (`AGENT_MODEL.md` §5).
+    pub reports: BTreeMap<PlayerId, ScoutReport>,
+    /// The posted price of each of the club's own players.
+    pub own_asks: BTreeMap<PlayerId, Money>,
     pub knobs: UtilityKnobs,
 }
 
@@ -115,15 +119,34 @@ fn wage_burden_sem(wage: Money, committed: Money) -> Sem {
 
 pub fn build_transfer_context(session: &Session) -> TransferContext {
     let s = &session.state;
-    let dev = DevKnobs::default();
-    let vk = ValueKnobs::default();
     let uk = UtilityKnobs::default();
-    let ctx = MarketContext::from_world(&s.world, &vk, &s.recent_ratings);
-    let valuations = value_all(&s.world, s.date, &ctx, &vk, &dev);
-    let obs = observe(&s.world, s.player_club, s.date, &valuations, &dev, &uk);
+    // The same fogged view of the market every AI club decides on.
+    let view = WindowView::new(
+        &s.world,
+        s.date,
+        s.seed,
+        &DevKnobs::default(),
+        &ValueKnobs::default(),
+        &uk,
+        &ScoutKnobs::default(),
+        &s.recent_ratings,
+    );
+    let obs = view.observe(&s.world, s.player_club);
+    let own_asks = obs
+        .squad
+        .iter()
+        .map(|m| (m.player, view.ask(m.player)))
+        .collect();
+    let everyone = obs
+        .squad
+        .iter()
+        .map(|m| m.player)
+        .chain(obs.candidates.iter().map(|c| c.player));
+    let reports = s.scout_reports(s.player_club, everyone);
     TransferContext {
         obs,
-        valuations,
+        reports,
+        own_asks,
         knobs: uk,
     }
 }
@@ -234,7 +257,10 @@ fn browse_targets_screen(
             .iter()
             .filter(|c| role_filter.is_none_or(|r| c.role == r))
             .collect();
-        candidates.sort_by(|a, b| b.value.0.cmp(&a.value.0).then(a.player.cmp(&b.player)));
+        // Best case first: the top of the value range is what a manager
+        // browsing for a signing is looking for.
+        let ceiling = |c: &Candidate| ctx.reports[&c.player].value.1;
+        candidates.sort_by(|a, b| ceiling(b).cmp(&ceiling(a)).then(a.player.cmp(&b.player)));
 
         println!(
             "\nFilter: {}",
@@ -247,7 +273,9 @@ fn browse_targets_screen(
             Col::left("Pos", 4),
             Col::right("Age", 3),
             Col::left("Club", 20),
-            Col::right("Value", 8),
+            Col::right("CA", 5),
+            Col::right("Pot", 7),
+            Col::right("Value", 9),
             Col::right("Ask price", 9),
             Col::right("Wage", 7),
             Col::left("Fit", 4),
@@ -263,6 +291,7 @@ fn browse_targets_screen(
                 .iter()
                 .any(|d| matches!(d, TransferDecision::Bid { player, .. } if *player == c.player));
             let afford = ctx.afford(c.asking_price, c.wage);
+            let report = &ctx.reports[&c.player];
             t.row_all(
                 vec![
                     Cell::new((i + 1).to_string()),
@@ -270,7 +299,9 @@ fn browse_targets_screen(
                     Cell::new(c.role.short()),
                     Cell::new(p.age(today).to_string()),
                     Cell::new(owner),
-                    Cell::new(money(c.value)),
+                    Cell::new(range(report.ability)),
+                    Cell::new(range(report.potential)),
+                    Cell::new(money_range(report.value)),
                     Cell::new(money(c.asking_price)),
                     Cell::new(money(c.wage)),
                     Cell::new(afford.label()),
@@ -292,7 +323,7 @@ fn browse_targets_screen(
             "q" => return,
             "f" => role_filter = prompt_role_filter(),
             n => match n.parse::<usize>() {
-                Ok(i) if (1..=shown.len()).contains(&i) => add_bid(world, shown[i - 1], draft),
+                Ok(i) if (1..=shown.len()).contains(&i) => add_bid(world, ctx, shown[i - 1], draft),
                 _ => println!("Pick a listed number, 'f', or 'q'."),
             },
         }
@@ -311,13 +342,13 @@ fn prompt_role_filter() -> Option<Role> {
     }
 }
 
-fn add_bid(world: &World, c: &Candidate, draft: &mut Vec<TransferDecision>) {
+fn add_bid(world: &World, ctx: &TransferContext, c: &Candidate, draft: &mut Vec<TransferDecision>) {
     let p = world.player(c.player);
     println!(
-        "\n{} ({}) — value {}, asking {}",
+        "\n{} ({}) — scouts value him at {}, asking {}",
         p.name,
         c.role.short().trim(),
-        money(c.value),
+        money_range(ctx.reports[&c.player].value),
         money(c.asking_price)
     );
     let Some(price) = prompt_money(
@@ -355,7 +386,7 @@ fn squad_transfer_screen(
             Col::left("Name", 20),
             Col::left("Pos", 4),
             Col::right("CA", 3),
-            Col::right("Proj", 4),
+            Col::right("Pot", 7),
             Col::right("Wage", 10),
             Col::right("Contract", 9),
             Col::right("Ask price", 12),
@@ -363,8 +394,7 @@ fn squad_transfer_screen(
         ]);
         for (i, m) in squad.iter().enumerate() {
             let p = world.player(m.player);
-            let value = ctx.valuations.get(&m.player).copied().unwrap_or(Money(0));
-            let ask = Money((value.0 as f64 * ctx.knobs.asking_markup).round() as i64);
+            let ask = ctx.own_asks.get(&m.player).copied().unwrap_or(Money(0));
             let listed = draft
                 .iter()
                 .any(|d| matches!(d, TransferDecision::List { player } if *player == m.player));
@@ -374,7 +404,7 @@ fn squad_transfer_screen(
                     Cell::new(p.name.clone()),
                     Cell::new(m.natural_role.short()),
                     Cell::new(m.current_ca.to_string()),
-                    Cell::new(m.projected_ca.to_string()),
+                    Cell::new(range(ctx.reports[&m.player].potential)),
                     Cell::new(money(m.wage)),
                     Cell::new(format!("{:.1}y", m.years_left_on_contract)),
                     Cell::new(money(ask)),

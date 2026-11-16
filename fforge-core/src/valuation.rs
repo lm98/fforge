@@ -554,6 +554,54 @@ fn value_with(
     Money((base * contract_mult * scarcity_mult * form_mult).round() as i64)
 }
 
+/// `value` with everything that does not depend on the player built once:
+/// the knob-derived tables, the market context, the knobs. For a caller that
+/// values players one at a time rather than all at once (`market::WindowView`
+/// appraises only the candidates a club could pay for).
+pub struct Valuer {
+    ctx: MarketContext,
+    knobs: ValueKnobs,
+    dev: DevKnobs,
+    tables: DevTables,
+}
+
+impl Valuer {
+    pub fn new(ctx: MarketContext, knobs: &ValueKnobs, dev: &DevKnobs) -> Self {
+        Valuer {
+            ctx,
+            knobs: *knobs,
+            dev: *dev,
+            tables: DevTables::new(dev),
+        }
+    }
+
+    /// Exactly `value(world, player, today, ..)`.
+    pub fn value(&self, world: &World, player: fforge_domain::PlayerId, today: GameDate) -> Money {
+        value_with(
+            world,
+            player,
+            today,
+            &self.ctx,
+            &self.knobs,
+            &self.dev,
+            &self.tables,
+        )
+    }
+
+    /// Exactly `value_all(world, today, ..)`.
+    pub fn value_all(
+        &self,
+        world: &World,
+        today: GameDate,
+    ) -> BTreeMap<fforge_domain::PlayerId, Money> {
+        world
+            .players
+            .keys()
+            .map(|&pid| (pid, self.value(world, pid, today)))
+            .collect()
+    }
+}
+
 /// Value **every** player against one frozen snapshot into a
 /// `BTreeMap<PlayerId, Money>` (`TRANSFER_MODEL.md` §2.7). This is not only the
 /// once-per-window optimisation: it *guarantees* every club prices against the

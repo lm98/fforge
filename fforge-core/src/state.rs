@@ -5,13 +5,16 @@
 //! only consumes them. `replay(events)` is therefore save-loading, bug
 //! reproduction, and (later) counterfactual branch points, all in one.
 
-use crate::development::apply_attr_step;
+use crate::development::{DevKnobs, apply_attr_step};
 use crate::event::Card;
 use crate::event::Event;
 use crate::event::TransferDecision;
+use crate::scouting::{self, Range, Scout, ScoutKnobs};
+use crate::valuation::{MarketContext, ValueKnobs, Valuer};
 use fforge_domain::{
     ClubId, Contract, Fixture, FixtureId, GameDate, Lineup, Money, Player, PlayerId, World,
 };
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Horizon of the rolling appearance window (`recent_appearances`): six weekly
@@ -103,6 +106,18 @@ pub(crate) fn apply_player_retired(world: &mut World, player: PlayerId) {
         p.contract = None;
         p.retired = true;
     }
+}
+
+/// What a club is shown about a player in place of the hidden truth
+/// (`AGENT_MODEL.md` §5.1): each fogged quantity as a range whose width is
+/// the uncertainty. For a club's own player `ability` is exact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoutReport {
+    pub role: fforge_domain::Role,
+    pub ability: Range,
+    pub potential: Range,
+    /// Low and high estimate of his market value.
+    pub value: (Money, Money),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -430,6 +445,87 @@ impl GameState {
             .iter()
             .chain(&away.players)
             .map(|&pid| (pid, self.condition(pid)))
+            .collect()
+    }
+
+    /// `target`'s squad as `observer` sees it this season (`AGENT_MODEL.md`
+    /// §5) — what a team-sheet decision may know about an opponent. Holds
+    /// only that club. Derived on demand from the seed; nothing is stored.
+    pub fn squad_as_seen_by(&self, observer: ClubId, target: ClubId) -> Cow<'_, World> {
+        scouting::seen_squad(
+            &self.world,
+            self.seed,
+            observer,
+            target,
+            self.date,
+            &ScoutKnobs::default(),
+            &DevKnobs::default(),
+        )
+    }
+
+    /// The whole world as `observer` sees it this season: every player a
+    /// sighting, squads and money untouched.
+    pub fn world_as_seen_by(&self, observer: ClubId) -> Cow<'_, World> {
+        scouting::seen_world(
+            &self.world,
+            self.seed,
+            observer,
+            self.date,
+            &ScoutKnobs::default(),
+            &DevKnobs::default(),
+        )
+    }
+
+    /// What `observer` knows about each of `players` this season: the ranges
+    /// a manager is shown in place of the hidden truth (`AGENT_MODEL.md`
+    /// §5.1). The value range is `value()` at the pessimistic and optimistic
+    /// corners of the sighting — the same function, never a second one.
+    pub fn scout_reports(
+        &self,
+        observer: ClubId,
+        players: impl IntoIterator<Item = PlayerId>,
+    ) -> BTreeMap<PlayerId, ScoutReport> {
+        let (scout_knobs, dev, value_knobs) = (
+            ScoutKnobs::default(),
+            DevKnobs::default(),
+            ValueKnobs::default(),
+        );
+        let scout = Scout::new(
+            &self.world,
+            self.seed,
+            observer,
+            self.date,
+            &scout_knobs,
+            &dev,
+        );
+        let ctx = MarketContext::from_world(&self.world, &value_knobs, &self.recent_ratings);
+        let valuer = Valuer::new(ctx, &value_knobs, &dev);
+        let value_of = |player: Player| {
+            let id = player.id;
+            let alone = World {
+                players: BTreeMap::from([(id, player)]),
+                clubs: BTreeMap::new(),
+                staff: BTreeMap::new(),
+                competition: self.world.competition.clone(),
+            };
+            valuer.value(&alone, id, self.date)
+        };
+        players
+            .into_iter()
+            .map(|pid| {
+                let sighting = scout.sight(&self.world, pid);
+                let (a, b) = (
+                    value_of(sighting.corner(true)),
+                    value_of(sighting.corner(false)),
+                );
+                let report = ScoutReport {
+                    role: sighting.role,
+                    ability: sighting.ability,
+                    potential: sighting.potential,
+                    value: (a.min(b), a.max(b)),
+                };
+                (pid, report)
+            })
             .collect()
     }
 

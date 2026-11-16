@@ -15,6 +15,7 @@ use crate::match_engine::{
 };
 use crate::pool::{self, PoolKnobs};
 use crate::schedule::double_round_robin;
+use crate::scouting::ScoutKnobs;
 use crate::state::{
     GameState, apply_finance_deltas, apply_player_retired, apply_transfer_completed,
     apply_youth_intake, league_table,
@@ -284,7 +285,16 @@ fn effective_lineup(
         return lineup.clone();
     }
     if club != state.player_club {
-        return ai_pick_lineup_vs(&state.world, club, opponent, is_home, state.date, suspended);
+        let seen = state.squad_as_seen_by(club, opponent);
+        return ai_pick_lineup_vs(
+            &state.world,
+            &seen,
+            club,
+            opponent,
+            is_home,
+            state.date,
+            suspended,
+        );
     }
     if let Some(lineup) = state.last_lineup.as_ref().filter(usable) {
         return lineup.clone();
@@ -604,6 +614,7 @@ fn transfer_window_events(
             &market_knobs,
             &recorded_transfer_plans(state),
             &state.recent_ratings,
+            &ScoutKnobs::default(),
         );
         for t in &outcome.transfers {
             apply_transfer_completed(&mut work_world, t.player, t.from, t.to, t.fee, t.contract);
@@ -702,6 +713,7 @@ mod transfer_decision_tests {
         let mut sheet = ai_pick_lineup_available(&state.world, rival, state.date, &BTreeSet::new());
         sheet.players.reverse();
         let default_xi = ai_pick_lineup_vs(
+            &state.world,
             &state.world,
             rival,
             fixture.away,

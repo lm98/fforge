@@ -33,6 +33,7 @@ pub fn assistant_pick(session: &Session) -> Option<Tactics> {
     let opponent: ClubId = if is_home { f.away } else { f.home };
     Some(match_engine::ai_pick_tactics(
         &s.world,
+        &s.squad_as_seen_by(s.player_club, opponent),
         s.player_club,
         opponent,
         is_home,

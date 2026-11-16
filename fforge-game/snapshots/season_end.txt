@@ -2,32 +2,32 @@
 ================ SEASON OVER ================
 
       Club                        W   D   L   GF   GA   GD  Pts
-   1. Virtus Belletto        38  32   2   4  143    4 +139   98
-   2. Real Torrana           38  29   7   2  145    9 +136   94
-   3. US Castonte            38  26  11   1   97   12  +85   89
-   4. US Portetto            38  25  11   2  116    3 +113   86
->  5. FC Nerana              38  19  10   9   46   20  +26   67
-   6. Racing Veressa         38  19   8  11   59   21  +38   65
-   7. Inter Sorora           38  17  13   8   62   15  +47   64
-   8. Dinamo Valdessa        38  18  10  10   50   26  +24   64
-   9. US Rivana              38  16  13   9   32   22  +10   61
-  10. US Sorisola            38  15  10  13   44   33  +11   55
-  11. Sporting Campentino    38  10  16  12   17   40  -23   46
-  12. Atlético Valdaro       38   9  18  11   14   26  -12   45
-  13. Sporting Pralana       38   9  14  15   15   38  -23   41
-  14. AC Fioraverde          38   8  14  16   18   48  -30   38
-  15. FC Portaverde          38   5  12  21    8   61  -53   27
-  16. Olimpia Lavora         38   4   9  25    7   62  -55   21
-  17. Sporting Saldetto      38   4   9  25    5   67  -62   21
-  18. Dinamo Bellana         38   4   8  26   10  141 -131   20
-  19. Olimpia Valdurnia      38   2  13  23    2  103 -101   19
-  20. Olimpia Nerurnia       38   0  10  28    0  139 -139   10
+   1. Virtus Belletto        38  32   4   2  168    4 +164  100
+   2. Real Torrana           38  26  10   2  115   11 +104   88
+   3. US Portetto            38  24  10   4   78    4  +74   82
+   4. US Castonte            38  24  10   4   81    9  +72   82
+>  5. FC Nerana              38  21   9   8   60   21  +39   72
+   6. US Rivana              38  17  12   9   45   16  +29   63
+   7. Racing Veressa         38  17   9  12   62   25  +37   60
+   8. Inter Sorora           38  17   9  12   50   15  +35   60
+   9. Atlético Valdaro       38  15  14   9   25   34   -9   59
+  10. Dinamo Valdessa        38  15  13  10   41   23  +18   58
+  11. Sporting Campentino    38  14  13  11   21   28   -7   55
+  12. US Sorisola            38  12  14  12   31   33   -2   50
+  13. AC Fioraverde          38  12  12  14   28   47  -19   48
+  14. Sporting Pralana       38  11  14  13   19   38  -19   47
+  15. FC Portaverde          38   5  10  23   13   76  -63   25
+  16. Olimpia Lavora         38   4  10  24    8   67  -59   22
+  17. Sporting Saldetto      38   5   7  26    8   69  -61   22
+  18. Olimpia Valdurnia      38   2  11  25    3   97  -94   17
+  19. Olimpia Nerurnia       38   1  10  27    3  105 -102   13
+  20. Dinamo Bellana         38   2   7  29    8  145 -137   13
 
 Champions: Virtus Belletto
 You finished 5th with FC Nerana.
 
 League-wide telemetry (the calibration harness embryo):
   matches played : 380
-  goals per match: 2.34
-  home/draw/away : 43% / 29% / 28%
+  goals per match: 2.28
+  home/draw/away : 46% / 27% / 26%
 (Starting the next season runs the summer's development on the squad you finish with.)

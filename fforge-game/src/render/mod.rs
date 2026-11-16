@@ -15,6 +15,7 @@
 pub mod sem;
 pub mod table;
 
+use fforge_core::scouting::Range;
 use fforge_core::{Session, TableRow, league_table};
 use fforge_domain::{ClubId, GameDate, Money, Player, ROLE_WEIGHTS, World, current_ability};
 use sem::{Palette, Sem};
@@ -163,6 +164,22 @@ pub fn result_line(
 /// raw integers is unreadable at a glance — you end up counting digits to tell
 /// 1_200_000 from 12_000_000. Precision is never the point on these screens;
 /// magnitude is.
+/// A scouted band on the 0–100 scale: `74` when known exactly, `62–88` when
+/// not. The width is the uncertainty (`AGENT_MODEL.md` §5).
+pub fn range(r: Range) -> String {
+    if r.is_exact() {
+        r.lo.to_string()
+    } else {
+        format!("{}–{}", r.lo, r.hi)
+    }
+}
+
+/// A low and high estimate of a sum, collapsed when both print the same.
+pub fn money_range((lo, hi): (Money, Money)) -> String {
+    let (lo, hi) = (money(lo), money(hi));
+    if lo == hi { lo } else { format!("{lo}–{hi}") }
+}
+
 pub fn money(m: Money) -> String {
     let sign = if m.0 < 0 { "-" } else { "" };
     let v = m.0.unsigned_abs();
