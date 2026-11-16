@@ -329,7 +329,13 @@ provably.
    buyer reputation, then `ClubId`). The player then **consents or refuses** on wage and buyer
    reputation against his own threshold; a refusal falls through to the next-best bidder — the
    deferred-acceptance step.
-4. **Carry losers forward**, shortlists minus players already taken.
+4. **Carry losers forward**, shortlists minus players already taken. **A player moves at most
+   once per window**: once a transfer completes he cannot be listed again until the next one.
+   The policy is memoryless across rounds, so without this a buyer whose new signing left a role
+   over its template listed him the next round at the same frozen ask, and the next club did the
+   same. The buyer's-eye readings (`AGENT_MODEL.md` §5.7) found 59% of fee-paying signings sold
+   on in the window they arrived, each hop counted as a transfer. The rule lives in the clearing
+   loop, not the policy, because it is a rule of the market and holds for every decider.
 5. **Repeat** to fixpoint or `MAX_ROUNDS = 12`. Termination: each round either completes at least one
    transfer or produces no bids.
 

@@ -83,6 +83,9 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   `value()`, so an ask above value makes the surplus negative for every buyer and nothing clears.
 - **`opp_mid_advance_mult` and `opp_penetrate_mult` each have two tenants**, Pressing and
   Mentality, and they stack. Changing either instruction moves both.
+- **A player moves at most once per window**, enforced in `market::resolve_window`, not in any
+  policy (`TRANSFER_MODEL.md` §5 step 4). Policies are memoryless across clearing rounds; before
+  this rule a signing was re-listed the round after he arrived and passed down the league.
 - **Affordability is checked at resolve time** (`market::filter_affordable`), not at submit
   time. `validate_transfer_decisions` only checks shape, because a human plan is replayed against
   a world that has moved on since it was submitted.

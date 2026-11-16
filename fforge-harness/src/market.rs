@@ -298,6 +298,60 @@ pub struct MarketTelemetry {
     club_squad_sizes_by_season: BTreeMap<ClubId, Vec<usize>>,
 
     prev_ranks: Option<BTreeMap<ClubId, usize>>,
+
+    /// What every player was truly worth when the open window began
+    /// (`note_true_values`), so a fee can be read against it.
+    true_values: BTreeMap<PlayerId, Money>,
+    /// Each player's latest fee-paying move, until he leaves that club.
+    open_signings: BTreeMap<PlayerId, Signing>,
+    signings: Vec<Signing>,
+    /// Day of the last transfer or release seen: how far each signing has
+    /// been followed.
+    last_day: i64,
+}
+
+/// One fee-paying transfer seen from the buyer's side (`AGENT_MODEL.md`
+/// §5.6): what was paid, what the player was truly worth, and how the
+/// buyer's ownership of him ended, if it has.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Signing {
+    pub date: GameDate,
+    pub fee: i64,
+    pub true_value: Option<i64>,
+    pub exit: Option<Exit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Exit {
+    pub date: GameDate,
+    /// `None` when the buyer released him for nothing.
+    pub resale_fee: Option<i64>,
+}
+
+const DAYS_PER_YEAR: i64 = 365;
+/// A resale under this share of the purchase fee counts as the buyer
+/// writing the signing off.
+const WRITE_OFF_RESALE_SHARE: f64 = 0.5;
+/// Fees at or above this percentile of a seed's fees are "paid like a star".
+const STAR_FEE_PERCENTILE: f64 = 0.75;
+const FLOP_HORIZON_DAYS: i64 = 2 * DAYS_PER_YEAR;
+
+impl Signing {
+    fn exited_within(&self, days: i64) -> Option<Exit> {
+        self.exit.filter(|e| e.date.days - self.date.days <= days)
+    }
+
+    fn followed_for(&self, days: i64, until_day: i64) -> bool {
+        until_day - self.date.days >= days
+    }
+
+    /// Released, or sold on for under half of what he cost.
+    fn written_off_within(&self, days: i64) -> bool {
+        self.exited_within(days).is_some_and(|e| {
+            e.resale_fee
+                .is_none_or(|resale| (resale as f64) < WRITE_OFF_RESALE_SHARE * self.fee as f64)
+        })
+    }
 }
 
 impl EventObserver for MarketTelemetry {
@@ -306,13 +360,36 @@ impl EventObserver for MarketTelemetry {
             Event::SeasonStarted { .. } => {
                 self.season += 1;
             }
-            Event::TransferCompleted { fee, .. } => {
+            Event::TransferCompleted {
+                date,
+                player,
+                from,
+                fee,
+                ..
+            } => {
                 self.total_transfers += 1;
                 self.all_fees.push(fee.0);
                 self.fees_by_season
                     .entry(self.season)
                     .or_default()
                     .push(fee.0);
+                self.last_day = date.days;
+                self.close_signing(*player, *date, Some(fee.0));
+                if from.is_some() && fee.0 > 0 {
+                    self.open_signings.insert(
+                        *player,
+                        Signing {
+                            date: *date,
+                            fee: fee.0,
+                            true_value: self.true_values.get(player).map(|m| m.0),
+                            exit: None,
+                        },
+                    );
+                }
+            }
+            Event::PlayerReleased { date, player, .. } => {
+                self.last_day = date.days;
+                self.close_signing(*player, *date, None);
             }
             _ => {}
         }
@@ -320,6 +397,25 @@ impl EventObserver for MarketTelemetry {
 }
 
 impl MarketTelemetry {
+    /// Record what every player is truly worth as a window is about to
+    /// resolve. The harness may read truth (`AGENT_MODEL.md` §5.1); the
+    /// clubs whose fees are measured against it could not.
+    pub fn note_true_values(&mut self, values: BTreeMap<PlayerId, Money>) {
+        self.true_values = values;
+    }
+
+    fn close_signing(&mut self, player: PlayerId, date: GameDate, resale_fee: Option<i64>) {
+        if let Some(mut signing) = self.open_signings.remove(&player) {
+            signing.exit = Some(Exit { date, resale_fee });
+            self.signings.push(signing);
+        }
+    }
+
+    /// Every fee-paying signing, finished or still running.
+    pub fn signings(&self) -> impl Iterator<Item = &Signing> {
+        self.signings.iter().chain(self.open_signings.values())
+    }
+
     /// Snapshot the folded world at one season's close — before
     /// `Command::StartNextSeason` fires and clears `results` (`state.rs`'s
     /// `SeasonStarted` fold arm). Pure reads only: `league_table` and
@@ -468,6 +564,13 @@ pub struct MarketReport {
     /// the metric the §9 residual actually described: *every* club ratcheted
     /// to the ceiling, not one perpetually-full outlier.
     share_clubs_majority_pinned: Vec<f64>,
+    /// The buyer's-eye rows (`AGENT_MODEL.md` §5.6), one value per seed.
+    fee_over_true_value: Vec<f64>,
+    overpaid_share: Vec<f64>,
+    moved_on_within_year: Vec<f64>,
+    resale_fee_ratio: Vec<f64>,
+    resold_same_window: Vec<f64>,
+    star_flop_rate: Vec<f64>,
 }
 
 impl MarketReport {
@@ -558,6 +661,66 @@ impl MarketReport {
         } else {
             f64::NAN
         });
+
+        let share = |hits: usize, of: usize| {
+            if of == 0 {
+                f64::NAN
+            } else {
+                hits as f64 / of as f64
+            }
+        };
+        let fee_ratios: Vec<f64> = t
+            .signings()
+            .filter_map(|s| {
+                s.true_value
+                    .filter(|&v| v > 0)
+                    .map(|v| s.fee as f64 / v as f64)
+            })
+            .collect();
+        self.fee_over_true_value.push(median(&fee_ratios));
+        self.overpaid_share.push(share(
+            fee_ratios.iter().filter(|&&r| r > 1.0).count(),
+            fee_ratios.len(),
+        ));
+
+        let a_year: Vec<&Signing> = t
+            .signings()
+            .filter(|s| s.followed_for(DAYS_PER_YEAR, t.last_day))
+            .collect();
+        self.moved_on_within_year.push(share(
+            a_year
+                .iter()
+                .filter(|s| s.exited_within(DAYS_PER_YEAR).is_some())
+                .count(),
+            a_year.len(),
+        ));
+        let resale_ratios: Vec<f64> = a_year
+            .iter()
+            .filter_map(|s| {
+                let resale = s.exited_within(DAYS_PER_YEAR)?.resale_fee?;
+                Some(resale as f64 / s.fee as f64)
+            })
+            .collect();
+        self.resale_fee_ratio.push(median(&resale_ratios));
+        self.resold_same_window.push(share(
+            t.signings()
+                .filter(|s| s.exit.is_some_and(|e| e.date == s.date))
+                .count(),
+            t.signings().count(),
+        ));
+
+        let star_fee = percentile(&t.all_fees_f64(), STAR_FEE_PERCENTILE);
+        let stars: Vec<&Signing> = t
+            .signings()
+            .filter(|s| s.fee as f64 >= star_fee && s.followed_for(FLOP_HORIZON_DAYS, t.last_day))
+            .collect();
+        self.star_flop_rate.push(share(
+            stars
+                .iter()
+                .filter(|s| s.written_off_within(FLOP_HORIZON_DAYS))
+                .count(),
+            stars.len(),
+        ));
     }
 
     pub fn transfers_per_club_per_window(&self) -> SeedSpread {
@@ -619,6 +782,24 @@ impl MarketReport {
     }
     pub fn below_cap_share(&self) -> SeedSpread {
         seed_spread(&self.below_cap_share)
+    }
+    pub fn fee_over_true_value(&self) -> SeedSpread {
+        seed_spread(&self.fee_over_true_value)
+    }
+    pub fn overpaid_share(&self) -> SeedSpread {
+        seed_spread(&self.overpaid_share)
+    }
+    pub fn moved_on_within_year(&self) -> SeedSpread {
+        seed_spread(&self.moved_on_within_year)
+    }
+    pub fn resale_fee_ratio(&self) -> SeedSpread {
+        seed_spread(&self.resale_fee_ratio)
+    }
+    pub fn resold_same_window(&self) -> SeedSpread {
+        seed_spread(&self.resold_same_window)
+    }
+    pub fn star_flop_rate(&self) -> SeedSpread {
+        seed_spread(&self.star_flop_rate)
     }
     pub fn share_clubs_majority_pinned(&self) -> SeedSpread {
         seed_spread(&self.share_clubs_majority_pinned)
@@ -706,6 +887,18 @@ fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> MarketTelemetr
 
     for s in 0..seasons {
         while !session.state.season_over() {
+            if window_will_close_on_next_advance(&session.state) {
+                let state = &session.state;
+                let ctx =
+                    MarketContext::from_world(&state.world, &value_knobs, &state.recent_ratings);
+                telemetry.note_true_values(value_all(
+                    &state.world,
+                    state.date,
+                    &ctx,
+                    &value_knobs,
+                    &dev_knobs,
+                ));
+            }
             submit_player_clubs_ai_equivalent_plan(
                 &mut session,
                 player_club,
@@ -878,11 +1071,106 @@ pub fn print_report(report: &MarketReport) {
         &report.youth_count_mean(),
         "new cut, no prior band",
     );
+    println!();
+    println!("--- the buyer's eye (AGENT_MODEL.md §5.6; fee-paying signings only) ---");
+    row(
+        "Fee / true value, median",
+        &report.fee_over_true_value(),
+        "<= 1 with no winner's curse",
+    );
+    row(
+        "Share paying above true value",
+        &report.overpaid_share(),
+        "0 under omniscience",
+    );
+    row(
+        "Share gone from the buyer within a year",
+        &report.moved_on_within_year(),
+        "churn if high",
+    );
+    row(
+        "Resale fee / purchase fee, median",
+        &report.resale_fee_ratio(),
+        "~1 if the price was fair",
+    );
+    row(
+        "Share sold on in the window they arrived",
+        &report.resold_same_window(),
+        "0: a club keeps what it buys",
+    );
+    row(
+        "Star signings written off in two years",
+        &report.star_flop_rate(),
+        "the flop rate",
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bought(player: u32, day: i64, fee: i64) -> Event {
+        Event::TransferCompleted {
+            date: GameDate { days: day },
+            player: PlayerId(player),
+            from: Some(ClubId(1)),
+            to: ClubId(2),
+            fee: Money(fee),
+            contract: fforge_domain::Contract {
+                wage: Money(1),
+                expires: GameDate { days: day + 1000 },
+            },
+        }
+    }
+
+    #[test]
+    fn a_signing_is_followed_until_the_buyer_lets_the_player_go() {
+        let mut t = MarketTelemetry::default();
+        t.note_true_values(BTreeMap::from([(PlayerId(7), Money(80))]));
+        t.on_event(&bought(7, 100, 100));
+        t.on_event(&bought(8, 100, 100));
+        t.on_event(&bought(7, 300, 40));
+        t.on_event(&Event::PlayerReleased {
+            date: GameDate { days: 900 },
+            player: PlayerId(8),
+            club: ClubId(2),
+        });
+
+        let signings: Vec<Signing> = t.signings().copied().collect();
+        assert_eq!(signings.len(), 3, "the resale is itself a signing");
+
+        let first = signings.iter().find(|s| s.true_value.is_some()).unwrap();
+        assert_eq!(first.true_value, Some(80));
+        assert_eq!(
+            first.exit,
+            Some(Exit {
+                date: GameDate { days: 300 },
+                resale_fee: Some(40)
+            })
+        );
+        assert!(first.exited_within(DAYS_PER_YEAR).is_some());
+        assert!(
+            first.written_off_within(DAYS_PER_YEAR),
+            "sold for 40% of the fee"
+        );
+
+        let released = signings
+            .iter()
+            .find(|s| s.exit.is_some_and(|e| e.resale_fee.is_none()))
+            .unwrap();
+        assert!(released.exited_within(DAYS_PER_YEAR).is_none());
+        assert!(released.written_off_within(FLOP_HORIZON_DAYS + 100));
+
+        let still_there = signings.iter().find(|s| s.exit.is_none()).unwrap();
+        assert!(!still_there.written_off_within(i64::MAX));
+    }
+
+    #[test]
+    fn a_free_signing_is_not_a_purchase() {
+        let mut t = MarketTelemetry::default();
+        t.on_event(&bought(1, 10, 0));
+        assert_eq!(t.signings().count(), 0);
+    }
 
     /// The market pathology regression guard (`TRANSFER_MODEL.md` §11): the
     /// transfer-market sibling of `favourite_discrimination_regression_guard`

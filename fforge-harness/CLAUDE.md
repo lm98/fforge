@@ -8,7 +8,7 @@ depends on `fforge-core`; nothing depends on it.
 |---|---|---|---|
 | `match_engine` | `StreamTelemetry` over match traces; `LeagueSpread` over a season's table and margins; head-to-head and squad-conditional tactics probes. `play_opening_season` is the one season loop | `MATCH_MODEL.md` §8.1, §10, `TACTICS_MODEL.md` §5, §8 | `bin/calibrate` |
 | `career_arc` | career arcs (peak ages, PA attainment, veteran decline, wonderkid flops) and the PA-recoverability fits Phase 5's fog-of-war depends on | `DEVELOPMENT_MODEL.md` §6, §8 | `bin/career_arc` |
-| `market` | `MarketTelemetry`: competitive balance, financial health, transfer volume | `TRANSFER_MODEL.md` §11 | `bin/market` |
+| `market` | `MarketTelemetry`: competitive balance, financial health, transfer volume, and the buyer's eye (each `Signing` followed until the buyer lets the player go) | `TRANSFER_MODEL.md` §11, `AGENT_MODEL.md` §5.7 | `bin/market` |
 
 ## Rules
 
@@ -24,6 +24,9 @@ depends on `fforge-core`; nothing depends on it.
   thing it should depend on (`bin/calibrate`'s goals-by-gap table) before trusting its mean.
 - **`--set name=value` on `bin/calibrate` is a what-if**, for sweeping before a re-fit. It never
   writes a knob.
+- **Count events, then follow one.** Transfer volume counted every hop of a player passed
+  between five clubs in one window as five transfers. A count says how often something happened,
+  not whether it made sense; follow an instance to its end at least once.
 - **Pool, and report spread.** Every reading is pooled over seeds with the per-seed spread shown;
   squad-conditional readings pool across worlds as well.
 - **`bin/calibrate` has no `GameState`**, so it runs at the condition identity and cannot see
