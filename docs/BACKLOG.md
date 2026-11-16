@@ -137,7 +137,7 @@ whether the human is fogged like the agents; what a "claim" is structurally, so 
 can parse one; the narrative-effect mapping; and persona/memory/trace shape.
 
 **3.2 — The deterministic half.** *(`AGENT_MODEL.md` §13 is the step list; step 1, the
-multi-club control seam, is done.)* No LLM in it: the Gym-shaped `Observation`/`Decision`/`info`
+multi-club control seam, and step 2, fog-of-war, are done.)* No LLM in it: the Gym-shaped `Observation`/`Decision`/`info`
 boundary with fog-of-war masking; the provider-agnostic interface plus a deterministic fake provider
 and templated fallbacks; trace capture, scenario replay, and the recorded-trace-as-output-cache
 property; the validation gate reading `NewsItem.sources`. At the end of this the whole agent
@@ -163,7 +163,8 @@ football-flavoured. Protect its scope explicitly.
 
 Each is filed with a reading, not a fix. None blocks Phase 5 on its own.
 
-**4.1 — Transfer volume: 1.880/club/window against a 2–5 target** (BACKLOG.md §2 item 4's re-bank,
+**4.1 — [Closed — fog-of-war, `AGENT_MODEL.md` §5.6: volume reads 4.537.]** *The hypothesis below
+was right. Kept for the record.* Transfer volume: 1.880/club/window against a 2–5 target (BACKLOG.md §2 item 4's re-bank,
 24 seeds × 15 seasons — up from 1.805, well inside both readings' own spread). Survived three
 re-banks unchanged now — form, tactics, and this pass's seeding-invert-driven finance shock — which
 sharpens the localisation: the same clearing loop and utility policy left volume flat while fee

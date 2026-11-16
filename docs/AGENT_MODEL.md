@@ -499,6 +499,37 @@ that the sections above left open or got wrong:
 - **Not built:** the buyer's-eye flop rate row promised in §5.3. It needs each transfer's fee
   tracked against the player's later peak, which is harness work of its own.
 
+### 5.6 Readings against §5.3's predictions
+
+`bin/market`, 24 seeds × 15 seasons, and `bin/calibrate`, 24 seeds, each run on the commit before
+fog and the commit with it. All four pooled guards pass unchanged in both.
+
+| Prediction | Before | After | Verdict |
+|---|---|---|---|
+| Transfers per club per window **rises** toward 2–5 | 1.880 (sd 0.148) | **4.537** (sd 0.192) | **confirmed** — about fourteen per-seed sds, and inside the band for the first time |
+| Talent concentration **falls** | early 0.568, late 0.335 | early 0.525, late 0.388 | **not confirmed** — both moves are inside one sd (~0.09) and point opposite ways |
+| Match aggregates move **within their spread** | 2.50 gpm; H/D/A 42.0/28.3/29.7 | 2.50 gpm; 41.9/28.5/29.6 | **confirmed** — nothing moved |
+| Development does **not** move | — | — | not re-run; fog touches no engine and the `career_arc` guard passes |
+
+`BACKLOG.md` §4.1's hypothesis — that uniform omniscient valuation, not cash, capped volume —
+is confirmed, and that item is closed.
+
+**Two readings nobody predicted, recorded so they are not mistaken for intent:**
+
+- **The median fee halved**, 1.47M → 0.71M (p90 3.10M → 1.84M), and the last-season-to-first
+  fee ratio fell from 1.27 to 0.57. With two and a half times as many deals, most of the new
+  ones are small: trades of ordinary players that omniscient clubs never made, because every
+  club agreed on what such a player was worth and so nobody saw a surplus in him.
+- **The league became more balanced.** Late-season points-Gini fell 0.251 → 0.201 and rank
+  churn rose 1.31 → 1.51.
+
+**One caveat on the headline.** Some of the new volume may be churn that fog manufactures
+rather than trade it enables. A club buys the players it happens to overrate; next season its
+estimate is redrawn, the overrating is gone, and the same player looks surplus. That is a
+winner's curse followed by a correction, and it would raise volume even if no club were better
+off for any of it. The reading above cannot tell the two apart. Telling them apart is what the
+buyer's-eye flop row is for, which makes it the first thing to build before leaning on 4.537.
+
 ---
 
 ## 6. The cost budget
@@ -971,7 +1002,7 @@ The deterministic half — `BACKLOG.md` §3.2. No LLM, no network, everything of
 
 1. The control seam (§3.2). *Identity test: the whole existing suite, untouched.* **Done.**
 2. Fog-of-war (§5) for every decider and in the UI, then re-bank `bin/market` and `bin/calibrate`
-   against §5.3's predictions.
+   against §5.3's predictions. **Done** — §5.5, §5.6.
 2b. `ManagerStance` (§2.3) at neutral, then calibrate `StanceKnobs` to non-dominance.
    *Identity test: golden baselines and all three harnesses, untouched at neutral.*
 3. Observation builders and the `info` payload.

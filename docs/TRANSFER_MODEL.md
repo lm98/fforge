@@ -187,6 +187,11 @@ market will look *eerily efficient*, and any talent-concentration reading from �
 **upper bound** on concentration under perfect information — not a prediction of the fogged game.
 That is the right baseline to measure fog-of-war against later; it is not a bug to tune away.
 
+**Fog has since landed** (`AGENT_MODEL.md` §5). Each club values players through its own scouting
+and a player's asking price is his owner's valuation, so `Candidate.value` and `asking_price` are
+no longer one number scaled by a markup. Transfer volume rose from 1.880 to 4.537 per club per
+window; the readings in §9 and §11 predate that and describe the omniscient market.
+
 ### 2.7 Caching and the frozen snapshot
 
 Valuation is called once per (club × shortlist candidate) during clearing. Compute **once per window**
