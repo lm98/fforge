@@ -17,7 +17,7 @@ crate you are about to change.
 
 Phases 0–4 and 2e are complete, calibrated and guarded; set pieces are the one piece of 2e still
 deferred. A slice of Phase 6 (UI) was pulled forward into `fforge-game`. **Next is Phase 5, the
-agent layer**, and its first deliverable is the design note `AGENT_MODEL.md`.
+agent layer**. Its design note, `AGENT_MODEL.md`, is drafted; nothing in it is implemented yet.
 
 `docs/BACKLOG.md` is the live status: what is done, what is next, the open calibration questions
 and the filed doc-vs-code divergences. Read §3 before any Phase 5 work and §7 before picking up
@@ -37,6 +37,7 @@ subsystem's shape.
 | `TACTICS_MODEL.md` | the four instructions, their effects, the AI tactics policy | `match_engine::tactics` |
 | `DEVELOPMENT_MODEL.md` | age envelope, growth law, envelope-consistent seeding (§8) | `development`, `worldgen`; harness `career_arc` |
 | `TRANSFER_MODEL.md` | valuation, club AI, clearing loop, finances, player pool | `valuation`, `club_ai`, `market`, `finance`, `pool` |
+| `AGENT_MODEL.md` | Phase 5 (**draft**): invocation, fog-of-war, the validation gate, narrative feedback, evaluation | not yet implemented |
 | `UI_TOOLKIT_EVIDENCE.md` | what the CLI screens taught | `fforge-game` |
 | `BACKLOG.md` | status, next work, open questions | — |
 | `IMPLEMENTATION_LOG.md` | task-by-task history: why things are the way they are | — |
