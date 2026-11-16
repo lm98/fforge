@@ -300,7 +300,7 @@ to 0.12–0.16 with transfer volume inside ±0.3 of 4.54. The readings are in §
 |---|---|---|
 | Head-to-head tactics move by under 0.01 | High press v Patient 0.486 → 0.517; Direct v High press 0.512 → 0.466; Patient v Direct 0.509 → 0.530 (200 seeds × 2) | **refuted** — moves of 0.02 to 0.05, and two edges changed sign |
 | Squad-conditional readings shrink towards a quarter | the press gradient (physical − technical) reads −0.013 on 4 worlds × 50 seeds, inside its world sd of 0.05 | **consistent**, and now too small to read at that pool |
-| Late points-Gini falls to 0.12–0.16, volume within ±0.3 | see `AGENT_MODEL.md` §5.7, which re-ran the market for its own reasons | recorded there |
+| Late points-Gini falls to 0.12–0.16, volume within ±0.3 | Gini 0.201 → 0.137; volume 4.54 → 4.33 (`AGENT_MODEL.md` §5.7) | **confirmed**, though the volume reading also carries that section's one-move rule |
 
 The first row is the one that matters. The level-squad readings do not pass through `s`, which
 is why they were predicted not to move, but they do pass through `p_mid_advance`: Tempo's

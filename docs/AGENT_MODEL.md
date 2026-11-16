@@ -568,6 +568,39 @@ construction; fogged volume falls to 1.9–2.6 (the old figure less its 59%, plu
 substitution) and omniscient volume to 0.5–0.9, so fog still raises volume by a factor of two
 to four; the share gone within a year falls under 30% in both; the median fee rises.
 
+**Readings with the rule in place** (24 seeds × 15 seasons, per-seed sd in brackets):
+
+| Row | Omniscient | Fogged |
+|---|---|---|
+| Transfers per club per window | 2.48 (0.10) | 4.33 (0.24) |
+| Fee / true value, median | 0.949 (0.000) | 0.961 (0.008) |
+| Share paying above true value | 1.9% | 42.6% |
+| Share gone from the buyer within a year | 70.7% (1.5) | 73.5% (1.6) |
+| Resale fee / purchase fee, median | 1.07 | 1.08 |
+| Sold on in the window they arrived | 0 | 0 |
+| Star signings written off in two years | 0.1% | 0.7% |
+| Median fee | 0.89M | 0.59M |
+| Points-Gini, late | 0.160 | 0.137 |
+
+Against the predictions:
+
+- **Fog manufactures churn: refuted.** The share gone within a year is 71% without fog and 74%
+  with it. Fog adds a mild winner's curse (two buyers in five pay over true value, by little)
+  and no flops. §5.6's caveat is answered: the extra volume under fog is not extra churn.
+- **Volume falls once hops are removed: refuted.** Omniscient volume *rose*, 1.90 to 2.48, and
+  fogged volume barely moved, 4.54 to 4.33. The clubs that used to receive a passed-on player
+  bought someone else instead. Fog still raises volume, by a factor of 1.75 rather than 2.4.
+- **The share gone within a year falls under 30%: refuted, and this is the finding.** Seven
+  signings in ten are sold again within a year, at a small profit, fog or no fog. The carousel
+  did not stop; it slowed from one hop a round to one hop a window. No club keeps what it buys.
+  That is a property of `UtilityPolicy`, not of fog and not of the clearing loop: it buys
+  whatever shows a surplus over the ask and lists whoever is weakest in an over-template role,
+  with no notion of having just signed someone. It is filed as `BACKLOG.md` §4.8 and not fixed
+  here, because the fix is a change to what the policy wants, and that needs its own design in
+  `TRANSFER_MODEL.md` §6.
+- The flop rate is near zero by construction rather than by good judgement: a club can always
+  sell at about what it paid, so nothing is ever written off.
+
 ---
 
 ## 6. The cost budget

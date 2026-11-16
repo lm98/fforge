@@ -163,7 +163,7 @@ football-flavoured. Protect its scope explicitly.
 
 Each is filed with a reading, not a fix. None blocks Phase 5 on its own.
 
-**4.1 — [Closed — fog-of-war, `AGENT_MODEL.md` §5.6: volume reads 4.537.]** *The hypothesis below
+**4.1 — [Closed — fog-of-war, `AGENT_MODEL.md` §5.6–5.7: volume reads 4.33 fogged against 2.48 omniscient, once a player can move only once per window. The figures below predate that rule and counted every hop.]** *The hypothesis below
 was right. Kept for the record.* Transfer volume: 1.880/club/window against a 2–5 target (BACKLOG.md §2 item 4's re-bank,
 24 seeds × 15 seasons — up from 1.805, well inside both readings' own spread). Survived three
 re-banks unchanged now — form, tactics, and this pass's seeding-invert-driven finance shock — which
@@ -220,6 +220,16 @@ this is the two-lever-class problem again, at a new base rate. It gates `Manager
 were.** Each scales a player's attributes and so passes through `Knobs::s`, which went from 12 to
 52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
 it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
+
+**4.8 — No club keeps what it buys** (`AGENT_MODEL.md` §5.7). Seven fee-paying signings in ten
+are sold again within a year, at a median 7% profit, with or without fog. The same-window version
+of this is fixed in the clearing loop; the window-to-window version is `UtilityPolicy` itself,
+which buys any surplus over the ask and lists the weakest player in an over-template role with no
+memory of having signed him. Transfer volume, fees and the flop rate are all read through this, so
+none of them means what its name says until it is fixed. Candidate designs, none chosen: a
+squad-role intention the buyer holds for a signing; a holding period before a signing can be
+listed; buying only against an unfilled need. Needs a section in `TRANSFER_MODEL.md` §6 first.
+A player managing a club will see it directly: rivals reselling their summer signings in January.
 
 ---
 
