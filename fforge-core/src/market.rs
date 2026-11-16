@@ -32,18 +32,21 @@
 //! means here).
 
 use crate::club_ai::{
-    ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs, UtilityPolicy,
-    observe,
+    self, ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs,
+    UtilityPolicy,
 };
 use crate::development::DevKnobs;
 use crate::rng::derive_stream;
+use crate::scouting::{self, ScoutKnobs};
 use crate::state::apply_transfer_completed;
-use crate::valuation::{MarketContext, ValueKnobs, value_all};
+use crate::valuation::{MarketContext, ValueKnobs, Valuer};
 use crate::worldgen::wage_for_quality;
 use fforge_domain::{
     ClubId, Contract, GameDate, Money, PlayerId, ROLE_WEIGHTS, Role, World, best_role,
     date::DAYS_PER_YEAR,
 };
+use std::borrow::Cow;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 
 /// Tag namespace for the per-window transfer-market RNG stream
@@ -182,6 +185,7 @@ pub fn resolve_window(
     market_knobs: &MarketKnobs,
     recorded_plans: &BTreeMap<ClubId, Vec<TransferDecision>>,
     recent_ratings: &BTreeMap<PlayerId, Vec<u8>>,
+    scout: &ScoutKnobs,
 ) -> WindowOutcome {
     // Step 1 (§5): freeze the world snapshot and the valuation cache. Every
     // club's `Candidate.value` this whole window comes from this one map,
@@ -189,8 +193,16 @@ pub fn resolve_window(
     // (`MATCH_MODEL.md` §18, T13) feeds `MarketContext`'s form multiplier —
     // `GameState.recent_ratings` verbatim from the real caller, empty (the
     // identity) from any harness with no per-player rating history.
-    let ctx = MarketContext::from_world(world, value_knobs, recent_ratings);
-    let valuations = value_all(world, today, &ctx, value_knobs, dev);
+    let view = WindowView::new(
+        world,
+        today,
+        seed,
+        dev,
+        value_knobs,
+        utility_knobs,
+        scout,
+        recent_ratings,
+    );
     let ai_policy = UtilityPolicy::new(*utility_knobs);
     let recorded: BTreeMap<ClubId, RecordedPolicy> = recorded_plans
         .iter()
@@ -221,7 +233,7 @@ pub fn resolve_window(
         let mut listed: BTreeMap<PlayerId, ClubId> = BTreeMap::new();
         let mut club_decisions: Vec<(ClubId, Vec<TransferDecision>)> = Vec::new();
         for &club in &club_ids {
-            let obs = observe(&work_world, club, today, &valuations, dev, utility_knobs);
+            let obs = view.observe(&work_world, club);
             let raw_decisions = match recorded.get(&club) {
                 Some(policy) => policy.transfer_decisions(&obs),
                 None => ai_policy.transfer_decisions(&obs),
@@ -347,12 +359,12 @@ pub fn resolve_window(
         }
     }
 
-    let unfilled_needs = final_unfilled_needs(&work_world, today, &valuations, dev, &ai_policy);
+    let unfilled_needs = final_unfilled_needs(&work_world, &view, &ai_policy);
 
     WindowOutcome {
         transfers,
         rejected_bids,
-        valuations,
+        valuations: view.truth,
         unfilled_needs,
         rounds_used,
     }
@@ -476,17 +488,14 @@ fn consent_probability(
 /// need anywhere else (no second encoding).
 fn final_unfilled_needs(
     world: &World,
-    today: GameDate,
-    valuations: &BTreeMap<PlayerId, Money>,
-    dev: &DevKnobs,
+    view: &WindowView,
     policy: &UtilityPolicy,
 ) -> BTreeMap<ClubId, Vec<Role>> {
     world
         .clubs
         .keys()
         .map(|&club| {
-            let obs = observe(world, club, today, valuations, dev, &policy.knobs);
-            let needs = policy.needs(&obs);
+            let needs = policy.needs(&view.observe(world, club));
             let roles: Vec<Role> = Role::ALL
                 .iter()
                 .copied()
@@ -495,6 +504,170 @@ fn final_unfilled_needs(
             (club, roles)
         })
         .collect()
+}
+
+/// One window's frozen picture of the market (`TRANSFER_MODEL.md` §2.7,
+/// `AGENT_MODEL.md` §5): the true valuations, each club's view of every
+/// player, and the posted price list those views imply. Built once when the
+/// window resolves and shared by every round, so nothing a club believes
+/// changes mid-window.
+///
+/// A club's valuation of a player is computed the first time an observation
+/// needs it and remembered. That is an optimisation only: the value is a
+/// pure function of the frozen view, so when it is computed cannot matter.
+///
+/// With `ScoutKnobs::omniscient()` every club's view is the truth and this
+/// reduces to the single shared valuation cache.
+pub struct WindowView<'w> {
+    today: GameDate,
+    seed: u64,
+    dev: DevKnobs,
+    utility_knobs: UtilityKnobs,
+    scout: ScoutKnobs,
+    valuer: Valuer,
+    frozen: &'w World,
+    /// `value()` of every player on the real world: ground truth, the `info`
+    /// channel. No club decides on it under fog.
+    pub truth: BTreeMap<PlayerId, Money>,
+    /// Per club: the world as it sees it, and what it has appraised so far.
+    /// Empty at the identity, where every club reads `frozen` and `truth`.
+    perceived: BTreeMap<ClubId, Perceived<'w>>,
+    asks: BTreeMap<PlayerId, Money>,
+}
+
+struct Perceived<'w> {
+    /// The whole world as this club sees it, built the first time the club
+    /// observes the market.
+    seen: OnceCell<Cow<'w, World>>,
+    appraised: RefCell<BTreeMap<PlayerId, Money>>,
+}
+
+impl<'w> WindowView<'w> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        world: &'w World,
+        today: GameDate,
+        seed: u64,
+        dev: &DevKnobs,
+        value_knobs: &ValueKnobs,
+        utility_knobs: &UtilityKnobs,
+        scout: &ScoutKnobs,
+        recent_ratings: &BTreeMap<PlayerId, Vec<u8>>,
+    ) -> Self {
+        // Role scarcity and form are public knowledge: one context, read off
+        // the real world, shared by every club's valuation.
+        let ctx = MarketContext::from_world(world, value_knobs, recent_ratings);
+        let valuer = Valuer::new(ctx, value_knobs, dev);
+        let truth = valuer.value_all(world, today);
+        let perceived: BTreeMap<ClubId, Perceived> = if scout.is_omniscient() {
+            BTreeMap::new()
+        } else {
+            world
+                .clubs
+                .iter()
+                .map(|(&id, club)| {
+                    // A club always knows what it thinks of its own squad:
+                    // that is what it asks for them.
+                    let own = scouting::seen_squad(world, seed, id, id, today, scout, dev);
+                    let appraised = club
+                        .players
+                        .iter()
+                        .map(|&pid| (pid, valuer.value(&own, pid, today)))
+                        .collect();
+                    let perceived = Perceived {
+                        seen: OnceCell::new(),
+                        appraised: RefCell::new(appraised),
+                    };
+                    (id, perceived)
+                })
+                .collect()
+        };
+        // A free agent's price is his true worth — he knows himself.
+        let asks = world
+            .players
+            .keys()
+            .map(|&pid| {
+                let value = world
+                    .club_of(pid)
+                    .and_then(|club| perceived.get(&club))
+                    .and_then(|p| p.appraised.borrow().get(&pid).copied())
+                    .unwrap_or_else(|| truth.get(&pid).copied().unwrap_or(Money(0)));
+                (pid, club_ai::asking_price(value, utility_knobs))
+            })
+            .collect();
+        WindowView {
+            today,
+            seed,
+            dev: *dev,
+            utility_knobs: *utility_knobs,
+            scout: *scout,
+            valuer,
+            frozen: world,
+            truth,
+            perceived,
+            asks,
+        }
+    }
+
+    /// The posted price of `player`: what his club asks, or his true worth
+    /// if he has none.
+    pub fn ask(&self, player: PlayerId) -> Money {
+        self.asks.get(&player).copied().unwrap_or(Money(0))
+    }
+
+    fn observe_through(
+        &self,
+        world: &World,
+        club: ClubId,
+        seen: &World,
+        appraise: &dyn Fn(PlayerId) -> Money,
+    ) -> ClubObservation {
+        let market = club_ai::MarketSight {
+            seen,
+            appraise,
+            asks: &self.asks,
+        };
+        club_ai::observe_as(
+            world,
+            club,
+            self.today,
+            &market,
+            &self.dev,
+            &self.utility_knobs,
+        )
+    }
+
+    /// `club`'s observation of the market: squads, contracts and money from
+    /// `world` (the window's working copy, which moves as transfers
+    /// complete); players as that club saw them when the window opened.
+    pub fn observe(&self, world: &World, club: ClubId) -> ClubObservation {
+        let today = self.today;
+        match self.perceived.get(&club) {
+            Some(p) => {
+                let seen = p.seen.get_or_init(|| {
+                    scouting::seen_world(
+                        self.frozen,
+                        self.seed,
+                        club,
+                        today,
+                        &self.scout,
+                        &self.dev,
+                    )
+                });
+                let appraise = |pid| {
+                    *p.appraised
+                        .borrow_mut()
+                        .entry(pid)
+                        .or_insert_with(|| self.valuer.value(seen, pid, today))
+                };
+                self.observe_through(world, club, seen, &appraise)
+            }
+            None => {
+                let appraise = |pid| self.truth.get(&pid).copied().unwrap_or(Money(0));
+                self.observe_through(world, club, self.frozen, &appraise)
+            }
+        }
+    }
 }
 
 /// The summer window's close date (§7): `SUMMER_WINDOW_CLOSE_DAYS` after
@@ -681,6 +854,7 @@ mod tests {
             &market_knobs,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         assert!(
@@ -724,6 +898,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
         let b = resolve_window(
             &world,
@@ -736,6 +911,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
         assert_eq!(
             a, b,
@@ -770,6 +946,7 @@ mod tests {
             &market_knobs,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
         let world_b = two_bidder_world(1, 0); // ClubId(1) = high reputation
         let outcome_b = resolve_window(
@@ -783,6 +960,7 @@ mod tests {
             &market_knobs,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         assert_eq!(outcome_a.transfers.len(), 1);
@@ -817,6 +995,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
         let mut seen = BTreeSet::new();
         for t in &outcome.transfers {
@@ -847,6 +1026,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         let mut post = world.clone();
@@ -909,13 +1089,14 @@ mod tests {
             &market_knobs,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         // Exactly what UtilityPolicy decides for ClubId(0) against the same
         // round-1 snapshot `resolve_window` itself starts from.
         let ctx = MarketContext::from_world(&world, &vk, &BTreeMap::new());
-        let valuations = value_all(&world, TODAY, &ctx, &vk, &dev);
-        let obs = observe(&world, ClubId(0), TODAY, &valuations, &dev, &uk);
+        let valuations = crate::valuation::value_all(&world, TODAY, &ctx, &vk, &dev);
+        let obs = club_ai::observe(&world, ClubId(0), TODAY, &valuations, &dev, &uk);
         let ai_decisions = UtilityPolicy::new(uk).transfer_decisions(&obs);
 
         let substituted = resolve_window(
@@ -929,6 +1110,7 @@ mod tests {
             &market_knobs,
             &BTreeMap::from([(ClubId(0), ai_decisions.to_vec())]),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         assert_eq!(
@@ -962,6 +1144,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::from([(human, decisions)]),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
 
         assert!(
@@ -969,6 +1152,119 @@ mod tests {
             "an unaffordable pre-committed bid must never complete a transfer: {:?}",
             outcome.transfers
         );
+    }
+
+    fn fogged_view<'w>(world: &'w World, today: GameDate, scout: &ScoutKnobs) -> WindowView<'w> {
+        WindowView::new(
+            world,
+            today,
+            23,
+            &DevKnobs::default(),
+            &ValueKnobs::default(),
+            &UtilityKnobs::default(),
+            scout,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// `AGENT_MODEL.md` §5.3: the point of the fog. Under it two clubs hold
+    /// different opinions of the same player; without it they cannot.
+    #[test]
+    fn under_fog_clubs_disagree_about_what_a_player_is_worth() {
+        let (world, _schedule, today) = generate(23, &WorldGenConfig::default());
+        let mut ids = world.clubs.keys().copied();
+        let (a, b) = (ids.next().unwrap(), ids.next().unwrap());
+        let disagreements = |scout: &ScoutKnobs| {
+            let view = fogged_view(&world, today, scout);
+            let (from_a, from_b) = (view.observe(&world, a), view.observe(&world, b));
+            from_a
+                .candidates
+                .iter()
+                .filter(|c| c.value != Money(0))
+                .filter(|c| {
+                    from_b
+                        .candidates
+                        .iter()
+                        .any(|d| d.player == c.player && d.value != Money(0) && d.value != c.value)
+                })
+                .count()
+        };
+        assert_eq!(disagreements(&ScoutKnobs::omniscient()), 0);
+        assert!(disagreements(&ScoutKnobs::default()) > 50);
+    }
+
+    /// The posted price is the *owner's* opinion, and every club reads the
+    /// same list — a buyer's surplus is his view against the seller's.
+    #[test]
+    fn every_club_reads_the_same_asking_price_and_it_is_the_owners() {
+        let (world, _schedule, today) = generate(23, &WorldGenConfig::default());
+        let view = fogged_view(&world, today, &ScoutKnobs::default());
+        let mut ids = world.clubs.keys().copied();
+        let (a, b, owner) = (
+            ids.next().unwrap(),
+            ids.next().unwrap(),
+            ids.next().unwrap(),
+        );
+        let (from_a, from_b) = (view.observe(&world, a), view.observe(&world, b));
+        let uk = UtilityKnobs::default();
+        for &pid in &world.club(owner).players {
+            let ask_a = from_a.candidates.iter().find(|c| c.player == pid).unwrap();
+            let ask_b = from_b.candidates.iter().find(|c| c.player == pid).unwrap();
+            assert_eq!(ask_a.asking_price, ask_b.asking_price);
+            assert_eq!(ask_a.asking_price, view.ask(pid));
+        }
+        // A club's own squad is appraised eagerly; its asks follow from it.
+        let own = view.perceived[&owner].appraised.borrow();
+        for &pid in &world.club(owner).players {
+            assert_eq!(view.ask(pid), club_ai::asking_price(own[&pid], &uk));
+        }
+    }
+
+    /// Appraising lazily is an optimisation, so the order in which clubs
+    /// look at the market must not change what any of them sees.
+    #[test]
+    fn what_a_club_sees_does_not_depend_on_who_looked_first() {
+        let (world, _schedule, today) = generate(23, &WorldGenConfig::default());
+        let scout = ScoutKnobs::default();
+        let clubs: Vec<ClubId> = world.clubs.keys().copied().take(4).collect();
+        let forward = fogged_view(&world, today, &scout);
+        let in_order: Vec<_> = clubs.iter().map(|&c| forward.observe(&world, c)).collect();
+        let backward = fogged_view(&world, today, &scout);
+        let mut reversed: Vec<_> = clubs
+            .iter()
+            .rev()
+            .map(|&c| backward.observe(&world, c))
+            .collect();
+        reversed.reverse();
+        assert_eq!(in_order, reversed);
+        assert_eq!(in_order[0], forward.observe(&world, clubs[0]));
+    }
+
+    #[test]
+    fn a_fogged_window_resolves_the_same_way_twice() {
+        let cfg = WorldGenConfig {
+            num_clubs: 6,
+            ..Default::default()
+        };
+        let (world, _schedule, start) = generate(23, &cfg);
+        let run = || {
+            resolve_window(
+                &world,
+                start,
+                23,
+                0,
+                &DevKnobs::default(),
+                &ValueKnobs::default(),
+                &UtilityKnobs::default(),
+                &MarketKnobs::default(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &ScoutKnobs::default(),
+            )
+        };
+        let (first, second) = (run(), run());
+        assert_eq!(first.transfers, second.transfers);
+        assert_eq!(first.rejected_bids, second.rejected_bids);
     }
 
     #[test]
@@ -990,6 +1286,7 @@ mod tests {
             &MarketKnobs::default(),
             &BTreeMap::from([(human, Vec::new())]),
             &BTreeMap::new(),
+            &ScoutKnobs::omniscient(),
         );
         assert!(
             outcome

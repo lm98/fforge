@@ -26,11 +26,9 @@
 
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
-use crate::render::{headline_ca, money};
-use fforge_core::{
-    DevKnobs, MarketContext, SQUAD_TEMPLATE, Session, UtilityKnobs, ValueKnobs, value_all,
-};
-use fforge_domain::{GameDate, Money, ROLE_WEIGHTS, Role, date::DAYS_PER_YEAR};
+use crate::render::{headline_ca, money, money_range, range};
+use fforge_core::{SQUAD_TEMPLATE, Session, UtilityKnobs};
+use fforge_domain::{GameDate, ROLE_WEIGHTS, Role, date::DAYS_PER_YEAR};
 use std::fmt::Write as _;
 
 pub fn render(session: &Session, p: Palette) -> String {
@@ -39,12 +37,8 @@ pub fn render(session: &Session, p: Palette) -> String {
     let mut players: Vec<_> = world.club_players(s.player_club).collect();
     players.sort_by_key(|p| (p.natural_role, std::cmp::Reverse(headline_ca(p))));
 
-    // The same omniscient §2.6 valuation every club prices against — see
-    // `VALUATION_NOTE`.
-    let vk = ValueKnobs::default();
-    let dev = DevKnobs::default();
-    let ctx = MarketContext::from_world(world, &vk, &s.recent_ratings);
-    let valuations = value_all(world, s.date, &ctx, &vk, &dev);
+    // What the club's own staff make of its players — see `SCOUTING_NOTE`.
+    let reports = s.scout_reports(s.player_club, players.iter().map(|p| p.id));
 
     let bands = Bands::of(players.iter().map(|p| headline_ca(p)));
 
@@ -53,10 +47,10 @@ pub fn render(session: &Session, p: Palette) -> String {
         Col::left("Name", 20),
         Col::right("Age", 3),
         Col::right("CA", 3),
-        Col::left("Potential", POTENTIAL_COL_WIDTH),
+        Col::right("Pot*", POTENTIAL_COL_WIDTH),
         Col::right("Wage", 7),
         Col::right("Contract", 10),
-        Col::right("Value*", 7),
+        Col::right("Value*", VALUE_COL_WIDTH),
         Col::right("Rtg", 4),
         Col::right("Form", 4),
         Col::left("Best role", 0),
@@ -82,12 +76,10 @@ pub fn render(session: &Session, p: Palette) -> String {
                 Cell::new(player.name.clone()),
                 Cell::new(player.age(s.date).to_string()),
                 Cell::new(ca.to_string()),
-                Cell::new(potential_label(player.character.potential)),
+                Cell::new(range(reports[&player.id].potential)),
                 Cell::new(wage),
                 Cell::new(contract),
-                Cell::new(money(
-                    valuations.get(&player.id).copied().unwrap_or(Money(0)),
-                )),
+                Cell::new(money_range(reports[&player.id].value)),
                 Cell::new(latest_rating(s.recent_ratings.get(&player.id))),
                 Cell::new(form(s.recent_ratings.get(&player.id))),
                 Cell::new(alt),
@@ -97,41 +89,22 @@ pub fn render(session: &Session, p: Palette) -> String {
     }
 
     let mut out = format!("\n{}", t.render(p));
-    let _ = writeln!(out, "{}", p.paint(VALUATION_NOTE, Sem::Muted));
+    let _ = writeln!(out, "{}", p.paint(SCOUTING_NOTE, Sem::Muted));
     out.push_str(&depth_block(session, p));
     out
 }
 
-/// Valuations here are the **omniscient ground truth** (`TRANSFER_MODEL.md`
-/// §2.6): every club in v1 prices off the same central `value()`, and there is
-/// no scouting fog-of-war until Phase 5. Labelled rather than left implicit, so
-/// the column does not quietly become a promise the fogged game has to break.
-const VALUATION_NOTE: &str =
-    " * Value is the market's ground truth — no scouting error yet (Phase 5 adds it).";
+/// Potential and value are the staff's **estimates**, shown as ranges
+/// (`AGENT_MODEL.md` §5.1): nobody is shown a true ceiling, their own squad
+/// included, and a value follows from the ceiling. `CA` is exact, because a
+/// club sees its own players train every day.
+const SCOUTING_NOTE: &str = " * Staff estimates. A wider range means less certainty; young players are the hardest to call.";
 
-/// Wide enough for the longest label (`"can become special"`, 19 chars) —
-/// `render::table::pad` never truncates an over-long cell, so a column too
-/// narrow for its widest label doesn't clip, it silently shears every column
-/// after it instead. `potential_label_fits_its_column` pins this.
-const POTENTIAL_COL_WIDTH: usize = 19;
+/// `"100–100"` is the widest a 0–100 range can print.
+const POTENTIAL_COL_WIDTH: usize = 7;
 
-/// A plain-language read on a player's PA (`ATTRIBUTE_SCHEMA.md` §4: the
-/// hidden ceiling on best-role CA development) — the same omniscient
-/// ground-truth channel `VALUATION_NOTE` already opens for `Value`, and no
-/// more scouting fog-of-war than that column has until Phase 5 adds it.
-/// Thresholds are non-overlapping by construction: `[80, 85)` promising,
-/// `[85, 90)` great potential, `[90, 100]` can become special.
-fn potential_label(pa: u8) -> &'static str {
-    if pa >= 90 {
-        "can become special"
-    } else if pa >= 85 {
-        "great potential"
-    } else if pa >= 80 {
-        "promising"
-    } else {
-        ""
-    }
-}
+/// `"9.9M–9.9M"` and `"100M–999M"` are the widest a value range can print.
+const VALUE_COL_WIDTH: usize = 9;
 
 /// The most recent match rating, or `—` for a player who has not played.
 /// Ratings are recorded in tenths (`MATCH_MODEL.md` §18): `74` is 7.4.
@@ -321,25 +294,25 @@ mod tests {
         assert_eq!(form(Some(&Vec::new())), "—");
     }
 
-    #[test]
-    fn potential_label_fits_its_column() {
-        for pa in 0..=u8::MAX {
-            assert!(
-                potential_label(pa).chars().count() <= POTENTIAL_COL_WIDTH,
-                "potential_label({pa}) exceeds POTENTIAL_COL_WIDTH"
-            );
-        }
-    }
+    use fforge_core::scouting::Range;
+    use fforge_domain::Money;
 
+    /// `render::table::pad` never truncates an over-long cell, so a column
+    /// too narrow for its widest content shears every column after it.
     #[test]
-    fn potential_bands_are_non_overlapping() {
-        assert_eq!(potential_label(79), "");
-        assert_eq!(potential_label(80), "promising");
-        assert_eq!(potential_label(84), "promising");
-        assert_eq!(potential_label(85), "great potential");
-        assert_eq!(potential_label(89), "great potential");
-        assert_eq!(potential_label(90), "can become special");
-        assert_eq!(potential_label(100), "can become special");
+    fn a_range_always_fits_its_column() {
+        let widest = range(Range { lo: 100, hi: 100 });
+        assert!(widest.chars().count() <= POTENTIAL_COL_WIDTH);
+        let exact = range(Range { lo: 99, hi: 100 });
+        assert!(exact.chars().count() <= POTENTIAL_COL_WIDTH);
+        for (lo, hi) in [
+            (9_900_000, 9_900_000),
+            (100_000_000, 999_000_000),
+            (950, 12_000),
+        ] {
+            let cell = money_range((Money(lo), Money(hi)));
+            assert!(cell.chars().count() <= VALUE_COL_WIDTH, "{cell}");
+        }
     }
 
     #[test]

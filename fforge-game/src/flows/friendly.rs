@@ -60,8 +60,15 @@ pub fn watch_friendly_flow(session: &Session, p: Palette) {
     let mut home_lineup = base;
     home_lineup.tactics = chosen;
 
-    let away_lineup =
-        match_engine::ai_pick_lineup_vs(world, opponent, mine, false, s.date, &suspended);
+    let away_lineup = match_engine::ai_pick_lineup_vs(
+        world,
+        &s.squad_as_seen_by(opponent, mine),
+        opponent,
+        mine,
+        false,
+        s.date,
+        &suspended,
+    );
 
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

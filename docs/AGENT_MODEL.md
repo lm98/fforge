@@ -461,6 +461,75 @@ fog by reasoning harder over attributes. Two consequences:
   identified a wonderkid from his attributes at 17 is asserting skill that the data provably does
   not support. That is measurable, and it is a more interesting research reading than a win rate.
 
+### 5.5 As implemented
+
+Step 2 of §13 is done: `fforge-core::scouting` and `market::WindowView`. What the code settled
+that the sections above left open or got wrong:
+
+- **The asking price is the seller's opinion, not the buyer's.** Before fog every club priced a
+  player off one shared value, so "ask" and "value" were the same number scaled by
+  `asking_markup`. Under fog that would have made every buyer's surplus a constant fraction of
+  its own estimate again. A player's ask is now his *owner's* valuation times the markup — one
+  posted price list that every club reads — and a buyer's surplus is its view against the
+  seller's. A free agent asks his true worth: he knows himself. This is the mechanism §5.3's
+  first prediction rests on, and it was missing from the design until the code needed it.
+- **A club appraises only players within its means.** Valuing a player integrates his whole
+  projected career and is the market's hot path; under fog all twenty clubs must do their own.
+  The buying policy already discards anyone it cannot pay for before reading his value, so
+  `club_ai::observe_as` skips the appraisal for those and records `value: Money(0)`.
+  `ClubObservation::within_means` is the one statement of that test, shared by both. Appraisals
+  are computed on first use and remembered for the window, which cannot change a result because
+  a value is a pure function of the frozen view.
+- **What it costs.** A window is still about 2.2× slower to resolve than it was, because clubs
+  can afford most of the market and so appraise most of it. `valuation::project_ca_series` is
+  the place to look if that needs to come down.
+- **A sighting is a whole `Player`.** `Scout::sight` returns the player as seen — attributes
+  shifted, potential replaced, `Character` and `DevProfile` neutralised to their midpoints — so
+  every function that reads a player reads a sighting unchanged, and "same function, degraded
+  inputs" is literally what runs. `seen_world` is the world with every player swapped for his
+  sighting; `seen_squad` is one opponent's squad alone, which is all a team sheet needs.
+- **The identity is exact.** `ScoutKnobs::omniscient()` shows every observer the world itself,
+  borrowed rather than copied, and every pre-fog test of the market runs at it unchanged.
+- **Where the human sees it.** The squad screen shows potential and value as ranges with exact
+  ability; the transfer screens show ability, potential and value as ranges for every player at
+  another club. `GameState::scout_reports` is the one source for both: the value range is
+  `value()` at the pessimistic and optimistic corners of the sighting.
+- **One deliberate exception:** the club picker on the new-game screen still shows every club's
+  true squad strength. No club has been chosen yet, so there is no observer to fog for.
+- **Not built:** the buyer's-eye flop rate row promised in §5.3. It needs each transfer's fee
+  tracked against the player's later peak, which is harness work of its own.
+
+### 5.6 Readings against §5.3's predictions
+
+`bin/market`, 24 seeds × 15 seasons, and `bin/calibrate`, 24 seeds, each run on the commit before
+fog and the commit with it. All four pooled guards pass unchanged in both.
+
+| Prediction | Before | After | Verdict |
+|---|---|---|---|
+| Transfers per club per window **rises** toward 2–5 | 1.880 (sd 0.148) | **4.537** (sd 0.192) | **confirmed** — about fourteen per-seed sds, and inside the band for the first time |
+| Talent concentration **falls** | early 0.568, late 0.335 | early 0.525, late 0.388 | **not confirmed** — both moves are inside one sd (~0.09) and point opposite ways |
+| Match aggregates move **within their spread** | 2.50 gpm; H/D/A 42.0/28.3/29.7 | 2.50 gpm; 41.9/28.5/29.6 | **confirmed** — nothing moved |
+| Development does **not** move | — | — | not re-run; fog touches no engine and the `career_arc` guard passes |
+
+`BACKLOG.md` §4.1's hypothesis — that uniform omniscient valuation, not cash, capped volume —
+is confirmed, and that item is closed.
+
+**Two readings nobody predicted, recorded so they are not mistaken for intent:**
+
+- **The median fee halved**, 1.47M → 0.71M (p90 3.10M → 1.84M), and the last-season-to-first
+  fee ratio fell from 1.27 to 0.57. With two and a half times as many deals, most of the new
+  ones are small: trades of ordinary players that omniscient clubs never made, because every
+  club agreed on what such a player was worth and so nobody saw a surplus in him.
+- **The league became more balanced.** Late-season points-Gini fell 0.251 → 0.201 and rank
+  churn rose 1.31 → 1.51.
+
+**One caveat on the headline.** Some of the new volume may be churn that fog manufactures
+rather than trade it enables. A club buys the players it happens to overrate; next season its
+estimate is redrawn, the overrating is gone, and the same player looks surplus. That is a
+winner's curse followed by a correction, and it would raise volume even if no club were better
+off for any of it. The reading above cannot tell the two apart. Telling them apart is what the
+buyer's-eye flop row is for, which makes it the first thing to build before leaning on 4.537.
+
 ---
 
 ## 6. The cost budget
@@ -933,7 +1002,7 @@ The deterministic half — `BACKLOG.md` §3.2. No LLM, no network, everything of
 
 1. The control seam (§3.2). *Identity test: the whole existing suite, untouched.* **Done.**
 2. Fog-of-war (§5) for every decider and in the UI, then re-bank `bin/market` and `bin/calibrate`
-   against §5.3's predictions.
+   against §5.3's predictions. **Done** — §5.5, §5.6.
 2b. `ManagerStance` (§2.3) at neutral, then calibrate `StanceKnobs` to non-dominance.
    *Identity test: golden baselines and all three harnesses, untouched at neutral.*
 3. Observation builders and the `info` payload.

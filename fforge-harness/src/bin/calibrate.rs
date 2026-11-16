@@ -17,7 +17,8 @@
 use fforge_core::match_engine::{
     Knobs, MatchEventKind, MatchRngs, ShotOutcome, ai_pick_lineup_vs, lineup_strength, play_match,
 };
-use fforge_core::{WorldGenConfig, worldgen};
+use fforge_core::scouting::{self, ScoutKnobs};
+use fforge_core::{DevKnobs, WorldGenConfig, worldgen};
 use fforge_domain::{FORMATIONS, Mentality, Pressing, Tactics, Tempo};
 use fforge_harness::match_engine::{
     ELO_SCALE_S, PROFILE_SHIFT, SQUAD_PROFILES, StreamTelemetry, probe_tactics, run_head_to_head,
@@ -76,10 +77,40 @@ fn run_calibration(seeds: &[u64], cfg: &WorldGenConfig) -> CalibReport {
 
         let suspended = std::collections::BTreeSet::new();
         for fixture in &schedule {
-            let home_lineup =
-                ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start, &suspended);
-            let away_lineup =
-                ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
+            let home_lineup = ai_pick_lineup_vs(
+                &world,
+                &scouting::seen_squad(
+                    &world,
+                    seed,
+                    fixture.home,
+                    fixture.away,
+                    start,
+                    &ScoutKnobs::default(),
+                    &DevKnobs::default(),
+                ),
+                fixture.home,
+                fixture.away,
+                true,
+                start,
+                &suspended,
+            );
+            let away_lineup = ai_pick_lineup_vs(
+                &world,
+                &scouting::seen_squad(
+                    &world,
+                    seed,
+                    fixture.away,
+                    fixture.home,
+                    start,
+                    &ScoutKnobs::default(),
+                    &DevKnobs::default(),
+                ),
+                fixture.away,
+                fixture.home,
+                false,
+                start,
+                &suspended,
+            );
             let home_strength = lineup_strength(&world, &home_lineup);
             let away_strength = lineup_strength(&world, &away_lineup);
             let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
@@ -359,10 +390,40 @@ fn run_bench_isolation_report(num_seeds: u64) {
         let (world, schedule, start) = worldgen::generate(seed, &cfg);
         let suspended = std::collections::BTreeSet::new();
         for fixture in &schedule {
-            let home_full =
-                ai_pick_lineup_vs(&world, fixture.home, fixture.away, true, start, &suspended);
-            let away_full =
-                ai_pick_lineup_vs(&world, fixture.away, fixture.home, false, start, &suspended);
+            let home_full = ai_pick_lineup_vs(
+                &world,
+                &scouting::seen_squad(
+                    &world,
+                    seed,
+                    fixture.home,
+                    fixture.away,
+                    start,
+                    &ScoutKnobs::default(),
+                    &DevKnobs::default(),
+                ),
+                fixture.home,
+                fixture.away,
+                true,
+                start,
+                &suspended,
+            );
+            let away_full = ai_pick_lineup_vs(
+                &world,
+                &scouting::seen_squad(
+                    &world,
+                    seed,
+                    fixture.away,
+                    fixture.home,
+                    start,
+                    &ScoutKnobs::default(),
+                    &DevKnobs::default(),
+                ),
+                fixture.away,
+                fixture.home,
+                false,
+                start,
+                &suspended,
+            );
             let home_strength = lineup_strength(&world, &home_full);
             let away_strength = lineup_strength(&world, &away_full);
 

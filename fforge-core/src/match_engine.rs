@@ -450,6 +450,7 @@ pub const AI_TACTICS_ENABLED: bool = true;
 /// real AI-vs-AI (and AI-vs-human) match uses.
 pub fn ai_pick_lineup_vs(
     world: &World,
+    seen: &World,
     club: ClubId,
     opponent: ClubId,
     is_home: bool,
@@ -458,7 +459,14 @@ pub fn ai_pick_lineup_vs(
 ) -> Lineup {
     let mut lineup = ai_pick_lineup_available(world, club, today, suspended);
     if AI_TACTICS_ENABLED {
-        lineup.tactics = ai_pick_tactics(world, club, opponent, is_home, &AiTacticKnobs::default());
+        lineup.tactics = ai_pick_tactics(
+            world,
+            seen,
+            club,
+            opponent,
+            is_home,
+            &AiTacticKnobs::default(),
+        );
     }
     lineup
 }
@@ -511,14 +519,18 @@ impl Default for AiTacticKnobs {
 /// building it into the v1 baseline would flatten that ablation.
 pub fn ai_pick_tactics(
     world: &World,
+    seen: &World,
     club: ClubId,
     opponent: ClubId,
     is_home: bool,
     k: &AiTacticKnobs,
 ) -> Tactics {
     let own = ai_pick_lineup(world, club);
-    let opp = ai_pick_lineup(world, opponent);
-    let gap = lineup_strength(world, &own) - lineup_strength(world, &opp);
+    // The opponent is read through the club's own scouting
+    // (`AGENT_MODEL.md` §5.3): `seen` is `world` with the opponent's squad
+    // as this club sees it, or `world` itself with no fog.
+    let opp = ai_pick_lineup(seen, opponent);
+    let gap = lineup_strength(world, &own) - lineup_strength(seen, &opp);
 
     let mentality = if gap > k.mentality_strength_gap {
         Mentality::Attacking
