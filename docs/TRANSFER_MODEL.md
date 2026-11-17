@@ -453,6 +453,41 @@ a listing fired on, and `explain_window` replays each window's events to put bot
 upgrades; the two paths depth → squad pressure and depth → surplus together account for more than
 half of all signings gone within a year; and under 15% of them go unexplained.
 
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged; 22,571 signings followed a year, 47.7%
+of them gone within it):
+
+| Bought as | Share of signings | Gone within a year (per-seed sd) |
+|---|---|---|
+| depth | 70.7% | 52.1% (3.9) |
+| upgrade | 26.1% | 37.7% (5.8) |
+| heir | 1.9% | 19.6% (10.4) |
+| cover | 0.1% | 3.0% |
+| unexplained | 1.3% | 36.2% |
+
+| Of signings gone within a year: bought as → left by | Share |
+|---|---|
+| depth → squad pressure | 43.2% |
+| depth → surplus | 32.0% |
+| upgrade → surplus | 16.4% |
+| upgrade → squad pressure | 3.5% |
+| anything → unexplained | 3.0% |
+| everything else | 1.9% |
+
+All three predictions hold. Depth signings are seven in ten of all signings and three in four of
+those that come back. The largest route is a closed loop between two rules of the same policy:
+squad pressure lists a player from a role sitting exactly at its template, which leaves that role
+one short, which is a depth need, which is filled by whoever is cheapest, who is then the player
+the club least wants to keep in a role sitting exactly at its template. The policy is selling to
+get smaller and buying to get back to template in the same breath. Heirs, the one kind of signing
+bought for a reason that outlasts the window, are kept four times in five.
+
+The second route, depth → surplus, is the ordinary chain working as designed but on the wrong
+player: an upgrade arrives, the role goes over template, and the depth signing is the one shed.
+Some of that is healthy turnover; how much is not separable from this reading.
+
+Not fixed here. The loop has a direct remedy, a squad under pressure does not buy for depth, and
+it is `BACKLOG.md` §4.8's to take.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.

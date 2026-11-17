@@ -221,12 +221,15 @@ were.** Each scales a player's attributes and so passes through `Knobs::s`, whic
 52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
 it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
 
-**4.8 — Half of all signings are still resold within a year** (`TRANSFER_MODEL.md` §6,
-`AGENT_MODEL.md` §5.7). It was seven in ten. Two fixes are in: a player moves once per window, and
-a club buys only against an unfilled need. What remains is probably depth signings: the cheapest
-body fills a hole, is then the first man out, and reopens it. Next step is measurement, not a
-rule: tag each `Signing` in the market harness with the need it was bought against and the trigger
-that listed it, and read the resale rate per pair.
+**4.8 — Half of all signings are still resold within a year; the cause is now measured**
+(`TRANSFER_MODEL.md` §6). It was seven in ten before the one-move rule and the need test. Tagging
+every signing with the policy's own reasons shows depth signings are 71% of signings and 75% of the
+ones that come back, and that the largest route (43% of resales) is a loop inside the policy: squad
+pressure lists a player from a role at its template, the hole is a depth need, the cheapest body
+fills it and is the next one pressure lists. Proposed remedy, not yet applied: a club whose squad
+is under pressure does not buy for depth. Second, smaller lever: a depth signing must clear a
+quality bar relative to the players he would sit beside, so he is not automatically the first man
+out. Write the prediction first; `bin/market` prints the tables to read it against.
 
 **4.9 — The market's target bands predate its two fixes.** Volume now reads 1.68 fogged against a
 2–5 band; the top three clubs hold half the twenty best players late in a run, up from a third;
