@@ -530,6 +530,77 @@ winner's curse followed by a correction, and it would raise volume even if no cl
 off for any of it. The reading above cannot tell the two apart. Telling them apart is what the
 buyer's-eye flop row is for, which makes it the first thing to build before leaning on 4.537.
 
+### 5.7 The buyer's eye: is the new volume trade or churn?
+
+§5.6's caveat needs a reading that follows a signing after it is made. `MarketTelemetry` now
+keeps every fee-paying transfer as a `Signing` and reports five rows, each one value per seed:
+
+| Row | Definition |
+|---|---|
+| Fee / true value, median | the fee over what `value()` says of the true player as the window opens. The harness may read truth; the buyer could not |
+| Share paying above true value | the same ratio, counted above 1 |
+| Share gone within a year | signings the buyer sold or released within 365 days, among those followed that long |
+| Resale fee / purchase fee, median | for the ones sold within the year |
+| Star signings written off in two years | fee in the seed's top quarter, then released or sold for under half of it within 730 days. This is the flop rate §5.3 promised |
+
+The comparison is the same harness at `ScoutKnobs::omniscient()`, both under the match
+calibration of `MATCH_MODEL.md` §8.1, 24 seeds × 15 seasons.
+
+**Predictions, written before either run.** Omniscient: the fee ratio sits at or under 1 and
+nobody overpays, because every ask is a markup of at most 1 on the shared true value. Fogged:
+the median ratio rises above 1 (1.1–1.3) with well over half of buyers overpaying, since the
+club that bids is the one that overrates. If the volume is churn, the share gone within a year
+at least doubles against the omniscient run, the resale ratio drops well under 1, and the flop
+rate rises from under 10% to 15–30%. If the share gone within a year moves by less than half,
+the churn reading is refuted and the volume is trade.
+
+**First reading: the question was wrong.** The omniscient run alone settled something neither
+prediction covered. With no fog at all, 80% of signings left the buyer within a year, at a
+median resale ratio of exactly 1.000, and a 4-seed fogged run put 59% of signings as *sold on in
+the window they arrived*. Players were being passed from club to club inside one window: a
+buyer's new signing left a role over template, the memoryless policy listed him next round at
+the same frozen ask, and the next club did the same. Every hop counted as a transfer. That
+predates fog, and it inflates both the 1.88 and the 4.54 of §5.6.
+
+`TRANSFER_MODEL.md` §5 step 4 now says a player moves at most once per window, and the clearing
+loop enforces it. **Predictions for the re-run, written before it:** same-window resale is 0 by
+construction; fogged volume falls to 1.9–2.6 (the old figure less its 59%, plus some
+substitution) and omniscient volume to 0.5–0.9, so fog still raises volume by a factor of two
+to four; the share gone within a year falls under 30% in both; the median fee rises.
+
+**Readings with the rule in place** (24 seeds × 15 seasons, per-seed sd in brackets):
+
+| Row | Omniscient | Fogged |
+|---|---|---|
+| Transfers per club per window | 2.48 (0.10) | 4.33 (0.24) |
+| Fee / true value, median | 0.949 (0.000) | 0.961 (0.008) |
+| Share paying above true value | 1.9% | 42.6% |
+| Share gone from the buyer within a year | 70.7% (1.5) | 73.5% (1.6) |
+| Resale fee / purchase fee, median | 1.07 | 1.08 |
+| Sold on in the window they arrived | 0 | 0 |
+| Star signings written off in two years | 0.1% | 0.7% |
+| Median fee | 0.89M | 0.59M |
+| Points-Gini, late | 0.160 | 0.137 |
+
+Against the predictions:
+
+- **Fog manufactures churn: refuted.** The share gone within a year is 71% without fog and 74%
+  with it. Fog adds a mild winner's curse (two buyers in five pay over true value, by little)
+  and no flops. §5.6's caveat is answered: the extra volume under fog is not extra churn.
+- **Volume falls once hops are removed: refuted.** Omniscient volume *rose*, 1.90 to 2.48, and
+  fogged volume barely moved, 4.54 to 4.33. The clubs that used to receive a passed-on player
+  bought someone else instead. Fog still raises volume, by a factor of 1.75 rather than 2.4.
+- **The share gone within a year falls under 30%: refuted, and this is the finding.** Seven
+  signings in ten are sold again within a year, at a small profit, fog or no fog. The carousel
+  did not stop; it slowed from one hop a round to one hop a window. No club keeps what it buys.
+  That is a property of `UtilityPolicy`, not of fog and not of the clearing loop: it buys
+  whatever shows a surplus over the ask and lists whoever is weakest in an over-template role,
+  with no notion of having just signed someone. `TRANSFER_MODEL.md` §6 now makes it buy only
+  against an unfilled need, and carries the readings after that change; what remains is
+  `BACKLOG.md` §4.8.
+- The flop rate is near zero by construction rather than by good judgement: a club can always
+  sell at about what it paid, so nothing is ever written off.
+
 ---
 
 ## 6. The cost budget

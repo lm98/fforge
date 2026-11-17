@@ -31,6 +31,8 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
    an empty `conditions` map, and for everything that reads players, `ScoutKnobs::omniscient()`) under which `play_match` reproduces the pinned Phase-2a baseline
    bit for bit (`match_engine::golden`). A new feature adds its identity to those tests. Note
    that `ai_pick_lineup` fills a real bench and plan, so a test wanting the identity clears them.
+   The baseline is pinned at `Knobs::phase_2a()`, not `Knobs::default()`: it guards wiring, so a
+   re-calibration does not move it and a moved baseline is always a bug.
 5. **Events versus Traces.** An `Event` is folded and persisted. A Trace is derived, rich and
    thrown away: `MatchOutcome.stream`, everything in `WindowOutcome` except `transfers`, and
    `NewsItem`s. Never fold a Trace, never persist one. Consumers that need one re-derive it from
@@ -74,10 +76,16 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   why the engine can be driven by a harness with no season at all.
 - **`bin/calibrate` therefore runs at the condition identity.** It cannot see fatigue-driven
   effects such as substitutions. Reading those needs a real-season harness (`BACKLOG.md` §4.3).
+- **`Knobs::s` is the scale of every contest**, and so of every effect that works by scaling
+  attributes: fatigue, condition, Consistency, injury impairment. It also sets how unequal a
+  league is. Moving it is a five-knob re-fit, not a tweak (`MATCH_MODEL.md` §8.1).
 - **`UtilityKnobs::asking_markup` must stay `<= 1.0`.** Every club prices off the same
   `value()`, so an ask above value makes the surplus negative for every buyer and nothing clears.
 - **`opp_mid_advance_mult` and `opp_penetrate_mult` each have two tenants**, Pressing and
   Mentality, and they stack. Changing either instruction moves both.
+- **A player moves at most once per window**, enforced in `market::resolve_window`, not in any
+  policy (`TRANSFER_MODEL.md` §5 step 4). Policies are memoryless across clearing rounds; before
+  this rule a signing was re-listed the round after he arrived and passed down the league.
 - **Affordability is checked at resolve time** (`market::filter_affordable`), not at submit
   time. `validate_transfer_decisions` only checks shape, because a human plan is replayed against
   a world that has moved on since it was submitted.

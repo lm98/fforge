@@ -235,6 +235,87 @@ touch on-target rate or shot volume, confirmed by sweep) closes it: goals/game ~
 `Knobs` now reflects this real-`worldgen`-calibrated point, not the notebook's original fitted
 values verbatim (`b_beat` is the one field that differs; see `knobs.rs`'s doc comment).
 
+### 8.1 The league-spread re-fit
+
+The table above was read as pooled means, and the pooled means hid the distribution they averaged
+(§10 item 7). Reading goals against the strength gap showed it:
+
+| Lineup-strength gap (home − away) | Home goals/match | Away goals/match |
+|---|---|---|
+| −19 | 0.00 | 4.15 |
+| −9 | 0.13 | 1.14 |
+| −1 | 0.54 | 0.34 |
+| +1 | 0.74 | 0.21 |
+| +9 | 2.35 | 0.02 |
+| +19 | 6.66 | 0.00 |
+
+Two evenly matched sides scored under one goal a match between them. The pooled 2.50 was supplied
+by routs: every contest is a logistic of `(atk − def)/s`, a goal needs a chain of them, and at
+`s = 12` the chain compounded a squad gap into a goal rate that grew about 15% per point of gap. A
+real favourite's grows about 3%. The home edge was hidden the same way: at level strength the home
+side outscored the visitor 2.3 to 1, and only the strength-decided matches pulled H/D/A back into
+band.
+
+So the fit is five knobs moved together, against the pooled aggregates *and* the league-spread
+bands of §10 item 7 (`bin/calibrate`, 24 seeds, 9,120 matches):
+
+| Knob | Was | Now | Why |
+|---|---|---|---|
+| `s` | 12 | 52 | the one lever on how steeply a gap becomes a result |
+| `home_bias` | 0.52 | 0.17 | the home edge at level strength, no longer masked |
+| `p_mid_advance` | 0.20 | 0.31 | shot volume, which the routs used to supply |
+| `b_ontarget` | −0.9 | −0.2 | on-target rate, likewise |
+| `b_beat` | −1.05 | −0.7 | conversion, likewise |
+
+| Aggregate | Before | After | Target |
+|---|---|---|---|
+| Goals / match | 2.50 (sd 0.31) | 2.49 (sd 0.11) | ~2.6 |
+| Home / draw / away | 41.9 / 28.5 / 29.6 | 45.2 / 23.8 / 31.0 | ~45 / 26 / 29 |
+| Shots / match | 24.5 | 24.2 | ~25 |
+| Shots on target | — | 32.9% | ~33% |
+| Conversion | 10.2% | 10.3% | ~10% |
+| Goals at gap ±1 (home / away) | 0.74 / 0.21 | 1.37 / 0.92 | — |
+| Goals at gap +19 (home / away) | 6.66 / 0.00 | 2.55 / 0.45 | — |
+| Implied Elo scale (§10 item 6) | 12.0 | 24.9 | reference 40, not a target |
+
+The per-seed spread of goals per match fell by two thirds. §8's "a single league is a noisy
+estimator" was this defect seen from the side: the swing came from how many mismatches a draw of
+squads happened to contain.
+
+**What moved with it, unfitted.** Every effect that works by scaling a player's attributes passes
+through the same `s`, so each is now about a quarter as strong in results as it was: within-match
+fatigue, between-match condition (§13), Consistency (§17) and injury impairment (§14). None was
+re-fitted. Tactics are logit biases and multipliers on transition probabilities and do not pass
+through `s`, so relative to squad strength they are worth more than before.
+
+**Predictions for the guards not read during the fit**, written before running them: the
+head-to-head tactics readings sit on level squads and should move by under 0.01; the
+squad-conditional readings (`TACTICS_MODEL.md` §8) should shrink towards a quarter of their size
+and may drop under their guards' thresholds; the market's late points-Gini should fall from 0.20
+to 0.12–0.16 with transfer volume inside ±0.3 of 4.54. The readings are in §8.2.
+
+### 8.2 Readings against §8.1's predictions
+
+| Prediction | Reading | Verdict |
+|---|---|---|
+| Head-to-head tactics move by under 0.01 | High press v Patient 0.486 → 0.517; Direct v High press 0.512 → 0.466; Patient v Direct 0.509 → 0.530 (200 seeds × 2) | **refuted** — moves of 0.02 to 0.05, and two edges changed sign |
+| Squad-conditional readings shrink towards a quarter | the press gradient (physical − technical) reads −0.013 on 4 worlds × 50 seeds, inside its world sd of 0.05 | **consistent**, and now too small to read at that pool |
+| Late points-Gini falls to 0.12–0.16, volume within ±0.3 | Gini 0.201 → 0.137; volume 4.54 → 4.33 (`AGENT_MODEL.md` §5.7) | **confirmed**, though the volume reading also carries that section's one-move rule |
+
+The first row is the one that matters. The level-squad readings do not pass through `s`, which
+is why they were predicted not to move, but they do pass through `p_mid_advance`: Tempo's
+`advance_mult` multiplies it, and a multiplier on 0.31 moves half as much probability again as
+the same multiplier on 0.20. `TACTICS_MODEL.md` §3's two lever classes were balanced against
+each other at the old base rate. Direct is now the weakest of the three and High press the
+strongest. All four tactics guards still pass, because their bands are wide; the balance itself
+is `BACKLOG.md` §4.6 and was not re-fitted here.
+
+Also read and left alone: wide-origin goal share 23.9% against a 25–35% band (was 26.7%).
+
+**The Phase-2a baselines did not move.** `match_engine::golden` and the notebook-parity test pin
+`Knobs::phase_2a()`, the table as it stood before this fit. They assert wiring, and a re-fit is
+not a wiring change.
+
 ## 9. Event-stream schema mapping
 
 The action alphabet **is** the stream's event-kind alphabet — the humble text match view of Phase 2
@@ -292,7 +373,33 @@ Deliberately unresolved, to settle during the Rust port or Phase 2 calibration:
    aggregate. `bin/calibrate.rs` prints the table; `favourite_discrimination_regression_guard`
    (`calibrate.rs`, pooled over 8 seeds) is the regression guard, asserting monotonic
    non-decreasing expected points and a bounded max deviation from the reference — a sibling to the
-   goals-per-match sanity band, not a precise-fit assertion.
+   goals-per-match sanity band, not a precise-fit assertion. The curve's own implied scale
+   (`DeviationReport::implied_elo_scale`) is printed beside it; it read 12 where the reference is
+   40, which is the finding item 7 and §8.1 act on.
+
+7. **League spread is a fit target; the pooled aggregates are not enough.** A league can read
+   2.5 goals a match and 42/28/30 while its champions concede four goals in a season (§8.1).
+   `fforge-harness::match_engine::LeagueSpread` reads one season's table and margins, and
+   `bin/calibrate` reports them per seed against these bands. The bands are approximate figures
+   for the five big European leagues, per match so they hold for any league size:
+
+   | Reading | Band | Before §8.1 | After |
+   |---|---|---|---|
+   | Champion points / match | 2.15–2.55 | 2.58 | 2.24 |
+   | Champion goals for / match | 2.0–2.6 | 3.96 | 2.01 |
+   | Champion goals against / match | 0.6–1.0 | 0.05 | 0.63 |
+   | Bottom club points / match | 0.40–0.80 | 0.23 | 0.54 |
+   | Bottom club goals for / match | 0.65–1.05 | 0.05 | 0.63 |
+   | Bottom club goals against / match | 1.8–2.4 | 3.96 | 1.98 |
+   | Points / match, sd across clubs | 0.40–0.52 | 0.72 | 0.50 |
+   | Matches won by 3 or more | 15–21% | 33.0% | 19.2% |
+   | Matches won by 4 or more | 5–9% | 23.9% | 7.8% |
+
+   The bands are conditional on `worldgen`'s spread of club quality (48 to 74). Widening or
+   narrowing that spread moves every row, and is the other lever; it was left alone because it
+   re-rolls every world. The goals-by-gap table `bin/calibrate` prints is the diagnostic to read
+   first when a row leaves its band: it separates "the league is unequal" from "level sides
+   cannot score".
 
 ---
 

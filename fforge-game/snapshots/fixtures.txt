@@ -12,20 +12,20 @@ Matchday 6 fixtures:
   US Castonte            vs Dinamo Bellana
 
 Matchday 5 results:
-> FC Nerana               8 - 0  Olimpia Nerurnia
-  Sporting Pralana        1 - 0  Olimpia Lavora
-  FC Portaverde           0 - 0  Sporting Campentino
+> FC Nerana               2 - 0  Olimpia Nerurnia
+  Sporting Pralana        3 - 0  Olimpia Lavora
+  FC Portaverde           1 - 1  Sporting Campentino
   Inter Sorora            4 - 0  Sporting Saldetto
-  US Sorisola             2 - 0  US Rivana
-  Real Torrana            7 - 0  Olimpia Valdurnia
-  Dinamo Valdessa         0 - 0  Atlético Valdaro
-  Virtus Belletto         0 - 0  US Portetto
-  Racing Veressa          0 - 0  US Castonte
-  AC Fioraverde           3 - 0  Dinamo Bellana
+  US Sorisola             1 - 0  US Rivana
+  Real Torrana            1 - 0  Olimpia Valdurnia
+  Dinamo Valdessa         0 - 1  Atlético Valdaro
+  Virtus Belletto         1 - 2  US Portetto
+  Racing Veressa          1 - 3  US Castonte
+  AC Fioraverde           4 - 0  Dinamo Bellana
 
 Your last 5 — newest first:
-  W  (H)  Olimpia Nerurnia       8-0
+  W  (H)  Olimpia Nerurnia       2-0
   W  (A)  Olimpia Lavora         1-0
-  W  (H)  Sporting Campentino    2-0
+  W  (H)  Sporting Campentino    3-0
   W  (A)  Sporting Saldetto      1-0
-  W  (H)  US Rivana              1-0
+  W  (H)  US Rivana              2-0

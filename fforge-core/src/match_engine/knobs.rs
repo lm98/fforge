@@ -1,24 +1,14 @@
-//! The calibration knob table (`MATCH_MODEL.md` §8). Field names and every
-//! value except `b_beat` are transcribed verbatim from the fitted `Knobs`
-//! dataclass in `match_model_prototype.ipynb` (the throwaway Python
-//! shape-finder — this Rust struct is the port target, not a re-guess), so
-//! the two stay diffable against each other.
+//! The calibration knob table (`MATCH_MODEL.md` §8). Field names come from
+//! the fitted `Knobs` dataclass in `match_model_prototype.ipynb`, the
+//! throwaway Python shape-finder this struct was ported from.
 //!
-//! `b_beat` (beat-the-keeper bias) is the one Rust-side re-tune, landed by
-//! the calibration harness (`bin/calibrate.rs`, `MATCH_MODEL.md` §10):
-//! real `worldgen`'s attribute distribution differs enough from the
-//! notebook's own synthetic squad generator that the notebook's fitted
-//! -1.7 under-converted against real inputs (~7% vs the ~10% target) while
-//! every other aggregate — shots/game, on-target rate, wide-origin share —
-//! already landed on target. `b_beat` only gates the second of the two
-//! chained shot sigmoids (beat-the-keeper, given on-target), so raising it
-//! moves conversion without disturbing the already-correct on-target rate
-//! or shot volume — confirmed empirically (`bin/calibrate.rs -- --seeds
-//! 16`): shots/game stayed ~25.6, on-target stayed ~33.2%, across the whole
-//! sweep. Pooled over 16 seeds at -1.05: goals/game 2.58 (target ~2.6),
-//! home/draw/away 43/26/31% (target ~45/26/29%), conversion 10.1% (target
-//! ~10%), wide-origin goal share 26.7% (target 25–35%) — this is now a
-//! finished, real-`worldgen`-calibrated point, not just the notebook's.
+//! Five values differ from the notebook's, all re-fitted against real
+//! `worldgen` with `bin/calibrate` (`MATCH_MODEL.md` §8.1): `s`,
+//! `home_bias`, `p_mid_advance`, `b_ontarget` and `b_beat`. They move
+//! together. `s` sets how steeply an attribute gap becomes a result;
+//! flattening it removes the routs that used to supply most of the goals,
+//! so the other four restore shot volume, accuracy, conversion and the home
+//! edge at the level an evenly matched pair should show.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Knobs {
@@ -29,7 +19,9 @@ pub struct Knobs {
     // --- logistic resolver: p = sigmoid(k*(atk-def)/s + bias) ---
     /// Attribute-difference sensitivity (open-play contests).
     pub k: f64,
-    /// Scale — normalizes the 0..100 attribute range.
+    /// Scale of every contest, open play and shots alike: an attribute gap
+    /// of `s` points is worth one logit. The single lever on how unequal a
+    /// league is (`MATCH_MODEL.md` §10 item 7).
     pub s: f64,
     /// Additive edge to the home side's attacking contests.
     pub home_bias: f64,
@@ -219,20 +211,37 @@ pub struct Knobs {
     pub foul_yellow_aggression_scale: f64,
 }
 
+impl Knobs {
+    /// The table as it stood through Phase 2a–2e, before the league-spread
+    /// re-fit (`MATCH_MODEL.md` §8.1). Kept so the bit-for-bit wiring
+    /// baselines can go on asserting that engine whatever the shipped
+    /// calibration becomes. Not a setting to play with.
+    pub fn phase_2a() -> Self {
+        Knobs {
+            s: 12.0,
+            home_bias: 0.52,
+            p_mid_advance: 0.2,
+            b_ontarget: -0.9,
+            b_beat: -1.05,
+            ..Knobs::default()
+        }
+    }
+}
+
 impl Default for Knobs {
     fn default() -> Self {
         Knobs {
             delta: 0.11,
             k: 1.0,
-            s: 12.0,
-            home_bias: 0.52,
+            s: 52.0,
+            home_bias: 0.17,
             b_pass: 1.35,
             b_takeon: -0.15,
             b_cross_delivery: -1.3,
             k_ontarget: 0.9,
             k_gk: 0.9,
-            b_ontarget: -0.9,
-            b_beat: -1.05,
+            b_ontarget: -0.2,
+            b_beat: -0.7,
             p_off_frac: 0.5,
             p_rebound: 0.08,
             q_rebound: -0.6,
@@ -242,7 +251,7 @@ impl Default for Knobs {
             q_header: -0.45,
             q_long: -1.8,
             p_def_advance: 0.55,
-            p_mid_advance: 0.2,
+            p_mid_advance: 0.31,
             p_wide: 0.34,
             p_attc_penetrate: 0.08,
             p_attc_dribble_box: 0.06,

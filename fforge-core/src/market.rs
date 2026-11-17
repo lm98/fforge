@@ -221,6 +221,9 @@ pub fn resolve_window(
     // convergence well inside `MAX_ROUNDS` in practice — the cap exists for
     // truly adversarial inputs, not as the normal stopping mechanism.
     let mut refused: BTreeMap<ClubId, std::collections::BTreeSet<PlayerId>> = BTreeMap::new();
+    // A player moves at most once per window (§5 step 4): a completed
+    // transfer takes him off the market until the next one.
+    let mut moved: std::collections::BTreeSet<PlayerId> = std::collections::BTreeSet::new();
 
     for round in 0..MAX_ROUNDS {
         rounds_used = round + 1;
@@ -240,7 +243,9 @@ pub fn resolve_window(
             };
             let decisions = filter_affordable(&obs, &raw_decisions, utility_knobs);
             for d in &decisions {
-                if let TransferDecision::List { player } = d {
+                if let TransferDecision::List { player } = d
+                    && !moved.contains(player)
+                {
                     listed.insert(*player, club);
                 }
             }
@@ -337,6 +342,7 @@ pub fn resolve_window(
                         .add_days((market_knobs.new_contract_years * DAYS_PER_YEAR as f64) as i64),
                 };
                 apply_transfer_completed(&mut work_world, player, seller, bidder, fee, contract);
+                moved.insert(player);
                 transfers.push(Transfer {
                     player,
                     from: seller,
@@ -815,6 +821,54 @@ mod tests {
             squad_min: 0,
             squad_max: 999,
             ..UtilityKnobs::default()
+        }
+    }
+
+    /// A freshly generated league sits exactly on its squad template and
+    /// trades nothing. Hand four players from each even club to its odd
+    /// neighbour, so half the league has holes and the other half surplus.
+    fn unbalance_squads(world: &mut World) {
+        let clubs: Vec<ClubId> = world.clubs.keys().copied().collect();
+        for pair in clubs.chunks(2) {
+            let leaving: Vec<PlayerId> = world.club(pair[0]).players[3..7].to_vec();
+            for player in leaving {
+                let contract = world.player(player).contract.expect("a squad player");
+                apply_transfer_completed(world, player, Some(pair[0]), pair[1], Money(0), contract);
+            }
+        }
+    }
+
+    #[test]
+    fn a_player_moves_at_most_once_in_a_window() {
+        let cfg = WorldGenConfig::default();
+        for scout in [ScoutKnobs::omniscient(), ScoutKnobs::default()] {
+            let mut busiest = 0;
+            for seed in [41, 9, 17] {
+                let (mut world, _schedule, start) = generate(seed, &cfg);
+                unbalance_squads(&mut world);
+                let outcome = resolve_window(
+                    &world,
+                    start,
+                    seed,
+                    0,
+                    &DevKnobs::default(),
+                    &ValueKnobs::default(),
+                    &UtilityKnobs::default(),
+                    &MarketKnobs::default(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &scout,
+                );
+                let movers: std::collections::BTreeSet<PlayerId> =
+                    outcome.transfers.iter().map(|t| t.player).collect();
+                assert_eq!(
+                    movers.len(),
+                    outcome.transfers.len(),
+                    "seed {seed}: a player changed clubs twice in one window"
+                );
+                busiest = busiest.max(outcome.transfers.len());
+            }
+            assert!(busiest > 0, "the windows under test must actually trade");
         }
     }
 

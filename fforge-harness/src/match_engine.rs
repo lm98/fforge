@@ -12,9 +12,14 @@
 
 use fforge_core::match_engine::{
     Card, Knobs, MatchEventKind, MatchOutcome, MatchRngs, NUM_ZONES, ShotKind, ShotOutcome,
-    ShotSource, Side, Zone, ai_pick_lineup, mirrored_zone, play_match,
+    ShotSource, Side, Zone, ai_pick_lineup, ai_pick_lineup_vs, lineup_strength, mirrored_zone,
+    play_match,
 };
-use fforge_domain::{Attribute, ClubId, GameDate, Pressing, Tactics, Tempo, World};
+use fforge_core::scouting::{self, ScoutKnobs};
+use fforge_core::{DevKnobs, WorldGenConfig, worldgen};
+use fforge_domain::{
+    Attribute, ClubId, Fixture, GameDate, Lineup, Pressing, Tactics, Tempo, World,
+};
 use std::collections::BTreeMap;
 
 fn side_idx(s: Side) -> usize {
@@ -76,9 +81,19 @@ pub struct GapBinStats {
     pub home_wins: u32,
     pub draws: u32,
     pub away_wins: u32,
+    pub home_goals: u32,
+    pub away_goals: u32,
 }
 
 impl GapBinStats {
+    pub fn home_goals_per_match(&self) -> f64 {
+        per_match(self.home_goals, self.matches)
+    }
+
+    pub fn away_goals_per_match(&self) -> f64 {
+        per_match(self.away_goals, self.matches)
+    }
+
     /// Empirical home expected-points share for this bin: win = 1 point,
     /// draw = 0.5, loss = 0 — the standard points-share convention that
     /// handles draws without conflating them into a win probability.
@@ -169,6 +184,8 @@ impl StreamTelemetry {
             .entry(strength_gap_bin(home_strength - away_strength))
             .or_default();
         gap_bin.matches += 1;
+        gap_bin.home_goals += outcome.home_goals as u32;
+        gap_bin.away_goals += outcome.away_goals as u32;
         match outcome.home_goals.cmp(&outcome.away_goals) {
             std::cmp::Ordering::Greater => gap_bin.home_wins += 1,
             std::cmp::Ordering::Equal => gap_bin.draws += 1,
@@ -478,6 +495,201 @@ pub struct DeviationReport {
     pub per_bin: Vec<GapDeviation>,
     pub max_abs_deviation: f64,
     pub weighted_mean_abs_deviation: f64,
+}
+
+impl DeviationReport {
+    /// The Elo scale the empirical curve itself implies: a match-weighted
+    /// least-squares line through `logit(expected points)` against the gap,
+    /// read back as `ln 10 / slope`. Bins at or beyond 2%/98% are left out,
+    /// where the logit is dominated by a handful of matches. `None` when
+    /// fewer than two bins qualify or the curve is flat.
+    pub fn implied_elo_scale(&self) -> Option<f64> {
+        let pts: Vec<(f64, f64, f64)> = self
+            .per_bin
+            .iter()
+            .filter(|b| b.empirical > 0.02 && b.empirical < 0.98)
+            .map(|b| {
+                (
+                    b.gap,
+                    (b.empirical / (1.0 - b.empirical)).ln(),
+                    b.matches as f64,
+                )
+            })
+            .collect();
+        if pts.len() < 2 {
+            return None;
+        }
+        let w: f64 = pts.iter().map(|p| p.2).sum();
+        let mx = pts.iter().map(|p| p.0 * p.2).sum::<f64>() / w;
+        let my = pts.iter().map(|p| p.1 * p.2).sum::<f64>() / w;
+        let sxx: f64 = pts.iter().map(|p| p.2 * (p.0 - mx).powi(2)).sum();
+        let sxy: f64 = pts.iter().map(|p| p.2 * (p.0 - mx) * (p.1 - my)).sum();
+        let slope = sxy / sxx;
+        (slope > 0.0).then(|| std::f64::consts::LN_10 / slope)
+    }
+}
+
+/// One club's season line in a [`LeagueSpread`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClubLine {
+    pub played: u32,
+    pub points: u32,
+    pub goals_for: u32,
+    pub goals_against: u32,
+}
+
+impl ClubLine {
+    pub fn points_per_match(&self) -> f64 {
+        per_match(self.points, self.played)
+    }
+    pub fn goals_for_per_match(&self) -> f64 {
+        per_match(self.goals_for, self.played)
+    }
+    pub fn goals_against_per_match(&self) -> f64 {
+        per_match(self.goals_against, self.played)
+    }
+}
+
+fn per_match(total: u32, played: u32) -> f64 {
+    if played == 0 {
+        0.0
+    } else {
+        total as f64 / played as f64
+    }
+}
+
+/// How unequal one league season is (`MATCH_MODEL.md` §10 item 7): the
+/// table's two ends, the spread of points across it, and how often a match
+/// is a rout. The pooled aggregates of `StreamTelemetry` average over this
+/// distribution and cannot see it.
+#[derive(Debug, Default, Clone)]
+pub struct LeagueSpread {
+    pub clubs: BTreeMap<ClubId, ClubLine>,
+    /// Matches keyed by absolute goal margin.
+    pub by_margin: BTreeMap<u8, u32>,
+    pub matches: u32,
+}
+
+impl LeagueSpread {
+    pub fn record(&mut self, home: ClubId, away: ClubId, home_goals: u8, away_goals: u8) {
+        let (home_pts, away_pts) = match home_goals.cmp(&away_goals) {
+            std::cmp::Ordering::Greater => (3, 0),
+            std::cmp::Ordering::Equal => (1, 1),
+            std::cmp::Ordering::Less => (0, 3),
+        };
+        for (club, pts, gf, ga) in [
+            (home, home_pts, home_goals, away_goals),
+            (away, away_pts, away_goals, home_goals),
+        ] {
+            let line = self.clubs.entry(club).or_default();
+            line.played += 1;
+            line.points += pts;
+            line.goals_for += gf as u32;
+            line.goals_against += ga as u32;
+        }
+        *self
+            .by_margin
+            .entry(home_goals.abs_diff(away_goals))
+            .or_default() += 1;
+        self.matches += 1;
+    }
+
+    /// The table, best first: points, then goal difference, then goals for.
+    pub fn table(&self) -> Vec<ClubLine> {
+        let mut rows: Vec<ClubLine> = self.clubs.values().copied().collect();
+        rows.sort_by_key(|r| {
+            std::cmp::Reverse((
+                r.points,
+                r.goals_for as i64 - r.goals_against as i64,
+                r.goals_for,
+            ))
+        });
+        rows
+    }
+
+    pub fn champion(&self) -> ClubLine {
+        self.table().first().copied().unwrap_or_default()
+    }
+
+    pub fn bottom(&self) -> ClubLine {
+        self.table().last().copied().unwrap_or_default()
+    }
+
+    /// Population standard deviation of points per match across clubs.
+    pub fn points_per_match_sd(&self) -> f64 {
+        let ppm: Vec<f64> = self
+            .clubs
+            .values()
+            .map(ClubLine::points_per_match)
+            .collect();
+        if ppm.is_empty() {
+            return 0.0;
+        }
+        let mean = ppm.iter().sum::<f64>() / ppm.len() as f64;
+        (ppm.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / ppm.len() as f64).sqrt()
+    }
+
+    /// Share of matches decided by at least `margin` goals.
+    pub fn share_decided_by(&self, margin: u8) -> f64 {
+        if self.matches == 0 {
+            return 0.0;
+        }
+        let n: u32 = self.by_margin.range(margin..).map(|(_, &c)| c).sum();
+        n as f64 / self.matches as f64
+    }
+}
+
+/// One fixture of [`play_opening_season`], as the engine played it.
+pub struct PlayedFixture<'a> {
+    pub fixture: &'a Fixture,
+    pub home: &'a Lineup,
+    pub away: &'a Lineup,
+    pub home_strength: f64,
+    pub away_strength: f64,
+    pub outcome: &'a MatchOutcome,
+}
+
+/// Play a generated world's opening season fixture by fixture, as the game
+/// would with every club under its built-in policy, and hand each match to
+/// `visit`. The squads are the ones `worldgen` drew: there is no
+/// `GameState` here, so the season runs at the condition identity with
+/// nobody suspended, and every reading taken from it is blind to fatigue
+/// (`BACKLOG.md` §4.3).
+pub fn play_opening_season(
+    seed: u64,
+    cfg: &WorldGenConfig,
+    knobs: &Knobs,
+    mut visit: impl FnMut(PlayedFixture<'_>),
+) {
+    let (world, schedule, start) = worldgen::generate(seed, cfg);
+    let suspended = std::collections::BTreeSet::new();
+    let (scout, dev) = (ScoutKnobs::default(), DevKnobs::default());
+    for fixture in &schedule {
+        let pick = |club: ClubId, opponent: ClubId, is_home: bool| {
+            let seen = scouting::seen_squad(&world, seed, club, opponent, start, &scout, &dev);
+            ai_pick_lineup_vs(&world, &seen, club, opponent, is_home, start, &suspended)
+        };
+        let home = pick(fixture.home, fixture.away, true);
+        let away = pick(fixture.away, fixture.home, false);
+        let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
+        let outcome = play_match(
+            &world,
+            &home,
+            &away,
+            &mut rngs,
+            knobs,
+            &BTreeMap::new(),
+            start,
+        );
+        visit(PlayedFixture {
+            fixture,
+            home: &home,
+            away: &away,
+            home_strength: lineup_strength(&world, &home),
+            away_strength: lineup_strength(&world, &away),
+            outcome: &outcome,
+        });
+    }
 }
 
 /// Namespace tag for the head-to-head harness's RNG stream
@@ -889,9 +1101,7 @@ pub fn run_squad_conditional_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fforge_core::DevKnobs;
     use fforge_core::match_engine::MatchEvent;
-    use fforge_core::scouting::{self, ScoutKnobs};
     use fforge_domain::PlayerId;
 
     /// The T7-R regression guard for `TACTICS_MODEL.md` §9 item 6's
@@ -1370,6 +1580,7 @@ mod tests {
                     home_wins,
                     draws: 0,
                     away_wins: matches - home_wins,
+                    ..Default::default()
                 },
             );
         }
@@ -1458,80 +1669,36 @@ mod tests {
         // reads (0.023, 0.008), an 0.015 dip well inside it. Test-pool
         // sizing, not a production knob — Consistency's own values are
         // unchanged.
-        let cfg = fforge_core::WorldGenConfig::default();
+        let cfg = WorldGenConfig::default();
         let mut telemetry = StreamTelemetry::default();
         for seed in 0..24u64 {
-            let (world, schedule, start) = fforge_core::worldgen::generate(seed, &cfg);
-            for fixture in &schedule {
-                let suspended = std::collections::BTreeSet::new();
-                let home_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
-                    &world,
-                    &scouting::seen_squad(
-                        &world,
-                        seed,
-                        fixture.home,
-                        fixture.away,
-                        start,
-                        &ScoutKnobs::default(),
-                        &DevKnobs::default(),
-                    ),
-                    fixture.home,
-                    fixture.away,
-                    true,
-                    start,
-                    &suspended,
-                );
-                let away_lineup = fforge_core::match_engine::ai_pick_lineup_vs(
-                    &world,
-                    &scouting::seen_squad(
-                        &world,
-                        seed,
-                        fixture.away,
-                        fixture.home,
-                        start,
-                        &ScoutKnobs::default(),
-                        &DevKnobs::default(),
-                    ),
-                    fixture.away,
-                    fixture.home,
-                    false,
-                    start,
-                    &suspended,
-                );
-                let home_strength =
-                    fforge_core::match_engine::lineup_strength(&world, &home_lineup);
-                let away_strength =
-                    fforge_core::match_engine::lineup_strength(&world, &away_lineup);
-                let mut rngs = MatchRngs::for_fixture(seed, fixture.id);
-                let outcome = fforge_core::match_engine::play_match(
-                    &world,
-                    &home_lineup,
-                    &away_lineup,
-                    &mut rngs,
-                    &Knobs::default(),
-                    &BTreeMap::new(),
-                    start,
-                );
+            play_opening_season(seed, &cfg, &Knobs::default(), |m| {
                 telemetry.record(
-                    &outcome,
-                    home_lineup.formation,
-                    away_lineup.formation,
-                    home_strength,
-                    away_strength,
+                    m.outcome,
+                    m.home.formation,
+                    m.away.formation,
+                    m.home_strength,
+                    m.away_strength,
                 );
-            }
+            });
         }
 
         let curve = telemetry.expected_points_curve(); // ascending by gap (BTreeMap order)
+        // A bin's reading carries sampling error of about 0.5/sqrt(matches)
+        // (a single result is worth 0, 0.5 or 1), so the allowed dip widens
+        // with the thinner of the two bins. Before `MATCH_MODEL.md` §8.1
+        // the extreme bins were all-or-nothing and a fixed tolerance held;
+        // an underdog can now take a point there.
         const MONOTONIC_TOLERANCE: f64 = 0.05;
         for pair in curve.windows(2) {
             let (gap_a, ep_a, matches_a) = pair[0];
             let (gap_b, ep_b, matches_b) = pair[1];
+            let tolerance = MONOTONIC_TOLERANCE + 1.0 / (matches_a.min(matches_b) as f64).sqrt();
             assert!(
-                ep_b >= ep_a - MONOTONIC_TOLERANCE,
+                ep_b >= ep_a - tolerance,
                 "expected points dipped from {ep_a:.3} at gap {gap_a:.1} ({matches_a} matches) \
                  to {ep_b:.3} at gap {gap_b:.1} ({matches_b} matches), beyond the \
-                 {MONOTONIC_TOLERANCE} noise tolerance"
+                 {tolerance:.3} noise tolerance"
             );
         }
 
@@ -1542,6 +1709,129 @@ mod tests {
             "max deviation from the Elo reference curve ({:.3}) exceeds the {MAX_DEVIATION_BAND} \
              sanity band",
             report.max_abs_deviation
+        );
+    }
+
+    #[test]
+    fn a_league_spread_accounts_for_every_point_and_goal() {
+        let mut league = LeagueSpread::default();
+        let (a, b, c) = (ClubId(0), ClubId(1), ClubId(2));
+        league.record(a, b, 4, 0);
+        league.record(b, c, 1, 1);
+        league.record(c, a, 0, 1);
+
+        let goals_for: u32 = league.clubs.values().map(|l| l.goals_for).sum();
+        let goals_against: u32 = league.clubs.values().map(|l| l.goals_against).sum();
+        assert_eq!(goals_for, goals_against);
+        assert_eq!(goals_for, 7);
+        let points: u32 = league.clubs.values().map(|l| l.points).sum();
+        assert_eq!(points, 3 + 2 + 3, "three for a win, one each for a draw");
+
+        assert_eq!(league.champion(), league.clubs[&a]);
+        assert_eq!(
+            league.bottom(),
+            league.clubs[&b],
+            "level on points with c, behind on goal difference"
+        );
+        assert_eq!(league.share_decided_by(0), 1.0);
+        assert!((league.share_decided_by(1) - 2.0 / 3.0).abs() < 1e-12);
+        assert!((league.share_decided_by(4) - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(league.share_decided_by(5), 0.0);
+    }
+
+    #[test]
+    fn a_level_league_has_no_points_spread() {
+        let mut league = LeagueSpread::default();
+        league.record(ClubId(0), ClubId(1), 2, 2);
+        league.record(ClubId(1), ClubId(0), 0, 0);
+        assert_eq!(league.points_per_match_sd(), 0.0);
+    }
+
+    #[test]
+    fn the_implied_elo_scale_recovers_the_curve_it_was_built_from() {
+        let mut telemetry = StreamTelemetry::default();
+        for bin in -6..6 {
+            let gap = (bin as f64 + 0.5) * STRENGTH_GAP_BIN_WIDTH;
+            let matches = 100_000;
+            let home_wins = (elo_expected(gap, 25.0) * matches as f64).round() as u32;
+            telemetry.by_strength_gap.insert(
+                bin,
+                GapBinStats {
+                    matches,
+                    home_wins,
+                    away_wins: matches - home_wins,
+                    ..Default::default()
+                },
+            );
+        }
+        let scale = telemetry
+            .score_against_reference(ELO_SCALE_S)
+            .implied_elo_scale()
+            .unwrap();
+        assert!((scale - 25.0).abs() < 0.1, "recovered {scale}");
+    }
+
+    /// `MATCH_MODEL.md` §10 item 7. Wide bands around the fitted readings:
+    /// this catches a league sliding back towards routs, or level sides
+    /// that cannot score, either of which the pooled aggregates miss.
+    #[cfg_attr(not(feature = "slow-tests"), ignore)]
+    #[test]
+    fn league_spread_regression_guard() {
+        let cfg = WorldGenConfig::default();
+        const SEEDS: u64 = 12;
+        let mut pooled = StreamTelemetry::default();
+        let (mut champion_ga, mut bottom_gf, mut ppm_sd, mut by_four) = (0.0, 0.0, 0.0, 0.0);
+        for seed in 0..SEEDS {
+            let mut league = LeagueSpread::default();
+            play_opening_season(seed, &cfg, &Knobs::default(), |m| {
+                league.record(
+                    m.fixture.home,
+                    m.fixture.away,
+                    m.outcome.home_goals,
+                    m.outcome.away_goals,
+                );
+                pooled.record(
+                    m.outcome,
+                    m.home.formation,
+                    m.away.formation,
+                    m.home_strength,
+                    m.away_strength,
+                );
+            });
+            champion_ga += league.champion().goals_against_per_match() / SEEDS as f64;
+            bottom_gf += league.bottom().goals_for_per_match() / SEEDS as f64;
+            ppm_sd += league.points_per_match_sd() / SEEDS as f64;
+            by_four += league.share_decided_by(4) / SEEDS as f64;
+        }
+
+        assert!(
+            champion_ga >= 0.4,
+            "champions concede {champion_ga:.2} a match; a real one concedes 0.6-1.0"
+        );
+        assert!(
+            bottom_gf >= 0.4,
+            "the bottom club scores {bottom_gf:.2} a match; a real one scores 0.65-1.05"
+        );
+        assert!(
+            (0.36..=0.60).contains(&ppm_sd),
+            "points per match sd across clubs {ppm_sd:.2} outside 0.36-0.60"
+        );
+        assert!(
+            (0.03..=0.12).contains(&by_four),
+            "{:.1}% of matches won by four or more, outside 3-12%",
+            by_four * 100.0
+        );
+
+        let level: Vec<&GapBinStats> = [-1, 0]
+            .iter()
+            .filter_map(|bin| pooled.by_strength_gap.get(bin))
+            .collect();
+        let matches: u32 = level.iter().map(|b| b.matches).sum();
+        let goals: u32 = level.iter().map(|b| b.home_goals + b.away_goals).sum();
+        let level_gpm = goals as f64 / matches as f64;
+        assert!(
+            (1.9..=3.1).contains(&level_gpm),
+            "evenly matched sides score {level_gpm:.2} a match between them, outside 1.9-3.1"
         );
     }
 }

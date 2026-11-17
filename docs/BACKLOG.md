@@ -163,7 +163,7 @@ football-flavoured. Protect its scope explicitly.
 
 Each is filed with a reading, not a fix. None blocks Phase 5 on its own.
 
-**4.1 — [Closed — fog-of-war, `AGENT_MODEL.md` §5.6: volume reads 4.537.]** *The hypothesis below
+**4.1 — [Closed — fog-of-war, `AGENT_MODEL.md` §5.6–5.7: volume reads 4.33 fogged against 2.48 omniscient, once a player can move only once per window. The figures below predate that rule and counted every hop.]** *The hypothesis below
 was right. Kept for the record.* Transfer volume: 1.880/club/window against a 2–5 target (BACKLOG.md §2 item 4's re-bank,
 24 seeds × 15 seasons — up from 1.805, well inside both readings' own spread). Survived three
 re-banks unchanged now — form, tactics, and this pass's seeding-invert-driven finance shock — which
@@ -196,21 +196,43 @@ conservative by construction), so its downstream match-shape effects (late goals
 noise while non-XI minutes rose more than predicted simply because *any* bench player now gets on the
 pitch at all, which was previously impossible. Not re-fit — a reading, not a target.
 
-**4.4 — The league is far more lopsided than the pooled readings suggest.** Pooled goals per match
-(2.50) and H/D/A are in band, but they average over a distribution that is not. In the fixed-seed
-season the game's own snapshot plays, the champions score 168 and concede 4 in 38 matches while the
-bottom club scores 8 and concedes 145; before fog-of-war the same fixture had a club finish a season
-without scoring. `bin/calibrate` shows why: a side nine points of lineup strength better takes 90% of
-the expected points where the Elo reference of `MATCH_MODEL.md` §10 item 6 says 63%, and the gap
-between the two curves peaks at 0.28. That item calls the steepness acceptable because the curve is
-"a discrimination check, not a fit target", and the guard only bounds it. Nobody has yet asked what
-it does to a league table. Filed with the reading; not chased. It matters for Phase 5 because a
-manager's stance can only show up in results if results are not already decided by squad strength.
+**4.4 — [Closed — `MATCH_MODEL.md` §8.1 and §10 item 7.]** The league was far more lopsided than
+the pooled readings suggested: champions conceding four goals in a season, a bottom club scoring
+eight. The cause was one scale, `Knobs::s`, compounding a squad gap through every contest in the
+chain to a goal; level sides scored under one goal a match and routs supplied the rest. Five knobs
+were re-fitted together against new league-spread bands, `LeagueSpread` reads them, and
+`league_spread_regression_guard` holds them. What the fit moved without fitting is 4.6 and 4.7.
 
 **4.5 — Resolving a transfer window is about 2.2× slower under fog-of-war** (`AGENT_MODEL.md` §5.5).
 Every club now values the market for itself. Lazy appraisal of only the players a club could pay for
 recovered a third of the cost; the rest is `valuation::project_ca_series`, which integrates each
 player's whole projected career month by month. The slow market guard and `bin/market` pay for it.
+
+**4.6 — The tactics triangle needs re-balancing after the match re-fit** (`MATCH_MODEL.md` §8.2).
+On level squads High press now beats Patient (0.517) and Direct (0.534), and Patient beats Direct
+(0.530): Direct is the weakest instruction and nothing beats High press. The cause is known:
+Tempo's `advance_mult` multiplies `p_mid_advance`, which the re-fit raised from 0.20 to 0.31. The
+guards pass because their bands are wide. Read `TACTICS_MODEL.md` §3 before touching a magnitude;
+this is the two-lever-class problem again, at a new base rate. It gates `ManagerStance` balancing
+(`AGENT_MODEL.md` §13 step 2b), which adds four more axes on the same levers.
+
+**4.7 — Fatigue, condition, Consistency and injury impairment are a quarter as strong as they
+were.** Each scales a player's attributes and so passes through `Knobs::s`, which went from 12 to
+52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
+it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
+
+**4.8 — Half of all signings are still resold within a year** (`TRANSFER_MODEL.md` §6,
+`AGENT_MODEL.md` §5.7). It was seven in ten. Two fixes are in: a player moves once per window, and
+a club buys only against an unfilled need. What remains is probably depth signings: the cheapest
+body fills a hole, is then the first man out, and reopens it. Next step is measurement, not a
+rule: tag each `Signing` in the market harness with the need it was bought against and the trigger
+that listed it, and read the resale rate per pair.
+
+**4.9 — The market's target bands predate its two fixes.** Volume now reads 1.68 fogged against a
+2–5 band; the top three clubs hold half the twenty best players late in a run, up from a third;
+the flop rate is zero because a club can always resell at cost (`TRANSFER_MODEL.md` §12 item 6).
+Each band in §11 was set against a market that counted flips as transfers. Re-derive them before
+tuning towards any. 4.1's closure is superseded by this item.
 
 ---
 

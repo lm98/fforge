@@ -62,7 +62,12 @@ pub struct Candidate {
     pub player: PlayerId,
     /// `None` = a free agent.
     pub club: Option<ClubId>,
+    /// His best role as the observing club sees him, and his ability in it.
     pub role: Role,
+    pub ca: u8,
+    /// The slot he fills in a squad template (`SquadMember::natural_role`).
+    pub natural_role: Role,
+    pub age: i32,
     /// What the observing club thinks he is worth — or `Money(0)` if he is
     /// beyond its means and so was never appraised (`observe_as`).
     pub value: Money,
@@ -186,6 +191,13 @@ pub struct UtilityKnobs {
     /// purge: a squad pinned at the cap sheds a few players a window until
     /// it has real headroom again, rather than emptying toward `squad_min`.
     pub squad_pressure_max_listings: usize,
+
+    /// How much better than the incumbent a candidate must look before he
+    /// counts as an upgrade or an heir (§6), in ability points.
+    pub upgrade_margin: u8,
+    /// How many of its highest-paid players a club in financial difficulty
+    /// lists each window on top of the ordinary triggers (§6).
+    pub distress_listings: usize,
 }
 
 impl Default for UtilityKnobs {
@@ -206,6 +218,8 @@ impl Default for UtilityKnobs {
             squad_pressure_start: 0.75,
             squad_pressure_exponent: 1.5,
             squad_pressure_max_listings: 5,
+            upgrade_margin: 2,
+            distress_listings: 2,
         }
     }
 }
@@ -273,6 +287,50 @@ impl UtilityPolicy {
     /// `need` for every role — the ranking basis for buy shortlists.
     pub fn needs(&self, obs: &ClubObservation) -> BTreeMap<Role, f64> {
         Role::ALL.iter().map(|&r| (r, self.need(obs, r))).collect()
+    }
+
+    fn template_count(role: Role) -> usize {
+        SQUAD_TEMPLATE
+            .iter()
+            .find(|(r, _)| *r == role)
+            .map_or(0, |&(_, c)| c)
+    }
+
+    /// Whether signing `c` would fill a need (§6): cover a role under its
+    /// template headcount, improve on a starter who is under the club's
+    /// target, or succeed one projected to fall under it. `need` ranks the
+    /// candidates this admits; on its own it is positive almost everywhere
+    /// and admits nearly all of them.
+    pub fn fills_need(&self, obs: &ClubObservation, c: &Candidate) -> bool {
+        let held = obs
+            .squad
+            .iter()
+            .filter(|m| m.natural_role == c.natural_role)
+            .count();
+        if held < Self::template_count(c.natural_role) {
+            return true;
+        }
+        let Some(starter) = obs
+            .squad
+            .iter()
+            .filter(|m| m.role == c.role)
+            .max_by_key(|m| m.current_ca)
+        else {
+            return true;
+        };
+        let target = self.target_ca(obs.reputation);
+        let beats = |incumbent: u8| c.ca >= incumbent.saturating_add(self.knobs.upgrade_margin);
+        let upgrade = (starter.current_ca as f64) < target && beats(starter.current_ca);
+        let heir = starter.projected_ca < starter.current_ca
+            && (starter.projected_ca as f64) < target
+            && c.age < starter.age
+            && beats(starter.projected_ca);
+        upgrade || heir
+    }
+
+    /// A negative balance, or wages committed beyond the budget (§6).
+    pub fn in_financial_difficulty(obs: &ClubObservation) -> bool {
+        obs.balance.0 < 0 || obs.committed_wages.0 > obs.wage_budget.0
     }
 
     /// §6's hard per-role minimum, if `role` has one — today just `Gk` (`≥ 2
@@ -344,6 +402,9 @@ impl UtilityPolicy {
                 let surplus = (c.value.0 - c.asking_price.0) as f64;
                 if violations.contains(&c.role) {
                     return Some((true, surplus, c));
+                }
+                if !self.fills_need(obs, c) {
+                    return None;
                 }
                 let need = *needs.get(&c.role)?;
                 if need <= 0.0 {
@@ -447,12 +508,11 @@ impl UtilityPolicy {
                 at_template.then_some((m, true))
             })
             .collect();
-        // Weakest / most expendable first, deterministic tie-break.
-        expendable.sort_by(|(a, _), (b, _)| {
-            a.current_ca
-                .cmp(&b.current_ca)
-                .then(a.player.cmp(&b.player))
-        });
+        // The player the club least wants to keep first: the lower of what
+        // he is and what he is projected to become (§6), so an heir signed
+        // for his future is not the first man out.
+        let keep = |m: &SquadMember| m.current_ca.max(m.projected_ca);
+        expendable.sort_by(|(a, _), (b, _)| keep(a).cmp(&keep(b)).then(a.player.cmp(&b.player)));
 
         let mut decisions = Vec::new();
         let mut remaining = obs.squad.len();
@@ -474,6 +534,39 @@ impl UtilityPolicy {
             remaining -= 1;
             if pressure_only {
                 pressure_used += 1;
+            }
+        }
+
+        if Self::in_financial_difficulty(obs) {
+            let listed: BTreeSet<PlayerId> = decisions
+                .iter()
+                .filter_map(|d| match d {
+                    TransferDecision::List { player } => Some(*player),
+                    _ => None,
+                })
+                .collect();
+            let mut by_wage: Vec<&SquadMember> = obs
+                .squad
+                .iter()
+                .filter(|m| !listed.contains(&m.player))
+                .collect();
+            by_wage.sort_by(|a, b| b.wage.0.cmp(&a.wage.0).then(a.player.cmp(&b.player)));
+            let mut distress_used = 0usize;
+            for m in by_wage {
+                if remaining <= self.knobs.squad_min
+                    || distress_used >= self.knobs.distress_listings
+                {
+                    break;
+                }
+                if m.natural_role == Role::Gk {
+                    if gk_count <= self.knobs.min_goalkeepers {
+                        continue;
+                    }
+                    gk_count -= 1;
+                }
+                decisions.push(TransferDecision::List { player: m.player });
+                remaining -= 1;
+                distress_used += 1;
             }
         }
         decisions
@@ -629,7 +722,7 @@ pub fn observe_as(
         .values()
         .filter(|p| !p.retired && !squad_set.contains(&p.id))
         .map(|p| {
-            let (role, _) = best_role(&seen.player(p.id).attributes, &ROLE_WEIGHTS);
+            let (role, ca) = best_role(&seen.player(p.id).attributes, &ROLE_WEIGHTS);
             let asking_price = asks.get(&p.id).copied().unwrap_or(Money(0));
             let wage = p.contract.map(|c| c.wage).unwrap_or(Money(0));
             let affordable = within_means(
@@ -645,6 +738,9 @@ pub fn observe_as(
                 player: p.id,
                 club: world.club_of(p.id),
                 role,
+                ca,
+                natural_role: p.natural_role,
+                age: p.age(today),
                 value,
                 asking_price,
                 wage,
@@ -689,6 +785,162 @@ mod tests {
             wage: Money(500_000),
             years_left_on_contract: 3.0,
         }
+    }
+
+    /// A 25-year-old candidate whose natural role is his best one.
+    fn candidate(
+        player: u32,
+        club: Option<ClubId>,
+        role: Role,
+        ca: u8,
+        value: i64,
+        asking_price: i64,
+        wage: i64,
+    ) -> Candidate {
+        Candidate {
+            player: PlayerId(player),
+            club,
+            role,
+            ca,
+            natural_role: role,
+            age: 25,
+            value: Money(value),
+            asking_price: Money(asking_price),
+            wage: Money(wage),
+        }
+    }
+
+    fn bids(decisions: &[TransferDecision]) -> BTreeSet<PlayerId> {
+        decisions
+            .iter()
+            .filter_map(|d| match d {
+                TransferDecision::Bid { player, .. } => Some(*player),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn listings(decisions: &[TransferDecision]) -> Vec<PlayerId> {
+        decisions
+            .iter()
+            .filter_map(|d| match d {
+                TransferDecision::List { player } => Some(*player),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bargain_that_fills_no_need_is_not_bought() {
+        let mut obs = baseline_observation();
+        let target = UtilityPolicy::default().target_ca(obs.reputation) as u8;
+        for m in &mut obs.squad {
+            m.current_ca = target - 1;
+            m.projected_ca = target - 1;
+        }
+        // Under the club's target everywhere, so `need` is positive for
+        // every role; priced at a fifth of his value; no better than the
+        // man he would sit behind.
+        obs.candidates.push(candidate(
+            9001,
+            None,
+            Role::St,
+            target - 1,
+            5_000_000,
+            1_000_000,
+            100_000,
+        ));
+        let policy = UtilityPolicy::default();
+        assert!(policy.need(&obs, Role::St) > 0.0);
+        assert!(bids(&policy.transfer_decisions(&obs)).is_empty());
+    }
+
+    #[test]
+    fn a_hole_in_the_squad_an_upgrade_and_an_heir_are_each_a_need() {
+        let policy = UtilityPolicy::default();
+        let margin = policy.knobs.upgrade_margin;
+        let base = baseline_observation();
+        let target = policy.target_ca(base.reputation) as u8;
+        let striker = |ca| candidate(9001, None, Role::St, ca, 5_000_000, 1_000_000, 100_000);
+
+        let mut hole = base.clone();
+        let gone = hole
+            .squad
+            .iter()
+            .position(|m| m.natural_role == Role::St)
+            .unwrap();
+        hole.squad.remove(gone);
+        assert!(
+            policy.fills_need(&hole, &striker(1)),
+            "depth asks nothing of quality"
+        );
+
+        let mut short = base.clone();
+        for m in &mut short.squad {
+            m.current_ca = target - 5;
+            m.projected_ca = target - 5;
+        }
+        assert!(policy.fills_need(&short, &striker(target - 5 + margin)));
+        assert!(!policy.fills_need(&short, &striker(target - 5 + margin - 1)));
+
+        let mut on_target = base.clone();
+        for m in &mut on_target.squad {
+            m.current_ca = target + 3;
+            m.projected_ca = target + 3;
+        }
+        assert!(
+            !policy.fills_need(&on_target, &striker(99)),
+            "a starter at the club's level is not a gap, whoever is on offer"
+        );
+
+        let mut ageing = on_target.clone();
+        for m in &mut ageing.squad {
+            m.age = 32;
+            m.projected_ca = target - 10;
+        }
+        assert!(policy.fills_need(&ageing, &striker(target - 10 + margin)));
+        let mut older = striker(target - 10 + margin);
+        older.age = 33;
+        assert!(!policy.fills_need(&ageing, &older), "an heir is younger");
+    }
+
+    #[test]
+    fn a_surplus_role_sheds_the_player_with_the_least_now_and_later() {
+        let mut obs = baseline_observation();
+        // A fourth striker takes the role over its template. The heir is the
+        // weakest today and the best in three years; the veteran is the
+        // reverse; the journeyman is neither.
+        let (heir, veteran, journeyman) = (PlayerId(9001), PlayerId(9002), PlayerId(9003));
+        obs.squad.retain(|m| m.natural_role != Role::St);
+        obs.squad.push(member(heir.0, Role::St, Role::St, 55, 75));
+        obs.squad
+            .push(member(veteran.0, Role::St, Role::St, 75, 55));
+        obs.squad
+            .push(member(journeyman.0, Role::St, Role::St, 60, 60));
+        obs.squad.push(member(9004, Role::St, Role::St, 70, 70));
+        let listed = listings(&UtilityPolicy::default().transfer_decisions(&obs));
+        assert_eq!(listed.first(), Some(&journeyman));
+    }
+
+    #[test]
+    fn a_club_in_financial_difficulty_lists_its_best_paid_and_buys_nobody() {
+        let policy = UtilityPolicy::default();
+        let mut obs = baseline_observation();
+        assert!(!UtilityPolicy::in_financial_difficulty(&obs));
+        assert!(listings(&policy.transfer_decisions(&obs)).is_empty());
+
+        obs.squad[5].wage = Money(900_000);
+        obs.squad[9].wage = Money(800_000);
+        obs.balance = Money(-1);
+        obs.candidates
+            .push(candidate(9001, None, Role::St, 99, 5_000_000, 1, 1));
+        assert!(UtilityPolicy::in_financial_difficulty(&obs));
+        let decisions = policy.transfer_decisions(&obs);
+        assert_eq!(
+            listings(&decisions),
+            vec![obs.squad[5].player, obs.squad[9].player]
+        );
+        assert!(bids(&decisions).is_empty());
     }
 
     /// A full-depth, roughly on-target squad at mid reputation — the neutral
@@ -757,26 +1009,28 @@ mod tests {
         });
 
         // A merely-adequate goalkeeper candidate...
-        obs.candidates.push(Candidate {
-            player: PlayerId(9001),
-            club: Some(ClubId(1)),
-            role: Role::Gk,
-            value: Money(1_000_000),
-            asking_price: Money(900_000),
-            wage: Money(100_000),
-        });
+        obs.candidates.push(candidate(
+            9001,
+            Some(ClubId(1)),
+            Role::Gk,
+            65,
+            1_000_000,
+            900_000,
+            100_000,
+        ));
         // ...against a strike candidate whose enormous surplus would win
         // under plain `need · surplus` ranking even though the club's
         // strikers are already at full template depth (need for `St` is low,
         // but `need · surplus` is unbounded in surplus).
-        obs.candidates.push(Candidate {
-            player: PlayerId(9002),
-            club: Some(ClubId(2)),
-            role: Role::St,
-            value: Money(50_000_000),
-            asking_price: Money(1_000_000),
-            wage: Money(100_000),
-        });
+        obs.candidates.push(candidate(
+            9002,
+            Some(ClubId(2)),
+            Role::St,
+            65,
+            50_000_000,
+            1_000_000,
+            100_000,
+        ));
 
         let policy = UtilityPolicy::default();
         let decisions = policy.transfer_decisions(&obs);
@@ -808,14 +1062,15 @@ mod tests {
         }
         // A juicy, otherwise-fundable candidate — irrelevant once the squad
         // ceiling filter fires first.
-        obs.candidates.push(Candidate {
-            player: PlayerId(9999),
-            club: Some(ClubId(1)),
-            role: Role::Gk,
-            value: Money(1_000_000),
-            asking_price: Money(500_000),
-            wage: Money(100_000),
-        });
+        obs.candidates.push(candidate(
+            9999,
+            Some(ClubId(1)),
+            Role::Gk,
+            65,
+            1_000_000,
+            500_000,
+            100_000,
+        ));
 
         let policy = UtilityPolicy::new(knobs);
         let decisions = policy.transfer_decisions(&obs);
@@ -956,14 +1211,15 @@ mod tests {
         let mut obs = baseline_observation();
         obs.squad.retain(|m| m.natural_role != Role::Gk); // create real need
         obs.balance = Money(0);
-        obs.candidates.push(Candidate {
-            player: PlayerId(9999),
-            club: Some(ClubId(1)),
-            role: Role::Gk,
-            value: Money(1_000_000),
-            asking_price: Money(500_000),
-            wage: Money(100_000),
-        });
+        obs.candidates.push(candidate(
+            9999,
+            Some(ClubId(1)),
+            Role::Gk,
+            65,
+            1_000_000,
+            500_000,
+            100_000,
+        ));
 
         let policy = UtilityPolicy::default();
         let decisions = policy.transfer_decisions(&obs);
@@ -1004,22 +1260,24 @@ mod tests {
     fn transfer_decisions_are_deterministic() {
         let mut obs = baseline_observation();
         obs.squad.retain(|m| m.natural_role != Role::Gk);
-        obs.candidates.push(Candidate {
-            player: PlayerId(9001),
-            club: Some(ClubId(1)),
-            role: Role::Gk,
-            value: Money(2_000_000),
-            asking_price: Money(1_000_000),
-            wage: Money(200_000),
-        });
-        obs.candidates.push(Candidate {
-            player: PlayerId(9002),
-            club: None,
-            role: Role::Gk,
-            value: Money(2_000_000),
-            asking_price: Money(1_000_000),
-            wage: Money(200_000),
-        });
+        obs.candidates.push(candidate(
+            9001,
+            Some(ClubId(1)),
+            Role::Gk,
+            65,
+            2_000_000,
+            1_000_000,
+            200_000,
+        ));
+        obs.candidates.push(candidate(
+            9002,
+            None,
+            Role::Gk,
+            65,
+            2_000_000,
+            1_000_000,
+            200_000,
+        ));
 
         let policy = UtilityPolicy::default();
         let a = policy.transfer_decisions(&obs);

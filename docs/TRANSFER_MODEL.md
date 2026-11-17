@@ -329,7 +329,13 @@ provably.
    buyer reputation, then `ClubId`). The player then **consents or refuses** on wage and buyer
    reputation against his own threshold; a refusal falls through to the next-best bidder — the
    deferred-acceptance step.
-4. **Carry losers forward**, shortlists minus players already taken.
+4. **Carry losers forward**, shortlists minus players already taken. **A player moves at most
+   once per window**: once a transfer completes he cannot be listed again until the next one.
+   The policy is memoryless across rounds, so without this a buyer whose new signing left a role
+   over its template listed him the next round at the same frozen ask, and the next club did the
+   same. The buyer's-eye readings (`AGENT_MODEL.md` §5.7) found 59% of fee-paying signings sold
+   on in the window they arrived, each hop counted as a transfer. The rule lives in the clearing
+   loop, not the policy, because it is a rule of the market and holds for every decider.
 5. **Repeat** to fixpoint or `MAX_ROUNDS = 12`. Termination: each round either completes at least one
    transfer or produces no bids.
 
@@ -373,6 +379,72 @@ gaps, succession risk, and surplus value alike, exactly as §11 requires. The ov
 inside the existing hard filters (cash, wage headroom, `squad_max`), so a club with no headroom must
 sell first to open it — the "may force a sale to fund it, even at a discount" behaviour this stabilizer
 implies (`club_ai::UtilityPolicy::hard_minimum_violations`).
+
+**A club buys only against an unfilled need** (amended after `AGENT_MODEL.md` §5.7). `need` as
+first written is a weighted sum that is positive for almost every role at almost every club: any
+starter under the club's target leaves a quality gap. So "positive need" filtered nothing, the
+policy bought whatever was priced under its valuation, and seven signings in ten were sold again
+within a year. A candidate must now **fill a need**, a yes-or-no test, before `need · surplus`
+ranks him:
+
+- **depth** — his natural role is under its `SQUAD_TEMPLATE` headcount; or
+- **upgrade** — the club's starter in his role is under the club's target, and he is better than
+  that starter by at least `upgrade_margin` as the club sees both; or
+- **succession** — the starter is projected to decline below the target, and the candidate is
+  younger and already at least `upgrade_margin` better than what the starter is projected to
+  become.
+
+A depth signing brings a role up to its template and so creates no surplus. An upgrade or an heir
+takes a role over it, and the policy then lists the player it least wants to keep, which is how one
+signing becomes a chain down the league instead of a loop. "Least wants to keep" is the lower of
+`max(current, projected)` ability: ordering by current ability alone listed the heir a club had
+just signed.
+
+Under fog an upgrade is judged on what the club sees, so some are not upgrades at all. That is the
+intended source of a flop: the club learns it a season later and the player is then the one it
+least wants to keep.
+
+**A club in financial difficulty sells to get out of it.** Difficulty is a negative balance or
+committed wages over the wage budget. Such a club lists up to `distress_listings` of its
+highest-paid players each window on top of the ordinary triggers, still inside the squad and
+goalkeeper minima. It cannot buy until it has headroom again: the cash and wage filters
+already see to that.
+
+*Predictions, written before the change* (`bin/market`, 24 seeds × 15 seasons, against §5.7's
+readings): the share of signings gone within a year falls from 71–74% to under 35%; volume falls
+to 0.8–1.8 omniscient and 1.5–3 fogged; star signings written off within two years stays near
+zero omniscient and becomes clearly non-zero fogged; fewer clubs sit pinned at `squad_max`; more
+clubs hoard cash than the present 5.5 in 20, since there is less to spend it on.
+
+*Readings* (per-seed sd in brackets; "before" is `AGENT_MODEL.md` §5.7 with the one-move rule):
+
+| Row | Omniscient before → after | Fogged before → after | Prediction |
+|---|---|---|---|
+| Signings gone within a year | 70.7% → 54.1% (3.2) | 73.5% → 47.7% (3.8) | under 35% — **not met** |
+| Transfers per club per window | 2.48 → 1.46 (0.16) | 4.33 → 1.68 (0.16) | 0.8–1.8 and 1.5–3 — **met** |
+| Star signings written off in two years | 0.1% → 0.2% | 0.7% → 0.5% | clearly non-zero fogged — **refuted** |
+| Clubs majority-pinned at `squad_max` | 9.6% → 5.6% | 10.6% → 8.3% | falls — met, inside one sd |
+| Clubs hoarding cash, of 20 | 5.77 → 5.52 | 5.49 → 5.45 | rises — **refuted**, unmoved |
+| Top-3 share of the top-20 players, late | 0.29 → 0.53 | 0.33 → 0.49 | not predicted |
+| Median fee | 0.89M → 0.62M | 0.59M → 0.48M | not predicted |
+
+What they say:
+
+- **The loop is weaker, not gone.** Half of all signings still leave within a year. The suspect
+  is depth signings: "depth asks nothing of quality", so the cheapest body fills the hole, is then
+  the player the club least wants to keep, and is first out when the role next goes over template
+  or squad pressure takes an at-template player, which reopens the hole. Unconfirmed; it needs
+  each `Signing` tagged with the need it was bought against and the trigger that listed it.
+- **Most of fog's extra volume was bargain-hunting.** With the need test, fog raises volume by
+  15%, not 75%. Fogged volume, 1.68, is back under the 2–5 band `BACKLOG.md` §4.1 was closed
+  against. That band was set when every hop and every flip counted, so it wants re-deriving
+  before anything is tuned towards it.
+- **Talent stopped dispersing.** The top three clubs now hold half of the twenty best players
+  late in a run, where before the carousel spread them. Whether 0.5 is healthy or a frozen
+  hierarchy is a judgement the §11 band has to make; the points-Gini did not rise with it
+  (0.17 late).
+- **Flops still cannot happen.** A club can always resell at about what it paid, so a mistake
+  costs nothing. That is the asking-price model (§12 item 6), not the buying rule.
 
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,

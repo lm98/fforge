@@ -1391,18 +1391,16 @@ pub(crate) mod golden {
         (14, 0, 874),
     ];
 
-    /// The T5/T6 identity tests below pin `consistency_sigma_max: 0.0`,
-    /// `injury_rate: 0.0`, and `foul_rate: 0.0` (§2.1) explicitly rather
-    /// than using `Knobs::default()` — T8/T10/T11 gave Consistency,
-    /// Injuries, and Fouls real nonzero production defaults, so these
-    /// golden baselines must keep asserting the *pre*-2e engine
-    /// specifically, independent of whatever `Knobs::default()` is today.
+    /// The pre-2e engine: the Phase-2a knob table with Consistency,
+    /// injuries and fouls at their identities. Pinned explicitly so these
+    /// baselines assert wiring, independent of what `Knobs::default()` is
+    /// calibrated to today.
     fn identity_2e_knobs() -> Knobs {
         Knobs {
             consistency_sigma_max: 0.0,
             injury_rate: 0.0,
             foul_rate: 0.0,
-            ..Knobs::default()
+            ..Knobs::phase_2a()
         }
     }
 
