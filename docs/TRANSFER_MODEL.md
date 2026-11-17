@@ -446,6 +446,13 @@ What they say:
 - **Flops still cannot happen.** A club can always resell at about what it paid, so a mistake
   costs nothing. That is the asking-price model (§12 item 6), not the buying rule.
 
+*Which signings come back, and by which door.* The market harness now asks the policy itself:
+`UtilityPolicy::need_filled` names the need a signing met and `UtilityPolicy::listings` the trigger
+a listing fired on, and `explain_window` replays each window's events to put both on every
+`Signing`. **Prediction, written before the run:** depth signings are resold more often than
+upgrades; the two paths depth → squad pressure and depth → surplus together account for more than
+half of all signings gone within a year; and under 15% of them go unexplained.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.
