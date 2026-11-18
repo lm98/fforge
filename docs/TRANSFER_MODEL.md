@@ -496,6 +496,24 @@ player out at 25 and one back in at 24. Upgrades, heirs and hard-minimum cover a
 15%; the share of signings gone within a year falls from 47.7% to 30–38%; volume falls from 1.68
 to 1.1–1.5; depth falls under 60% of signings.
 
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged, per-seed sd in brackets):
+
+| Row | Before | After | Prediction |
+|---|---|---|---|
+| Signings gone within a year | 47.7% | 19.0% (2.8) | 30–38% — **beaten** |
+| Depth → squad pressure, share of resales | 43.2% | 3.6% | under 15% — **met** |
+| Depth, share of signings | 70.7% | 12.7% | under 60% — **met** |
+| Transfers per club per window | 1.68 | 0.60 (0.05) | 1.1–1.5 — **refuted**, lower |
+| Median fee | 0.48M | 1.02M | not predicted |
+| Fee / true value, median | 0.912 | 0.888 | not predicted |
+| Clubs majority-pinned at `squad_max` | 8.3% | 4.0% | not predicted |
+
+The loop is closed. Four signings in five are now upgrades, every kind of signing is kept about
+four times in five, and what does come back mostly leaves as surplus after a later upgrade, which
+is the chain working as intended. Two thirds of the old volume was the loop: 0.60 a window is a
+little over one signing per club per season. That is under the 2–5 band, and whether it is too
+quiet to play against is `BACKLOG.md` §4.9's question, together with the band itself.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.
