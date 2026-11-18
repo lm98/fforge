@@ -485,8 +485,16 @@ The second route, depth → surplus, is the ordinary chain working as designed b
 player: an upgrade arrives, the role goes over template, and the depth signing is the one shed.
 Some of that is healthy turnover; how much is not separable from this reading.
 
-Not fixed here. The loop has a direct remedy, a squad under pressure does not buy for depth, and
-it is `BACKLOG.md` §4.8's to take.
+**A full squad does not buy for depth.** The remedy for the loop: a depth need counts only while
+the squad as a whole is under the template's total headcount (24). A squad at or over it with a
+hole in one role is over-staffed in another, and sells there first. This is tighter than "a squad
+under pressure does not buy for depth", which was the first wording: pressure starts listing at
+25, one above the template, so that rule would have left the loop turning at the boundary, one
+player out at 25 and one back in at 24. Upgrades, heirs and hard-minimum cover are unaffected.
+
+*Prediction, written before the run:* depth → squad pressure falls from 43% of resales to under
+15%; the share of signings gone within a year falls from 47.7% to 30–38%; volume falls from 1.68
+to 1.1–1.5; depth falls under 60% of signings.
 
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,

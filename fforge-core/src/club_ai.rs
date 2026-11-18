@@ -323,6 +323,10 @@ impl UtilityPolicy {
             .map_or(0, |&(_, c)| c)
     }
 
+    fn template_size() -> usize {
+        SQUAD_TEMPLATE.iter().map(|&(_, c)| c).sum()
+    }
+
     /// The need signing `c` would fill, if any (§6). `need` ranks the
     /// candidates this admits; on its own it is positive almost everywhere
     /// and admits nearly all of them.
@@ -335,7 +339,10 @@ impl UtilityPolicy {
             .iter()
             .filter(|m| m.natural_role == c.natural_role)
             .count();
-        if held < Self::template_count(c.natural_role) {
+        // A full squad does not buy for depth (§6): with a hole in one
+        // role it is over-staffed in another, and sells there first.
+        let squad_is_short = obs.squad.len() < Self::template_size();
+        if squad_is_short && held < Self::template_count(c.natural_role) {
             return Some(Need::Depth);
         }
         let Some(starter) = obs
@@ -344,7 +351,7 @@ impl UtilityPolicy {
             .filter(|m| m.role == c.role)
             .max_by_key(|m| m.current_ca)
         else {
-            return Some(Need::Depth);
+            return squad_is_short.then_some(Need::Depth);
         };
         let target = self.target_ca(obs.reputation);
         let beats = |incumbent: u8| c.ca >= incumbent.saturating_add(self.knobs.upgrade_margin);
@@ -940,6 +947,30 @@ mod tests {
         let mut older = striker(target - 10 + margin);
         older.age = 33;
         assert!(!policy.fills_need(&ageing, &older), "an heir is younger");
+    }
+
+    #[test]
+    fn a_full_squad_does_not_buy_for_depth() {
+        let policy = UtilityPolicy::default();
+        let striker = candidate(9001, None, Role::St, 1, 5_000_000, 1_000_000, 100_000);
+
+        // One striker short, and one centre-back over: a full squad with a
+        // hole in it.
+        let mut lopsided = baseline_observation();
+        let gone = lopsided
+            .squad
+            .iter()
+            .position(|m| m.natural_role == Role::St)
+            .unwrap();
+        lopsided.squad.remove(gone);
+        lopsided
+            .squad
+            .push(member(9500, Role::Cb, Role::Cb, 65, 65));
+        assert_eq!(policy.need_filled(&lopsided, &striker), None);
+
+        // The same hole once the spare centre-back has gone.
+        lopsided.squad.pop();
+        assert_eq!(policy.need_filled(&lopsided, &striker), Some(Need::Depth));
     }
 
     #[test]
