@@ -49,6 +49,9 @@ pub struct SquadMember {
     /// `project_ca` at `SUCCESSION_HORIZON_YEARS` — the third consumer of
     /// §2.3's projection (§6).
     pub projected_ca: u8,
+    /// The club's own estimate of his potential (`AGENT_MODEL.md` §5).
+    #[serde(default)]
+    pub potential: u8,
     pub wage: Money,
     pub years_left_on_contract: f64,
 }
@@ -68,6 +71,9 @@ pub struct Candidate {
     /// The slot he fills in a squad template (`SquadMember::natural_role`).
     pub natural_role: Role,
     pub age: i32,
+    /// The observing club's estimate of his potential.
+    #[serde(default)]
+    pub potential: u8,
     /// What the observing club thinks he is worth — or `Money(0)` if he is
     /// beyond its means and so was never appraised (`observe_as`).
     pub value: Money,
@@ -195,6 +201,9 @@ pub struct UtilityKnobs {
     /// How much better than the incumbent a candidate must look before he
     /// counts as an upgrade or an heir (§6), in ability points.
     pub upgrade_margin: u8,
+    /// How far below the starter's potential a reserve's may fall, in
+    /// potential points, before the line behind him is thin (§6).
+    pub role_quality_margin: u8,
     /// How many of its highest-paid players a club in financial difficulty
     /// lists each window on top of the ordinary triggers (§6).
     pub distress_listings: usize,
@@ -219,6 +228,7 @@ impl Default for UtilityKnobs {
             squad_pressure_exponent: 1.5,
             squad_pressure_max_listings: 5,
             upgrade_margin: 2,
+            role_quality_margin: 5,
             distress_listings: 2,
         }
     }
@@ -236,6 +246,10 @@ pub enum Need {
     /// Younger than a declining starter and already better than what he
     /// is projected to become.
     Heir,
+    /// Better than a starter nobody in the squad could replace.
+    StrongerStarter,
+    /// A young reserve for a starter nobody in the squad could replace.
+    NewReserve,
 }
 
 /// Why a club would list one of its own players (`TRANSFER_MODEL.md` §6).
@@ -345,12 +359,13 @@ impl UtilityPolicy {
         if squad_is_short && held < Self::template_count(c.natural_role) {
             return Some(Need::Depth);
         }
-        let Some(starter) = obs
-            .squad
-            .iter()
-            .filter(|m| m.role == c.role)
-            .max_by_key(|m| m.current_ca)
-        else {
+        let mut line: Vec<&SquadMember> = obs.squad.iter().filter(|m| m.role == c.role).collect();
+        line.sort_by(|a, b| {
+            b.current_ca
+                .cmp(&a.current_ca)
+                .then(a.player.cmp(&b.player))
+        });
+        let Some((&starter, behind)) = line.split_first() else {
             return squad_is_short.then_some(Need::Depth);
         };
         let target = self.target_ca(obs.reputation);
@@ -358,11 +373,27 @@ impl UtilityPolicy {
         if (starter.current_ca as f64) < target && beats(starter.current_ca) {
             return Some(Need::Upgrade);
         }
-        let heir = starter.projected_ca < starter.current_ca
-            && (starter.projected_ca as f64) < target
-            && c.age < starter.age
-            && beats(starter.projected_ca);
-        heir.then_some(Need::Heir)
+        let could_succeed = c.age < starter.age && beats(starter.projected_ca);
+        let declining =
+            starter.projected_ca < starter.current_ca && (starter.projected_ca as f64) < target;
+        if declining && could_succeed {
+            return Some(Need::Heir);
+        }
+
+        let margin = self.knobs.role_quality_margin;
+        let reserve = behind.first();
+        let thin = reserve.is_none_or(|r| r.potential.saturating_add(margin) < starter.potential);
+        let successor = behind.iter().any(|m| {
+            m.age < starter.age && m.potential.saturating_add(margin) >= starter.potential
+        });
+        if !thin || successor {
+            return None;
+        }
+        if beats(starter.current_ca) {
+            return Some(Need::StrongerStarter);
+        }
+        let beats_reserve = reserve.is_none_or(|r| c.ca > r.current_ca);
+        (could_succeed && beats_reserve).then_some(Need::NewReserve)
     }
 
     pub fn fills_need(&self, obs: &ClubObservation, c: &Candidate) -> bool {
@@ -760,6 +791,7 @@ pub(crate) fn squad_members(
                 age: p.age(today),
                 current_ca,
                 projected_ca,
+                potential: seen.player(pid).character.potential,
                 wage,
                 years_left_on_contract,
             }
@@ -819,6 +851,7 @@ pub fn observe_as(
                 ca,
                 natural_role: p.natural_role,
                 age: p.age(today),
+                potential: seen.player(p.id).character.potential,
                 value,
                 asking_price,
                 wage,
@@ -860,6 +893,7 @@ mod tests {
             age: 25,
             current_ca,
             projected_ca,
+            potential: current_ca.max(projected_ca),
             wage: Money(500_000),
             years_left_on_contract: 3.0,
         }
@@ -882,6 +916,7 @@ mod tests {
             ca,
             natural_role: role,
             age: 25,
+            potential: ca,
             value: Money(value),
             asking_price: Money(asking_price),
             wage: Money(wage),
@@ -980,6 +1015,63 @@ mod tests {
         let mut older = striker(target - 10 + margin);
         older.age = 33;
         assert!(!policy.fills_need(&ageing, &older), "an heir is younger");
+    }
+
+    /// Strikers behind an excellent starter, at a club whose target every
+    /// starter already meets, so no weak-starter upgrade can fire.
+    fn thin_line(reserve_potential: u8, third: (i32, u8)) -> ClubObservation {
+        let mut obs = baseline_observation();
+        obs.reputation = 1;
+        obs.squad.retain(|m| m.natural_role != Role::St);
+        let mut starter = member(9100, Role::St, Role::St, 70, 60);
+        starter.age = 28;
+        starter.potential = 80;
+        let mut reserve = member(9101, Role::St, Role::St, 60, 60);
+        reserve.age = 26;
+        reserve.potential = reserve_potential;
+        let mut extra = member(9102, Role::St, Role::St, 55, 55);
+        (extra.age, extra.potential) = third;
+        obs.squad.extend([starter, reserve, extra]);
+        obs
+    }
+
+    #[test]
+    fn a_thin_line_wants_a_stronger_starter_or_a_young_reserve() {
+        let policy = UtilityPolicy::default();
+        let obs = thin_line(65, (30, 60));
+        let striker = |ca: u8, age: i32| {
+            let mut c = candidate(9001, None, Role::St, ca, 5_000_000, 1_000_000, 100_000);
+            c.age = age;
+            c
+        };
+        assert_eq!(
+            policy.need_filled(&obs, &striker(72, 30)),
+            Some(Need::StrongerStarter)
+        );
+        assert_eq!(
+            policy.need_filled(&obs, &striker(62, 20)),
+            Some(Need::NewReserve)
+        );
+        assert_eq!(
+            policy.need_filled(&obs, &striker(58, 20)),
+            None,
+            "a new reserve must beat the one he replaces"
+        );
+        assert_eq!(
+            policy.need_filled(&obs, &striker(62, 29)),
+            None,
+            "a new reserve is younger than the starter"
+        );
+    }
+
+    #[test]
+    fn a_line_with_a_successor_or_a_strong_reserve_is_not_thin() {
+        let policy = UtilityPolicy::default();
+        let stronger = candidate(9001, None, Role::St, 72, 5_000_000, 1_000_000, 100_000);
+        let with_successor = thin_line(65, (21, 78));
+        assert_eq!(policy.need_filled(&with_successor, &stronger), None);
+        let strong_reserve = thin_line(76, (30, 60));
+        assert_eq!(policy.need_filled(&strong_reserve, &stronger), None);
     }
 
     #[test]

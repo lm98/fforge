@@ -2,15 +2,15 @@
  Pos Name                  CA  Cond Cards  Status
  FB  Matteo Greco          71  100% 4Y     Fit
  AM  Ousmane Mensah        71  100%        Fit
- CB  Harry Mori            70  100% 4Y     Fit
- CM  Pietro Fontana        70  100% 3Y     Fit
- CB  Rafael Ward           70  100% 4Y     Fit
- CM  Ousmane Gallo         68  100% 4Y     Fit
- DM  Sandro Kovac          67  100% 4Y     Fit
- FB  Tommaso Vitale        67  100% 1Y     Fit
+ CB  Harry Mori            70  100% 6Y     Fit
+ CM  Pietro Fontana        70  100%        Fit
+ CB  Rafael Ward           70  100% 3Y     Fit
+ CM  Ousmane Gallo         68  100% 6Y     Fit
+ DM  Sandro Kovac          67  100% 2Y     Fit
+ FB  Tommaso Vitale        67  100% 2Y     Fit
  GK  Dario Mori            66  100%        Fit
- W   Sandro Mensah         66  100% 2Y     Fit
- W   Pedro Diallo          65  100% 2Y     Fit
+ W   Sandro Mensah         66  100% 1Y     Fit
+ W   Pedro Diallo          65  100%        Fit
  FB  Owen Morales          64  100%        Fit
  DM  Bruno Ferrari         63  100%        Fit
  FB  Karl Barbieri         63  100%        Fit

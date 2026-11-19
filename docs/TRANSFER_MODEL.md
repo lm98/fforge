@@ -404,6 +404,34 @@ Under fog an upgrade is judged on what the club sees, so some are not upgrades a
 intended source of a flop: the club learns it a season later and the player is then the one it
 least wants to keep.
 
+**The line behind the starter** (amended after §11.1). The need test as first written asks only
+whether the starter is good enough today or about to decline. It does not ask whether anyone could
+replace him, so a club with an excellent starter and nobody of his class behind him never buys. The
+upgrade need now has two paths:
+
+- **(i) a weak starter**, as above: the starter is under the club's target and the candidate is at
+  least `upgrade_margin` better than him;
+- **(ii) a thin line**: the starter's reserve, the second-best player in the role, has potential
+  more than `role_quality_margin` below the starter's, and no squad player in the role is a
+  **suitable successor**: younger than the starter with potential within `role_quality_margin` of
+  his. A role with no reserve has a thin line. Either of two candidates fills it:
+  - **a stronger starter**: at least `upgrade_margin` better than the present one, who becomes the
+    reserve;
+  - **a new reserve**: younger than the starter, already at least `upgrade_margin` better than what
+    the starter is projected to become (the succession test, without its requirement that the
+    starter be declining), and better today than the reserve he replaces.
+
+Potential is the club's own estimate of its players and of the candidate (§5 fog); it never reads a
+true potential. Either signing takes the role over its template, and §6's surplus trigger then lists
+the player the club least wants to keep there. Where the role holds two that is the old reserve;
+where it holds more, it can be the weakest of them instead. The tags are `Need::Upgrade` for (i),
+`Need::StrongerStarter` and `Need::NewReserve` for (ii), and `Need::Heir` for succession.
+
+*Prediction, written before the run*, against §7.1's reading: arrivals per club per season rise by
+1 to 3; the share of signings resold within a year stays under 25%, because the new needs are
+standing needs rather than the depth loop of §6; the median fee rises, since (ii) buys players
+better than a starter; and `NewReserve` signings are younger than any other kind.
+
 **A club in financial difficulty sells to get out of it.** Difficulty is a negative balance or
 committed wages over the wage budget. Such a club lists up to `distress_listings` of its
 highest-paid players each window on top of the ordinary triggers, still inside the squad and

@@ -1409,6 +1409,8 @@ fn need_label(need: Option<Need>) -> &'static str {
         Some(Need::Depth) => "depth",
         Some(Need::Upgrade) => "upgrade",
         Some(Need::Heir) => "heir",
+        Some(Need::StrongerStarter) => "stronger",
+        Some(Need::NewReserve) => "new reserve",
         None => "unexplained",
     }
 }
