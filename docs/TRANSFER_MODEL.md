@@ -349,6 +349,62 @@ Suggested namespaces, following the existing `"MATC"` / `"DEVE"` convention:
 `FINANCE_STREAM_NS = 0x4649_4E41_0000_0000` (`"FINA"`),
 `YOUTH_STREAM_NS = 0x594F_5554_0000_0000` (`"YOUT"`).
 
+### 5.1 Offers and counter-offers
+
+Through Phase 4 a bid was the asking price and a listing was the only way onto the market. A club
+now **negotiates**, and **any player under contract can be bid for**; listing him only lowers what
+his club will take. The rounds of the loop above are the steps of every negotiation at once, so
+the market stays simultaneous: a rival can come in and outbid a club that is still haggling.
+
+**A buyer** values the target at `V_b` (its own, fogged) and holds two prices for him, both inside
+`[0.65·V_b, V_b]`:
+
+- a **walk-away price** `R = V_b · (0.80 + 0.20·u)`, where the urgency `u` in `[0, 1]` is the
+  mean of three terms: how pressing the need is (by its kind: cover 1.0, depth and weak-starter
+  upgrade 0.6, heir 0.5, stronger starter 0.4, new reserve 0.3); how scarce the alternatives are,
+  `1 / (1 + n/3)` for `n` other affordable candidates that fill a need in the same role; and how
+  much money it has, `min(1, spendable / 4·V_b)`. No more than its spendable cash;
+- an **opening offer** halfway from `0.65·V_b` to `R`, or the asking price if that is lower and
+  still at least `0.65·V_b`.
+
+Answering a counter `C`: accept if `C ≤ R`; otherwise move halfway from its last offer towards
+`min(C, R)`; walk away, definitively, if that moves it by less than 1% of `V_b`.
+
+**A seller** values its player at `V_s` and never counters above it. It holds a **floor**: `0.80·V_s`
+for a player it listed this round, `V_s` for one it did not, each times `0.85` while the club is in
+financial difficulty (§6). An unlisted **starter** (the best in his role) who cannot be replaced is
+**not for sale**, unless the club is in difficulty. He can be replaced if a squad player in his role
+is within `upgrade_margin` of him, or if the market offers one who is, priced under the offer on
+the table; that sale is the club cashing in a surplus it can reinvest.
+
+Each round it sees every offer for the player together, ranked by amount, buyer reputation, then
+`ClubId`:
+
+- the best offer at or above the floor goes to the player-consent step, and the rest are outbid;
+- an offer under `0.65·V_s`, or any offer for a player not for sale, is **declined definitively**:
+  that buyer may not bid for him again this window;
+- otherwise every remaining bidder receives one **counter**: `V_s` the first time, then halfway
+  from the last counter towards the best offer, never under the floor.
+
+A negotiation that has gone four counters without agreement ends as a definitive decline. A club
+whose negotiation ends, either way, opens on its next-ranked target in the following round, which
+is how it looks for an alternative while the window is open. The window runs up to `MAX_ROUNDS =
+24` rounds, up from 12, to leave room for that.
+
+**The human seat pre-commits its limits** (§10). A `Bid` carries the opening `price` and a
+`max_price`, the walk-away; a `List` carries a `min_fee`, the floor. A human's unlisted player is
+not for sale, so a human who says nothing sells nothing. Both new fields default to the old
+meaning, so old logs replay: `max_price` to `price`, `min_fee` to the listed floor.
+
+**A free agent** has no club to negotiate with: the bid is his wage, and he goes straight to consent.
+
+*Predictions, written before the run*, against §6's thin-line reading: arrivals per club per season
+rise by at least 1, because starters and squad players who were never listed now reach the market;
+the median fee falls, since a listed player now goes for 0.80–0.95 of his club's valuation where he
+went for 0.95; resale within a year stays under 25%; a club that cannot keep its starter loses
+him only to a replacement it can buy or to financial difficulty, so the points-Gini does not rise;
+the window takes no more than twice as long to resolve.
+
 ---
 
 ## 6. Club decision policy
@@ -417,15 +473,24 @@ upgrade need now has two paths:
   his. A role with no reserve has a thin line. Either of two candidates fills it:
   - **a stronger starter**: at least `upgrade_margin` better than the present one, who becomes the
     reserve;
-  - **a new reserve**: younger than the starter, already at least `upgrade_margin` better than what
-    the starter is projected to become (the succession test, without its requirement that the
-    starter be declining), and better today than the reserve he replaces.
+  - **a new reserve**: a suitable successor himself (younger than the starter, potential within
+    `role_quality_margin` of his) and better today than the reserve he replaces.
 
 Potential is the club's own estimate of its players and of the candidate (§5 fog); it never reads a
 true potential. Either signing takes the role over its template, and §6's surplus trigger then lists
 the player the club least wants to keep there. Where the role holds two that is the old reserve;
 where it holds more, it can be the weakest of them instead. The tags are `Need::Upgrade` for (i),
 `Need::StrongerStarter` and `Need::NewReserve` for (ii), and `Need::Heir` for succession.
+
+*The first version* asked a new reserve to pass the succession test instead: already at least
+`upgrade_margin` better than what the starter is projected to become. For a starter in his prime
+that is roughly the starter himself, so it almost never fired. Probed across six fresh worlds, 46
+roles had a thin line and no successor, and 3 candidates in the whole market qualified as a new
+reserve, none of them affordable; read over 24 seeds × 15 seasons it bought 3 new reserves and 54
+stronger starters out of 20,046 signings, and arrivals did not move (5.61 → 5.59). The rule now
+asks for what the line is missing, a successor; the same probe finds 99 qualifying candidates, 45
+of them affordable. The stronger-starter path is unchanged: 64 qualify, 4 affordable, because a
+player better than a starter who already meets his club's target is expensive.
 
 *Prediction, written before the run*, against §7.1's reading: arrivals per club per season rise by
 1 to 3; the share of signings resold within a year stays under 25%, because the new needs are
@@ -624,6 +689,29 @@ filed gap (`BACKLOG.md` §5), not a design choice. A human who wants a player go
 season rise from about 1.2 to 2–4, still under §11.1's 4–8 band; mean contract years left in the
 late seasons rises into 1.8–3.5; mean tenure falls but stays above its band; the free-agent pool
 stays bounded, since an unsigned veteran retires after a season (§8.2).
+
+*Reading* (24 seeds × 15 seasons, fogged, per-seed sd in brackets; "before" is §11.1's table):
+
+| Row | Before | After | Prediction | Band |
+|---|---|---|---|---|
+| Players released per season | 0 | 81.0 (2.5) | 20–60 — **refuted**, higher | non-zero |
+| Free share of arrivals | 0% | 48.1% (2.5) | 20–45% — **refuted**, just over | 20–45% |
+| Arrivals per club per season | 1.20 | **5.61** (0.22) | 2–4 — **refuted**, higher | 4–8 |
+| Mean contract years left, late | 0.32 | 1.71 (0.02) | 1.8–3.5 — **refuted**, just under | 1.8–3.5 |
+| Mean tenure, late | 8.63 | **3.40** (0.18) | falls, stays above band — **refuted**, in band | 2.3–3.8 |
+| Contracts renewed per season | 0 | 52.2 (3.0) | not predicted | — |
+| Signings resold within a year | 19.0% | 25.6% (2.8) | not predicted | under 20% |
+| Points-Gini, late | 0.177 | 0.135 | not predicted | stable |
+| Top-3 share of the top-20 players, late | 0.47 | 0.38 | not predicted | bounded |
+
+Expiry did more than any change before it: arrivals land inside the real-league band, and so
+does tenure. Most of the new arrivals are free agents a rival let go, which is why the free share
+overshoots and the median fee (zeros included) falls to 0.17M. The prediction underrated how many
+contracts end unrenewed, 81 a season against 52 renewed. Three things stop a renewal (the
+player is not worth it, the wage does not fit, or he refuses), and this reading cannot say which
+stops most. Talent disperses more:
+the top three clubs hold fewer of the best players, and the table is more even. Squads now touch
+`squad_min` (18.5 at the lowest), which is the expiry stabilizer doing its job.
 
 ---
 

@@ -13,7 +13,9 @@
 //! (`ok`, `fee`, `wage`, `both`), which colour alone could not say anyway.
 
 use crate::Observers;
-use crate::input::{prompt_choice, prompt_money, prompt_number, read_line_or_abort};
+use crate::input::{
+    prompt_choice, prompt_money, prompt_number, prompt_optional_money, read_line_or_abort,
+};
 use crate::render::sem::{Palette, Sem};
 use crate::render::table::{Cell, Col, Table};
 use crate::render::{date, money, money_range, range};
@@ -352,17 +354,27 @@ fn add_bid(world: &World, ctx: &TransferContext, c: &Candidate, draft: &mut Vec<
         money(c.asking_price)
     );
     let Some(price) = prompt_money(
-        "Reservation price (blank = asking price, q = cancel): ",
+        "Opening offer (blank = asking price, q = cancel): ",
         Some(c.asking_price),
     ) else {
         return;
     };
+    let Some(max_price) = prompt_money(
+        "Most you will pay if they counter (blank = your offer, q = cancel): ",
+        Some(price),
+    ) else {
+        return;
+    };
+    if max_price.0 < price.0 {
+        println!("Your maximum is under your offer; using the offer as both.");
+    }
     draft.retain(|d| !matches!(d, TransferDecision::Bid { player, .. } if *player == c.player));
     draft.push(TransferDecision::Bid {
         player: c.player,
         from: c.club,
         role: c.role,
         price,
+        max_price: Some(Money(max_price.0.max(price.0))),
     });
     println!("Added to shortlist (position {}).", draft.len());
 }
@@ -397,7 +409,7 @@ fn squad_transfer_screen(
             let ask = ctx.own_asks.get(&m.player).copied().unwrap_or(Money(0));
             let listed = draft
                 .iter()
-                .any(|d| matches!(d, TransferDecision::List { player } if *player == m.player));
+                .any(|d| matches!(d, TransferDecision::List { player, .. } if *player == m.player));
             t.row_all(
                 vec![
                     Cell::new((i + 1).to_string()),
@@ -432,12 +444,17 @@ fn squad_transfer_screen(
 fn toggle_list(player: PlayerId, draft: &mut Vec<TransferDecision>) {
     if let Some(pos) = draft
         .iter()
-        .position(|d| matches!(d, TransferDecision::List { player: p } if *p == player))
+        .position(|d| matches!(d, TransferDecision::List { player: p, .. } if *p == player))
     {
         draft.remove(pos);
         println!("Removed from sell list.");
     } else {
-        draft.push(TransferDecision::List { player });
+        let Some(min_fee) = prompt_optional_money(
+            "Least you will accept (blank = the club's usual floor, q = cancel): ",
+        ) else {
+            return;
+        };
+        draft.push(TransferDecision::List { player, min_fee });
         println!("Added to sell list.");
     }
 }
@@ -486,6 +503,7 @@ fn decision_summary(world: &World, d: TransferDecision) -> String {
         TransferDecision::Bid {
             player,
             price,
+            max_price,
             role,
             from,
         } => {
@@ -494,15 +512,22 @@ fn decision_summary(world: &World, d: TransferDecision) -> String {
                 Some(cid) => world.club(cid).name.clone(),
                 None => "a free agent".to_string(),
             };
+            let ceiling = match max_price {
+                Some(max) if max != price => format!(", up to {}", money(max)),
+                _ => String::new(),
+            };
             format!(
-                "Bid {} for {} ({}, from {owner})",
+                "Bid {}{ceiling} for {} ({}, from {owner})",
                 money(price),
                 p.name,
                 role.short().trim()
             )
         }
-        TransferDecision::List { player } => {
-            format!("List {} for sale", world.player(player).name)
+        TransferDecision::List { player, min_fee } => {
+            let floor = min_fee.map_or(String::new(), |m| {
+                format!(", for no less than {}", money(m))
+            });
+            format!("List {} for sale{floor}", world.player(player).name)
         }
     }
 }

@@ -994,7 +994,7 @@ mod transfer_event_tests {
         let (mut log, state) = base_log(31);
         let club = ClubId(0);
         let target = state.world.club(club).players[0];
-        let decisions = vec![TransferDecision::List { player: target }];
+        let decisions = vec![TransferDecision::list(target)];
 
         log.push(Event::TransferDecisionSubmitted {
             date: state.date,
@@ -1057,7 +1057,7 @@ mod transfer_event_tests {
             log.push(Event::TransferDecisionSubmitted {
                 date: state.date,
                 club,
-                decisions: vec![TransferDecision::List { player }],
+                decisions: vec![TransferDecision::list(player)],
             });
         }
         let submitted = GameState::replay(&log);
@@ -1082,17 +1082,17 @@ mod transfer_event_tests {
         log.push(Event::TransferDecisionSubmitted {
             date: state.date,
             club,
-            decisions: vec![TransferDecision::List { player: squad[0] }],
+            decisions: vec![TransferDecision::list(squad[0])],
         });
         log.push(Event::TransferDecisionSubmitted {
             date: state.date,
             club,
-            decisions: vec![TransferDecision::List { player: squad[1] }],
+            decisions: vec![TransferDecision::list(squad[1])],
         });
         let replayed = GameState::replay(&log);
         assert_eq!(
             replayed.pending_transfer_plan(club),
-            vec![TransferDecision::List { player: squad[1] }],
+            vec![TransferDecision::list(squad[1])],
             "the latest submission must replace, not accumulate onto, the prior one"
         );
     }

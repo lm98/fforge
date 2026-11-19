@@ -62,8 +62,9 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
 | `condition` | the pure condition/recovery law; `GameState::condition` is its only caller |
 | `development` | `DevKnobs`, the age envelope, `tick_changes`, `attr_rate`, `phys_lmax`, `apply_attr_step` |
 | `valuation` | `value`/`value_all`, `project_ca*`, `ValueKnobs`, `MarketContext` — prices, never decides |
-| `club_ai` | the `ClubPolicy` trait (`ClubObservation` in, `TransferDecision`s out), `UtilityPolicy` for AI clubs, `RecordedPolicy` replaying the human's pre-committed plan |
-| `market` | `resolve_window`: the deferred-acceptance clearing loop; `WindowView`, the window's frozen picture of what every club believes and asks; window dates |
+| `club_ai` | the `ClubPolicy` trait (`ClubObservation` in, `TransferDecision`s and `SellingTerms` out), `UtilityPolicy` for AI clubs (needs, offer prices, listings, renewals), `RecordedPolicy` replaying the human's pre-committed plan and limits |
+| `market` | `resolve_window`: the clearing loop, whose rounds are the steps of every negotiation at once (`TRANSFER_MODEL.md` §5.1); `WindowView`, the window's frozen picture of what every club believes and asks; window dates |
+| `contracts` | renewal and expiry at each window, before the clearing loop (`TRANSFER_MODEL.md` §7.1) |
 | `finance` | `finance_deltas`, `FinanceKnobs` |
 | `pool` | youth intake and retirement at the summer window, `PoolKnobs` |
 
@@ -87,6 +88,12 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   heir), and a squad at or over the template's headcount has no depth need. `need()` alone is
   positive almost everywhere and filters nothing. A new buying rule goes through `need_filled`,
   so `fforge-harness` can still say why every transfer happened.
+- **Any player under contract can be bid for; listing only lowers his price.** Whether a club
+  sells is `ClubPolicy::selling_terms`, per seat: the AI decides by its floor rules, the human's
+  `RecordedPolicy` sells only what he listed. A free agent costs no fee (`club_ai::posted_ask`,
+  the one place a posted price is set).
+- **Contracts end.** `contracts::window_contract_events` renews or releases at every window, and
+  respects `squad_min` and the two-goalkeeper rule by extending instead of releasing.
 - **A player moves at most once per window**, enforced in `market::resolve_window`, not in any
   policy (`TRANSFER_MODEL.md` §5 step 4). Policies are memoryless across clearing rounds; before
   this rule a signing was re-listed the round after he arrived and passed down the league.

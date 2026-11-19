@@ -350,9 +350,11 @@ pub struct Exit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Departure {
     Listed(ListTrigger),
-    /// Sold, but the seller's policy names no trigger for it (see
-    /// `explain_window`).
-    SoldUnexplained,
+    /// Sold without being listed: the seller took an offer for a player it
+    /// had not put up for sale (`TRANSFER_MODEL.md` §5.1), or, rarely, one
+    /// whose listing an earlier transfer that round had already cleared
+    /// (`explain_window`).
+    SoldUnlisted,
     Released,
 }
 
@@ -361,7 +363,7 @@ impl Exit {
         match (self.resale_fee, self.listed_as) {
             (None, _) => Departure::Released,
             (Some(_), Some(trigger)) => Departure::Listed(trigger),
-            (Some(_), None) => Departure::SoldUnexplained,
+            (Some(_), None) => Departure::SoldUnlisted,
         }
     }
 }
@@ -1421,7 +1423,7 @@ fn departure_label(departure: Departure) -> &'static str {
         Departure::Listed(ListTrigger::Expiring) => "expiring",
         Departure::Listed(ListTrigger::SquadPressure) => "pressure",
         Departure::Listed(ListTrigger::Distress) => "distress",
-        Departure::SoldUnexplained => "unexplained",
+        Departure::SoldUnlisted => "unlisted",
         Departure::Released => "released",
     }
 }

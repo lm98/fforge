@@ -72,8 +72,10 @@ pub enum CommandError {
     UnknownPlayer(PlayerId),
     /// A `Bid` names a player already on the submitting club's own books.
     AlreadyOwned(PlayerId),
-    /// A `Bid`'s reservation price is negative.
+    /// A `Bid`'s offer or a `List`'s minimum fee is negative.
     NegativePrice(PlayerId),
+    /// A `Bid`'s walk-away price is under its opening offer.
+    MaximumUnderOffer(PlayerId),
     /// A lineup's bench exceeds `fforge_domain::BENCH_SIZE`
     /// (`MATCH_MODEL.md` §16, T12).
     BenchTooLarge,
@@ -96,7 +98,13 @@ impl fmt::Display for CommandError {
             CommandError::UnknownPlayer(p) => write!(f, "player {p} does not exist"),
             CommandError::AlreadyOwned(p) => write!(f, "player {p} is already on your books"),
             CommandError::NegativePrice(p) => {
-                write!(f, "player {p}'s reservation price cannot be negative")
+                write!(f, "a price for player {p} cannot be negative")
+            }
+            CommandError::MaximumUnderOffer(p) => {
+                write!(
+                    f,
+                    "the most you will pay for player {p} is under your offer"
+                )
             }
             CommandError::BenchTooLarge => write!(f, "the bench cannot exceed {BENCH_SIZE}"),
             CommandError::UnknownSubPlanPlayer(p) => write!(
@@ -173,7 +181,12 @@ fn validate_transfer_decisions(
     let squad = &state.world.club(club).players;
     for d in decisions {
         match *d {
-            TransferDecision::Bid { player, price, .. } => {
+            TransferDecision::Bid {
+                player,
+                price,
+                max_price,
+                ..
+            } => {
                 if !state.world.players.contains_key(&player) {
                     return Err(CommandError::UnknownPlayer(player));
                 }
@@ -183,8 +196,14 @@ fn validate_transfer_decisions(
                 if price.0 < 0 {
                     return Err(CommandError::NegativePrice(player));
                 }
+                if max_price.is_some_and(|max| max.0 < price.0) {
+                    return Err(CommandError::MaximumUnderOffer(player));
+                }
             }
-            TransferDecision::List { player } => {
+            TransferDecision::List { player, min_fee } => {
+                if min_fee.is_some_and(|m| m.0 < 0) {
+                    return Err(CommandError::NegativePrice(player));
+                }
                 if !state.world.players.contains_key(&player) {
                     return Err(CommandError::UnknownPlayer(player));
                 }
@@ -861,6 +880,7 @@ mod transfer_decision_tests {
         let (_, state) = base_log(1);
         let decisions = vec![TransferDecision::List {
             player: PlayerId(999_999),
+            min_fee: None,
         }];
         assert_eq!(
             step(
@@ -883,6 +903,7 @@ mod transfer_decision_tests {
             from: None,
             role: Role::St,
             price: Money(1),
+            max_price: None,
         }];
         assert_eq!(
             step(
@@ -913,6 +934,7 @@ mod transfer_decision_tests {
             from: Some(other_club),
             role: Role::St,
             price: Money(-1),
+            max_price: None,
         }];
         assert_eq!(
             step(
@@ -938,7 +960,7 @@ mod transfer_decision_tests {
             .find(|&c| c != state.player_club)
             .expect("more than one club");
         let not_mine = state.world.club(other_club).players[0];
-        let decisions = vec![TransferDecision::List { player: not_mine }];
+        let decisions = vec![TransferDecision::list(not_mine)];
         assert_eq!(
             step(
                 &state,
@@ -955,7 +977,7 @@ mod transfer_decision_tests {
     fn a_valid_plan_is_recorded_pending_and_cleared_once_its_window_closes() {
         let (mut log, mut state) = base_log(5);
         let mine = state.world.club(state.player_club).players[0];
-        let decisions = vec![TransferDecision::List { player: mine }];
+        let decisions = vec![TransferDecision::list(mine)];
 
         let submitted_at = state.date;
         let club = state.player_club;
@@ -1007,7 +1029,7 @@ mod transfer_decision_tests {
             &mut log,
             Command::SubmitTransferDecision {
                 club,
-                decisions: vec![TransferDecision::List { player: mine }],
+                decisions: vec![TransferDecision::list(mine)],
             },
         );
         loop {

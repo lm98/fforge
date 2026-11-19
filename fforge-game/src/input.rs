@@ -113,6 +113,25 @@ pub fn prompt_money(prompt: &str, default: Option<Money>) -> Option<Money> {
     }
 }
 
+/// Like [`prompt_money`], but blank means "no amount": `Some(None)`.
+/// `None` is a cancel.
+pub fn prompt_optional_money(prompt: &str) -> Option<Option<Money>> {
+    loop {
+        let input = read_line(prompt)?;
+        let trimmed = input.trim();
+        if trimmed == "q" {
+            return None;
+        }
+        if trimmed.is_empty() {
+            return Some(None);
+        }
+        match trimmed.parse::<i64>() {
+            Ok(n) if n >= 0 => return Some(Some(Money(n))),
+            _ => println!("Enter a non-negative whole number, blank for none, or 'q' to cancel."),
+        }
+    }
+}
+
 /// The new-game seed prompt. Blank falls back to the wall clock — one of this
 /// crate's two sanctioned clock reads, and safe because the chosen seed is
 /// immediately recorded in `Event::GameStarted`, so replay never re-derives it.

@@ -232,6 +232,9 @@ impl NewsRenderer for TemplateRenderer {
                 let why = match reason {
                     RejectReason::Outranked => "was outbid",
                     RejectReason::PlayerRefused => "was turned down by the player",
+                    RejectReason::SellerDeclined => "was rejected by his club",
+                    RejectReason::NotForSale => "was refused: he is not for sale",
+                    RejectReason::BuyerWithdrew => "was withdrawn when his club asked for more",
                 };
                 format!("{club}'s {price} bid for {name} {why}.")
             }

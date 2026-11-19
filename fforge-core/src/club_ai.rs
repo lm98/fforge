@@ -52,6 +52,9 @@ pub struct SquadMember {
     /// The club's own estimate of his potential (`AGENT_MODEL.md` §5).
     #[serde(default)]
     pub potential: u8,
+    /// What the club thinks he is worth; zero where no valuation was asked
+    /// for (`contracts`).
+    pub value: Money,
     pub wage: Money,
     pub years_left_on_contract: f64,
 }
@@ -129,6 +132,30 @@ fn within_means(
 /// Gym-shaped seam (§6.1) `ai_pick_lineup`'s doc comment anticipated.
 pub trait ClubPolicy {
     fn transfer_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision>;
+
+    /// What the club will take for one of its players (§5.1), or `None` if
+    /// he is not for sale. `listing` is `Some(min_fee)` when the club listed
+    /// him this round; `offer` is the best offer on the table, against which
+    /// a club weighs what a replacement would cost.
+    fn selling_terms(
+        &self,
+        obs: &ClubObservation,
+        player: PlayerId,
+        listing: Option<Option<Money>>,
+        offer: Money,
+    ) -> Option<SellingTerms>;
+}
+
+/// A seller's side of a negotiation (§5.1): it takes any offer at or above
+/// `floor` and never counters above `ceiling`, its own valuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SellingTerms {
+    pub floor: Money,
+    pub ceiling: Money,
+}
+
+fn share_of(value: Money, share: f64) -> Money {
+    Money((value.0 as f64 * share).round() as i64)
 }
 
 /// `UtilityPolicy`'s knob table (`TRANSFER_MODEL.md` §6, §9): a
@@ -204,6 +231,23 @@ pub struct UtilityKnobs {
     /// How far below the starter's potential a reserve's may fall, in
     /// potential points, before the line behind him is thin (§6).
     pub role_quality_margin: u8,
+    // --- negotiation (§5.1) ---
+    /// No offer below this share of the bidder's own valuation.
+    pub offer_floor_share: f64,
+    /// A buyer's walk-away price at zero urgency, as a share of its
+    /// valuation; full urgency raises it to the whole valuation.
+    pub walk_away_base: f64,
+    /// Where between the offer floor and the walk-away price a buyer opens.
+    pub opening_share: f64,
+    /// How far each side moves towards the other's last price per round.
+    pub concession: f64,
+    /// A seller's floor for a player it has listed, as a share of its
+    /// valuation.
+    pub listed_floor: f64,
+    /// The factor on a seller's floor while it is in financial difficulty.
+    pub distress_floor: f64,
+    /// Counters a negotiation may run to before it is called off.
+    pub max_counters: u8,
     /// How many of its highest-paid players a club in financial difficulty
     /// lists each window on top of the ordinary triggers (§6).
     pub distress_listings: usize,
@@ -229,6 +273,13 @@ impl Default for UtilityKnobs {
             squad_pressure_max_listings: 5,
             upgrade_margin: 2,
             role_quality_margin: 5,
+            offer_floor_share: 0.65,
+            walk_away_base: 0.80,
+            opening_share: 0.5,
+            concession: 0.5,
+            listed_floor: 0.80,
+            distress_floor: 0.85,
+            max_counters: 4,
             distress_listings: 2,
         }
     }
@@ -250,6 +301,19 @@ pub enum Need {
     StrongerStarter,
     /// A young reserve for a starter nobody in the squad could replace.
     NewReserve,
+}
+
+impl Need {
+    /// How pressing the need is, for a buyer's walk-away price (§5.1).
+    pub fn urgency(self) -> f64 {
+        match self {
+            Need::Cover => 1.0,
+            Need::Depth | Need::Upgrade => 0.6,
+            Need::Heir => 0.5,
+            Need::StrongerStarter => 0.4,
+            Need::NewReserve => 0.3,
+        }
+    }
 }
 
 /// Why a club would list one of its own players (`TRANSFER_MODEL.md` §6).
@@ -392,8 +456,10 @@ impl UtilityPolicy {
         if beats(starter.current_ca) {
             return Some(Need::StrongerStarter);
         }
+        let successor_class =
+            c.age < starter.age && c.potential.saturating_add(margin) >= starter.potential;
         let beats_reserve = reserve.is_none_or(|r| c.ca > r.current_ca);
-        (could_succeed && beats_reserve).then_some(Need::NewReserve)
+        (successor_class && beats_reserve).then_some(Need::NewReserve)
     }
 
     pub fn fills_need(&self, obs: &ClubObservation, c: &Candidate) -> bool {
@@ -473,24 +539,22 @@ impl UtilityPolicy {
         let needs = self.needs(obs);
         let violations = self.hard_minimum_violations(obs);
 
-        let mut scored: Vec<(bool, f64, &Candidate)> = obs
+        let mut scored: Vec<(bool, f64, &Candidate, Need)> = obs
             .candidates
             .iter()
             .filter(|c| obs.within_means(c.asking_price, c.wage, &self.knobs))
             .filter_map(|c| {
                 let surplus = (c.value.0 - c.asking_price.0) as f64;
                 if violations.contains(&c.role) {
-                    return Some((true, surplus, c));
+                    return Some((true, surplus, c, Need::Cover));
                 }
-                if !self.fills_need(obs, c) {
-                    return None;
-                }
+                let kind = self.need_filled(obs, c)?;
                 let need = *needs.get(&c.role)?;
                 if need <= 0.0 {
                     return None;
                 }
                 let utility = need * surplus;
-                (utility > 0.0).then_some((false, utility, c))
+                (utility > 0.0).then_some((false, utility, c, kind))
             })
             .collect();
         // Deterministic: override candidates first, then utility (or, within
@@ -502,15 +566,60 @@ impl UtilityPolicy {
                 .then_with(|| a.2.player.cmp(&b.2.player))
         });
 
+        let mut per_role: BTreeMap<Role, usize> = BTreeMap::new();
+        for (_, _, c, _) in &scored {
+            *per_role.entry(c.role).or_default() += 1;
+        }
         scored
-            .into_iter()
-            .map(|(_, _, c)| TransferDecision::Bid {
-                player: c.player,
-                from: c.club,
-                role: c.role,
-                price: c.asking_price,
+            .iter()
+            .map(|&(_, _, c, need)| {
+                let alternatives = per_role[&c.role] - 1;
+                let (price, max) = self.offer_prices(obs, c, need, alternatives);
+                TransferDecision::Bid {
+                    player: c.player,
+                    from: c.club,
+                    role: c.role,
+                    price,
+                    max_price: Some(max),
+                }
             })
             .collect()
+    }
+
+    /// A buyer's opening offer and walk-away price for `c` (§5.1): both
+    /// inside `[offer_floor_share, 1] · value`, the walk-away rising with
+    /// how pressing the need is, how few the alternatives, and how much
+    /// money the club has. A free agent costs no fee.
+    pub fn offer_prices(
+        &self,
+        obs: &ClubObservation,
+        c: &Candidate,
+        need: Need,
+        alternatives: usize,
+    ) -> (Money, Money) {
+        if c.club.is_none() {
+            return (Money(0), Money(0));
+        }
+        let k = &self.knobs;
+        let value = c.value.0.max(1) as f64;
+        let spendable = (obs.balance.0 - k.cash_reserve_floor.0).max(0) as f64;
+        let scarcity = 1.0 / (1.0 + alternatives as f64 / 3.0);
+        let wealth = (spendable / (4.0 * value)).min(1.0);
+        let urgency = (need.urgency() + scarcity + wealth) / 3.0;
+
+        let floor = k.offer_floor_share * value;
+        let walk_away = (value * (k.walk_away_base + (1.0 - k.walk_away_base) * urgency))
+            .min(spendable)
+            .max(floor);
+        let mut opening = floor + k.opening_share * (walk_away - floor);
+        let ask = c.asking_price.0 as f64;
+        if ask < opening {
+            opening = ask.max(floor);
+        }
+        (
+            Money(opening.round() as i64),
+            Money(walk_away.round() as i64),
+        )
     }
 
     /// Squad-size pressure (§9's open residual: squads pinning at
@@ -650,7 +759,7 @@ impl UtilityPolicy {
     fn sell_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision> {
         self.listings(obs)
             .into_iter()
-            .map(|(player, _)| TransferDecision::List { player })
+            .map(|(player, _)| TransferDecision::list(player))
             .collect()
     }
 }
@@ -660,6 +769,73 @@ impl ClubPolicy for UtilityPolicy {
         let mut decisions = self.buy_decisions(obs);
         decisions.extend(self.sell_decisions(obs));
         decisions
+    }
+
+    /// §5.1: a listed player goes for `listed_floor` of the club's
+    /// valuation, an unlisted one for all of it, and either for
+    /// `distress_floor` less while the club is in difficulty. An unlisted
+    /// starter nobody could replace is not for sale unless it is.
+    fn selling_terms(
+        &self,
+        obs: &ClubObservation,
+        player: PlayerId,
+        listing: Option<Option<Money>>,
+        offer: Money,
+    ) -> Option<SellingTerms> {
+        let k = &self.knobs;
+        let m = obs.squad.iter().find(|m| m.player == player)?;
+        let distressed = Self::in_financial_difficulty(obs);
+        let floor = match listing {
+            Some(min_fee) => min_fee.unwrap_or_else(|| share_of(m.value, k.listed_floor)),
+            None => {
+                if !distressed && self.is_irreplaceable_starter(obs, m, offer) {
+                    return None;
+                }
+                m.value
+            }
+        };
+        let floor = if distressed {
+            share_of(floor, k.distress_floor)
+        } else {
+            floor
+        };
+        Some(SellingTerms {
+            floor,
+            ceiling: Money(m.value.0.max(floor.0)),
+        })
+    }
+}
+
+impl UtilityPolicy {
+    /// The best player in his role, with nobody in the squad within
+    /// `upgrade_margin` of him and nobody on the market who is, priced under
+    /// `offer` and within the club's means (§5.1).
+    fn is_irreplaceable_starter(
+        &self,
+        obs: &ClubObservation,
+        m: &SquadMember,
+        offer: Money,
+    ) -> bool {
+        let close = |ca: u8| ca.saturating_add(self.knobs.upgrade_margin) >= m.current_ca;
+        let starter = obs
+            .squad
+            .iter()
+            .filter(|o| o.role == m.role && o.player != m.player)
+            .all(|o| o.current_ca <= m.current_ca);
+        if !starter {
+            return false;
+        }
+        let inside = obs
+            .squad
+            .iter()
+            .any(|o| o.role == m.role && o.player != m.player && close(o.current_ca));
+        let outside = obs.candidates.iter().any(|c| {
+            c.role == m.role
+                && close(c.ca)
+                && c.asking_price.0 < offer.0
+                && obs.within_means(c.asking_price, c.wage, &self.knobs)
+        });
+        !inside && !outside
     }
 }
 
@@ -675,20 +851,43 @@ impl ClubPolicy for UtilityPolicy {
 /// every club's decisions regardless of which `ClubPolicy` produced them
 /// (`market::filter_affordable`), so a submitted plan that has gone stale or
 /// unaffordable by the time its window resolves is dropped there, silently.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct RecordedPolicy {
     pub decisions: Vec<TransferDecision>,
+    pub knobs: UtilityKnobs,
 }
 
 impl RecordedPolicy {
     pub fn new(decisions: Vec<TransferDecision>) -> Self {
-        RecordedPolicy { decisions }
+        Self::with_knobs(decisions, UtilityKnobs::default())
+    }
+
+    pub fn with_knobs(decisions: Vec<TransferDecision>, knobs: UtilityKnobs) -> Self {
+        RecordedPolicy { decisions, knobs }
     }
 }
 
 impl ClubPolicy for RecordedPolicy {
     fn transfer_decisions(&self, _obs: &ClubObservation) -> Vec<TransferDecision> {
         self.decisions.clone()
+    }
+
+    /// The human sells only what he listed, for no less than his own
+    /// minimum fee, or the listed floor if he named none (§5.1).
+    fn selling_terms(
+        &self,
+        obs: &ClubObservation,
+        player: PlayerId,
+        listing: Option<Option<Money>>,
+        _offer: Money,
+    ) -> Option<SellingTerms> {
+        let min_fee = listing?;
+        let value = obs.squad.iter().find(|m| m.player == player)?.value;
+        let floor = min_fee.unwrap_or_else(|| share_of(value, self.knobs.listed_floor));
+        Some(SellingTerms {
+            floor,
+            ceiling: Money(value.0.max(floor.0)),
+        })
     }
 }
 
@@ -792,6 +991,7 @@ pub(crate) fn squad_members(
                 current_ca,
                 projected_ca,
                 potential: seen.player(pid).character.potential,
+                value: Money(0),
                 wage,
                 years_left_on_contract,
             }
@@ -822,7 +1022,10 @@ pub fn observe_as(
         asks,
     } = *market;
     let c = world.club(club);
-    let squad = squad_members(world, seen, club, today, dev);
+    let mut squad = squad_members(world, seen, club, today, dev);
+    for m in &mut squad {
+        m.value = appraise(m.player);
+    }
 
     let committed_wages: i64 = squad.iter().map(|m| m.wage.0).sum();
     let squad_set: BTreeSet<PlayerId> = c.players.iter().copied().collect();
@@ -894,6 +1097,7 @@ mod tests {
             current_ca,
             projected_ca,
             potential: current_ca.max(projected_ca),
+            value: Money(2_000_000),
             wage: Money(500_000),
             years_left_on_contract: 3.0,
         }
@@ -937,7 +1141,7 @@ mod tests {
         decisions
             .iter()
             .filter_map(|d| match d {
-                TransferDecision::List { player } => Some(*player),
+                TransferDecision::List { player, .. } => Some(*player),
                 _ => None,
             })
             .collect()
@@ -1048,17 +1252,27 @@ mod tests {
             policy.need_filled(&obs, &striker(72, 30)),
             Some(Need::StrongerStarter)
         );
+        let prospect = |ca: u8, age: i32, potential: u8| {
+            let mut c = striker(ca, age);
+            c.potential = potential;
+            c
+        };
         assert_eq!(
-            policy.need_filled(&obs, &striker(62, 20)),
+            policy.need_filled(&obs, &prospect(62, 20, 77)),
             Some(Need::NewReserve)
         );
         assert_eq!(
-            policy.need_filled(&obs, &striker(58, 20)),
+            policy.need_filled(&obs, &prospect(62, 20, 70)),
+            None,
+            "a new reserve has the potential to succeed the starter"
+        );
+        assert_eq!(
+            policy.need_filled(&obs, &prospect(58, 20, 77)),
             None,
             "a new reserve must beat the one he replaces"
         );
         assert_eq!(
-            policy.need_filled(&obs, &striker(62, 29)),
+            policy.need_filled(&obs, &prospect(62, 29, 77)),
             None,
             "a new reserve is younger than the starter"
         );
@@ -1072,6 +1286,101 @@ mod tests {
         assert_eq!(policy.need_filled(&with_successor, &stronger), None);
         let strong_reserve = thin_line(76, (30, 60));
         assert_eq!(policy.need_filled(&strong_reserve, &stronger), None);
+    }
+
+    #[test]
+    fn a_buyer_opens_and_walks_away_inside_its_own_valuation() {
+        let policy = UtilityPolicy::default();
+        let k = policy.knobs;
+        let obs = baseline_observation();
+        let target = candidate(
+            9001,
+            Some(ClubId(1)),
+            Role::St,
+            70,
+            2_000_000,
+            1_900_000,
+            100_000,
+        );
+        let mut walk_aways = Vec::new();
+        for need in [Need::Cover, Need::Depth, Need::Heir, Need::NewReserve] {
+            for alternatives in [0, 3, 30] {
+                let (open, walk) = policy.offer_prices(&obs, &target, need, alternatives);
+                let floor = (k.offer_floor_share * 2_000_000.0) as i64;
+                assert!(floor <= open.0 && open.0 <= walk.0 && walk.0 <= 2_000_000);
+                walk_aways.push(walk.0);
+            }
+        }
+        let (urgent, _) = (walk_aways[0], walk_aways[2]);
+        assert!(
+            urgent > *walk_aways.last().unwrap(),
+            "a pressing need with no alternatives pays more than a soft one with many"
+        );
+
+        let free = candidate(9002, None, Role::St, 70, 2_000_000, 0, 100_000);
+        assert_eq!(
+            policy.offer_prices(&obs, &free, Need::Depth, 0),
+            (Money(0), Money(0)),
+            "a free agent costs no fee"
+        );
+    }
+
+    #[test]
+    fn a_seller_takes_less_for_what_it_listed_and_keeps_a_starter_it_cannot_replace() {
+        let policy = UtilityPolicy::default();
+        let k = policy.knobs;
+        let obs = baseline_observation();
+        let starter = obs.squad[0].clone();
+        let value = starter.value;
+        let listed = policy
+            .selling_terms(&obs, starter.player, Some(None), value)
+            .unwrap();
+        assert_eq!(listed.floor, share_of(value, k.listed_floor));
+        assert_eq!(listed.ceiling, value);
+        let named = policy
+            .selling_terms(&obs, starter.player, Some(Some(Money(1))), value)
+            .unwrap();
+        assert_eq!(
+            named.floor,
+            Money(1),
+            "a club's own minimum fee is its floor"
+        );
+
+        let mut alone = obs.clone();
+        let role = starter.role;
+        for m in alone
+            .squad
+            .iter_mut()
+            .filter(|m| m.role == role && m.player != starter.player)
+        {
+            m.current_ca = 40;
+        }
+        assert_eq!(
+            policy.selling_terms(&alone, starter.player, None, value),
+            None,
+            "an unlisted starter with nobody to replace him is not for sale"
+        );
+        alone.balance = Money(-1);
+        let desperate = policy
+            .selling_terms(&alone, starter.player, None, value)
+            .expect("a club in difficulty sells even its starter");
+        assert_eq!(desperate.floor, share_of(value, k.distress_floor));
+    }
+
+    #[test]
+    fn the_human_sells_only_what_he_listed() {
+        let obs = baseline_observation();
+        let player = obs.squad[0].player;
+        let human = RecordedPolicy::new(Vec::new());
+        assert_eq!(
+            human.selling_terms(&obs, player, None, Money(1 << 40)),
+            None
+        );
+        let terms = human
+            .selling_terms(&obs, player, Some(Some(Money(3_000_000))), Money(0))
+            .unwrap();
+        assert_eq!(terms.floor, Money(3_000_000));
+        assert!(terms.ceiling.0 >= terms.floor.0);
     }
 
     #[test]
@@ -1233,15 +1542,10 @@ mod tests {
             .find(|d| matches!(d, TransferDecision::Bid { .. }))
             .expect("at least one bid");
         assert_eq!(
-            *top_bid,
-            TransferDecision::Bid {
-                player: PlayerId(9001),
-                from: Some(ClubId(1)),
-                role: Role::Gk,
-                price: Money(900_000),
-            },
-            "a club below its GK hard minimum must bid on a keeper first, \
-             regardless of what else its squad needs: {decisions:?}"
+            top_bid.player(),
+            PlayerId(9001),
+            "a club below its GK hard minimum must bid on a keeper first, regardless of what \
+             else its squad needs: {decisions:?}"
         );
     }
 
@@ -1311,7 +1615,7 @@ mod tests {
         let listed: BTreeSet<PlayerId> = decisions
             .iter()
             .filter_map(|d| match d {
-                TransferDecision::List { player } => Some(*player),
+                TransferDecision::List { player, .. } => Some(*player),
                 _ => None,
             })
             .collect();
@@ -1376,7 +1680,7 @@ mod tests {
 
         assert!(
             decisions.iter().all(|d| match d {
-                TransferDecision::List { player } => !cb_ids.contains(player),
+                TransferDecision::List { player, .. } => !cb_ids.contains(player),
                 _ => true,
             }),
             "an understaffed role must never be listed under squad-size pressure: {decisions:?}"
@@ -1563,12 +1867,14 @@ mod tests {
         let decisions = vec![
             TransferDecision::List {
                 player: obs.squad[0].player,
+                min_fee: None,
             },
             TransferDecision::Bid {
                 player: PlayerId(9001),
                 from: Some(ClubId(1)),
                 role: Role::St,
                 price: Money(1_000_000),
+                max_price: None,
             },
         ];
         let policy = RecordedPolicy::new(decisions.clone());

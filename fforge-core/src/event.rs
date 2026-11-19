@@ -226,6 +226,12 @@ pub struct CardOutcome {
 /// world mutation. Neither variant is itself a transfer: `Bid` is a
 /// shortlist entry for §5's (not-yet-built) clearing loop to arbitrate,
 /// `List` a listing proposal for that same loop to act on.
+///
+/// Both carry a club's pre-committed limits for the negotiation of
+/// `TRANSFER_MODEL.md` §5.1: a `Bid` opens at `price` and walks away above
+/// `max_price`, a `List` takes nothing under `min_fee`. Saves made before
+/// negotiation have neither, which reads as no room to move: `max_price` is
+/// `price`, and `min_fee` is the listed floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferDecision {
     Bid {
@@ -233,8 +239,40 @@ pub enum TransferDecision {
         from: Option<ClubId>,
         role: Role,
         price: Money,
+        #[serde(default)]
+        max_price: Option<Money>,
     },
     List {
         player: PlayerId,
+        #[serde(default)]
+        min_fee: Option<Money>,
     },
+}
+
+impl TransferDecision {
+    /// A bid with no room to move: it opens and walks away at `price`.
+    pub fn bid(player: PlayerId, from: Option<ClubId>, role: Role, price: Money) -> Self {
+        TransferDecision::Bid {
+            player,
+            from,
+            role,
+            price,
+            max_price: None,
+        }
+    }
+
+    /// A listing at the listed floor.
+    pub fn list(player: PlayerId) -> Self {
+        TransferDecision::List {
+            player,
+            min_fee: None,
+        }
+    }
+
+    /// The player this decision is about.
+    pub fn player(&self) -> PlayerId {
+        match *self {
+            TransferDecision::Bid { player, .. } | TransferDecision::List { player, .. } => player,
+        }
+    }
 }

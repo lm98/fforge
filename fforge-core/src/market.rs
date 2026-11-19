@@ -32,8 +32,8 @@
 //! means here).
 
 use crate::club_ai::{
-    self, ClubObservation, ClubPolicy, RecordedPolicy, TransferDecision, UtilityKnobs,
-    UtilityPolicy,
+    self, ClubObservation, ClubPolicy, RecordedPolicy, SellingTerms, TransferDecision,
+    UtilityKnobs, UtilityPolicy,
 };
 use crate::development::DevKnobs;
 use crate::rng::derive_stream;
@@ -47,7 +47,7 @@ use fforge_domain::{
 };
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Tag namespace for the per-window transfer-market RNG stream
 /// (`rng::derive_stream`), following the existing `"MATC"`/`"DEVE"`
@@ -59,7 +59,7 @@ pub const TRANSFER_STREAM_NS: u64 = 0x5452_414E_0000_0000; // "TRAN"
 /// construction (a bounded loop), but the doc's guarantee is that a
 /// well-behaved window reaches its own fixpoint — no bids produced — well
 /// before this fires; the cap exists for adversarial inputs.
-pub const MAX_ROUNDS: u32 = 12;
+pub const MAX_ROUNDS: u32 = 24;
 
 /// Summer window: closes this many days after `SeasonStarted` (§7).
 pub const SUMMER_WINDOW_CLOSE_DAYS: i64 = 30;
@@ -129,6 +129,13 @@ pub enum RejectReason {
     /// Reached the player-consent step and was refused (wage or buyer
     /// reputation short of the player's own threshold).
     PlayerRefused,
+    /// The selling club ended the negotiation (§5.1): a lowball offer, or
+    /// one that went too many counters without agreement.
+    SellerDeclined,
+    /// The selling club would not sell him at any price (§5.1).
+    NotForSale,
+    /// The bidder would not meet the seller's counter (§5.1).
+    BuyerWithdrew,
 }
 
 /// One non-winning bid — Trace material (`MATCH_MODEL.md` §7's pattern): the
@@ -206,7 +213,12 @@ pub fn resolve_window(
     let ai_policy = UtilityPolicy::new(*utility_knobs);
     let recorded: BTreeMap<ClubId, RecordedPolicy> = recorded_plans
         .iter()
-        .map(|(&club, plan)| (club, RecordedPolicy::new(plan.clone())))
+        .map(|(&club, plan)| {
+            (
+                club,
+                RecordedPolicy::with_knobs(plan.clone(), *utility_knobs),
+            )
+        })
         .collect();
 
     let mut work_world = world.clone();
@@ -220,10 +232,19 @@ pub fn resolve_window(
     // struck for the rest of this window. This is what actually guarantees
     // convergence well inside `MAX_ROUNDS` in practice — the cap exists for
     // truly adversarial inputs, not as the normal stopping mechanism.
-    let mut refused: BTreeMap<ClubId, std::collections::BTreeSet<PlayerId>> = BTreeMap::new();
+    let mut refused: BTreeMap<ClubId, BTreeSet<PlayerId>> = BTreeMap::new();
     // A player moves at most once per window (§5 step 4): a completed
     // transfer takes him off the market until the next one.
     let mut moved: std::collections::BTreeSet<PlayerId> = std::collections::BTreeSet::new();
+    // §5.1: every club's live negotiation, and each player's latest counter.
+    let mut talks: BTreeMap<ClubId, Talk> = BTreeMap::new();
+    let mut last_counter: BTreeMap<PlayerId, Money> = BTreeMap::new();
+    let policy_of = |club: ClubId| -> &dyn ClubPolicy {
+        match recorded.get(&club) {
+            Some(policy) => policy,
+            None => &ai_policy,
+        }
+    };
 
     for round in 0..MAX_ROUNDS {
         rounds_used = round + 1;
@@ -233,65 +254,103 @@ pub fn resolve_window(
 
         // Step 2 (§5): every club decides against the SAME round-start
         // snapshot — genuinely simultaneous, not "whoever goes first."
-        let mut listed: BTreeMap<PlayerId, ClubId> = BTreeMap::new();
+        let mut listed: BTreeMap<PlayerId, (ClubId, Option<Money>)> = BTreeMap::new();
         let mut club_decisions: Vec<(ClubId, Vec<TransferDecision>)> = Vec::new();
+        let mut observations: BTreeMap<ClubId, ClubObservation> = BTreeMap::new();
         for &club in &club_ids {
             let obs = view.observe(&work_world, club);
-            let raw_decisions = match recorded.get(&club) {
-                Some(policy) => policy.transfer_decisions(&obs),
-                None => ai_policy.transfer_decisions(&obs),
-            };
+            let raw_decisions = policy_of(club).transfer_decisions(&obs);
             let decisions = filter_affordable(&obs, &raw_decisions, utility_knobs);
             for d in &decisions {
-                if let TransferDecision::List { player } = d
-                    && !moved.contains(player)
+                if let TransferDecision::List { player, min_fee } = *d
+                    && !moved.contains(&player)
                 {
-                    listed.insert(*player, club);
+                    listed.insert(player, (club, min_fee));
                 }
             }
             club_decisions.push((club, decisions));
+            observations.insert(club, obs);
         }
 
-        // One bid per club (§5 step 2): the top-ranked decision that is
-        // actually biddable — a free agent, or a player its own club has
-        // listed this round (the supply side `club_ai::UtilityPolicy`
-        // already computed; not re-derived here).
-        let mut bids: BTreeMap<PlayerId, Vec<(ClubId, Money)>> = BTreeMap::new();
+        // §5.1 step 1: every buyer makes one move. A buyer answers the
+        // counter waiting for it; one with no live negotiation opens on its
+        // top-ranked target still on the market.
+        let mut offers: BTreeMap<PlayerId, Vec<(ClubId, Money)>> = BTreeMap::new();
         for (club, decisions) in &club_decisions {
+            let spendable =
+                work_world.club(*club).finances.balance.0 - utility_knobs.cash_reserve_floor.0;
+            if let Some(talk) = talks.get(club).copied() {
+                let still_there =
+                    !moved.contains(&talk.player) && work_world.club_of(talk.player) == talk.seller;
+                if still_there {
+                    match buyer_answer(&talk, spendable, utility_knobs) {
+                        Some(offer) => {
+                            let live = talks.get_mut(club).expect("just read");
+                            live.offer = offer;
+                            live.counter = None;
+                            offers.entry(talk.player).or_default().push((*club, offer));
+                        }
+                        None => {
+                            talks.remove(club);
+                            strike(&mut refused, *club, talk.player);
+                            rejected_bids.push(RejectedBid {
+                                round,
+                                player: talk.player,
+                                from: talk.seller,
+                                bidder: *club,
+                                price: talk.offer,
+                                reason: RejectReason::BuyerWithdrew,
+                            });
+                        }
+                    }
+                    continue;
+                }
+                talks.remove(club);
+            }
             for d in decisions {
                 let TransferDecision::Bid {
                     player,
                     from,
                     price,
+                    max_price,
                     ..
-                } = d
+                } = *d
                 else {
                     continue;
                 };
-                let already_refused = refused.get(club).is_some_and(|s| s.contains(player));
-                let biddable = !already_refused
-                    && match from {
-                        None => true,
-                        Some(seller) => listed.get(player) == Some(seller),
-                    };
-                if biddable {
-                    bids.entry(*player).or_default().push((*club, *price));
-                    break;
+                let struck = refused.get(club).is_some_and(|s| s.contains(&player));
+                let available = !moved.contains(&player)
+                    && work_world.club_of(player) == from
+                    && from != Some(*club);
+                if struck || !available || price.0 > spendable {
+                    continue;
                 }
+                talks.insert(
+                    *club,
+                    Talk {
+                        player,
+                        seller: from,
+                        walk_away: Money(max_price.unwrap_or(price).0.max(price.0)),
+                        offer: price,
+                        counter: None,
+                        counters: 0,
+                    },
+                );
+                offers.entry(player).or_default().push((*club, price));
+                break;
             }
         }
 
-        if bids.is_empty() {
-            break; // fixpoint (§5 step 5): no bids, nothing left to resolve
+        if offers.is_empty() {
+            break; // fixpoint (§5 step 5): nobody is bidding for anyone
         }
 
-        // Steps 3-4 (§5): resolve contention per target, in `PlayerId`
-        // order — deterministic, never a `HashMap`.
-        for (player, mut offers) in bids {
-            // The selling club's ranking: fee desc, buyer reputation desc,
-            // `ClubId` asc. Content-driven; `ClubId` only breaks an exact
-            // tie, so no club is favoured merely for existing first.
-            offers.sort_by(|a, b| {
+        // §5.1 step 2: each seller answers every offer for a player at once,
+        // in `PlayerId` order.
+        for (player, mut bids) in offers {
+            // The seller's ranking: fee desc, buyer reputation desc, `ClubId`
+            // asc. `ClubId` only breaks an exact tie.
+            bids.sort_by(|a, b| {
                 b.1.0
                     .cmp(&a.1.0)
                     .then_with(|| {
@@ -301,25 +360,91 @@ pub fn resolve_window(
                     })
                     .then_with(|| a.0.cmp(&b.0))
             });
-
             let seller = work_world.club_of(player);
+
+            let contenders: Vec<(ClubId, Money)> = match seller {
+                None => bids.clone(),
+                Some(owner) => {
+                    let best = bids[0].1;
+                    let listing = listed
+                        .get(&player)
+                        .filter(|(club, _)| *club == owner)
+                        .map(|&(_, min_fee)| min_fee);
+                    let terms = if can_sell(&work_world, owner, player, utility_knobs) {
+                        policy_of(owner).selling_terms(&observations[&owner], player, listing, best)
+                    } else {
+                        None
+                    };
+                    let Some(terms) = terms else {
+                        for &(bidder, price) in &bids {
+                            talks.remove(&bidder);
+                            strike(&mut refused, bidder, player);
+                            rejected_bids.push(RejectedBid {
+                                round,
+                                player,
+                                from: seller,
+                                bidder,
+                                price,
+                                reason: RejectReason::NotForSale,
+                            });
+                        }
+                        continue;
+                    };
+                    if best.0 < terms.floor.0 {
+                        let counter = seller_counter(
+                            last_counter.get(&player).copied(),
+                            best,
+                            &terms,
+                            utility_knobs,
+                        );
+                        last_counter.insert(player, counter);
+                        let lowball = share(terms.ceiling, utility_knobs.offer_floor_share);
+                        for &(bidder, price) in &bids {
+                            let talk = talks.get_mut(&bidder).expect("every bid is a live talk");
+                            if price.0 < lowball.0 || talk.counters >= utility_knobs.max_counters {
+                                talks.remove(&bidder);
+                                strike(&mut refused, bidder, player);
+                                rejected_bids.push(RejectedBid {
+                                    round,
+                                    player,
+                                    from: seller,
+                                    bidder,
+                                    price,
+                                    reason: RejectReason::SellerDeclined,
+                                });
+                            } else {
+                                talk.counter = Some(counter);
+                                talk.counters += 1;
+                            }
+                        }
+                        continue;
+                    }
+                    bids.iter()
+                        .copied()
+                        .filter(|b| b.1.0 >= terms.floor.0)
+                        .collect()
+                }
+            };
+
             let p = work_world.player(player);
             let (_, ca) = best_role(&p.attributes, &ROLE_WEIGHTS);
             let current_wage = p.contract.map(|c| c.wage);
 
-            // The deferred-acceptance step: ask each ranked bidder in turn.
-            // The RNG draw happens for every bidder we reach — never
-            // skipped because an earlier shortcut could avoid needing it —
-            // mirroring `tick_changes`'s discipline of keeping stream
-            // position independent of which values happen to matter.
-            let mut winner: Option<usize> = None;
-            for (i, &(bidder, fee)) in offers.iter().enumerate() {
+            // §5 step 3, the deferred-acceptance step: the player is asked
+            // about each bidder in turn. The RNG draw happens for every
+            // bidder reached, never skipped by a shortcut, so the stream's
+            // position does not depend on which values happen to matter.
+            let mut winner: Option<(ClubId, Money)> = None;
+            for &(bidder, fee) in &contenders {
+                if work_world.club(bidder).players.len() >= utility_knobs.squad_max {
+                    continue;
+                }
                 let buyer_reputation = work_world.club(bidder).reputation;
                 let prob =
                     consent_probability(fee, current_wage, buyer_reputation, ca, market_knobs);
                 let roll = rng.f64();
                 if roll < prob {
-                    winner = Some(i);
+                    winner = Some((bidder, fee));
                     break;
                 }
                 rejected_bids.push(RejectedBid {
@@ -330,33 +455,36 @@ pub fn resolve_window(
                     price: fee,
                     reason: RejectReason::PlayerRefused,
                 });
-                refused.entry(bidder).or_default().insert(player);
+                talks.remove(&bidder);
+                strike(&mut refused, bidder, player);
             }
 
-            if let Some(i) = winner {
-                let (bidder, fee) = offers[i];
-                let wage = current_wage.unwrap_or_else(|| wage_for_quality(&mut rng, ca));
-                let contract = Contract {
-                    wage,
-                    expires: today
-                        .add_days((market_knobs.new_contract_years * DAYS_PER_YEAR as f64) as i64),
-                };
-                apply_transfer_completed(&mut work_world, player, seller, bidder, fee, contract);
-                moved.insert(player);
-                transfers.push(Transfer {
-                    player,
-                    from: seller,
-                    to: bidder,
-                    fee,
-                    contract,
-                });
-                // Ranked below the winner: never reached the consent step.
-                for &(bidder, price) in offers.iter().skip(i + 1) {
+            let Some((bidder, fee)) = winner else {
+                continue;
+            };
+            let wage = current_wage.unwrap_or_else(|| wage_for_quality(&mut rng, ca));
+            let contract = Contract {
+                wage,
+                expires: today
+                    .add_days((market_knobs.new_contract_years * DAYS_PER_YEAR as f64) as i64),
+            };
+            apply_transfer_completed(&mut work_world, player, seller, bidder, fee, contract);
+            moved.insert(player);
+            transfers.push(Transfer {
+                player,
+                from: seller,
+                to: bidder,
+                fee,
+                contract,
+            });
+            for &(other, price) in &bids {
+                talks.remove(&other);
+                if other != bidder {
                     rejected_bids.push(RejectedBid {
                         round,
                         player,
                         from: seller,
-                        bidder,
+                        bidder: other,
                         price,
                         reason: RejectReason::Outranked,
                     });
@@ -374,6 +502,74 @@ pub fn resolve_window(
         unfilled_needs,
         rounds_used,
     }
+}
+
+/// One club's live negotiation for one player (§5.1).
+#[derive(Debug, Clone, Copy)]
+struct Talk {
+    player: PlayerId,
+    seller: Option<ClubId>,
+    walk_away: Money,
+    offer: Money,
+    counter: Option<Money>,
+    counters: u8,
+}
+
+fn strike(refused: &mut BTreeMap<ClubId, BTreeSet<PlayerId>>, club: ClubId, player: PlayerId) {
+    refused.entry(club).or_default().insert(player);
+}
+
+fn share(value: Money, share: f64) -> Money {
+    Money((value.0 as f64 * share).round() as i64)
+}
+
+/// A buyer's answer to the counter waiting for it (§5.1): take it if it is
+/// within the walk-away price and the club's cash; otherwise move halfway
+/// towards what it can pay, or walk away if that is no real move.
+fn buyer_answer(talk: &Talk, spendable: i64, k: &UtilityKnobs) -> Option<Money> {
+    let Some(counter) = talk.counter else {
+        return Some(talk.offer);
+    };
+    let cap = talk.walk_away.0.min(spendable);
+    if counter.0 <= cap {
+        return Some(counter);
+    }
+    let step = (k.concession * (cap - talk.offer.0) as f64).round() as i64;
+    let least = ((talk.walk_away.0 as f64 * 0.01).round() as i64).max(1);
+    (step >= least).then(|| Money(talk.offer.0 + step))
+}
+
+/// A seller's counter (§5.1): its own valuation the first time, then
+/// halfway from its last counter towards the best offer, never under its
+/// floor.
+fn seller_counter(
+    last: Option<Money>,
+    best: Money,
+    terms: &SellingTerms,
+    k: &UtilityKnobs,
+) -> Money {
+    let counter = match last {
+        None => terms.ceiling.0,
+        Some(last) => last.0 - (k.concession * (last.0 - best.0).max(0) as f64).round() as i64,
+    };
+    Money(counter.clamp(terms.floor.0, terms.ceiling.0))
+}
+
+/// §6's hard stabilizers, applied to a sale nobody listed: a club never
+/// sells under `squad_min`, or under `min_goalkeepers` goalkeepers.
+fn can_sell(world: &World, club: ClubId, player: PlayerId, k: &UtilityKnobs) -> bool {
+    let squad = &world.club(club).players;
+    if squad.len() <= k.squad_min {
+        return false;
+    }
+    if world.player(player).natural_role != Role::Gk {
+        return true;
+    }
+    let keepers = squad
+        .iter()
+        .filter(|&&p| world.player(p).natural_role == Role::Gk)
+        .count();
+    keepers > k.min_goalkeepers
 }
 
 /// Resolve-time sanity filter (§10's pre-commitment model): the same
@@ -438,7 +634,7 @@ fn filter_affordable(
                 }
                 kept.push(*d);
             }
-            TransferDecision::List { player } => {
+            TransferDecision::List { player, .. } => {
                 if squad_len <= knobs.squad_min {
                     continue;
                 }
@@ -866,6 +1062,102 @@ mod tests {
         );
     }
 
+    fn talk(walk_away: i64, offer: i64, counter: i64) -> Talk {
+        Talk {
+            player: PlayerId(1),
+            seller: Some(ClubId(1)),
+            walk_away: Money(walk_away),
+            offer: Money(offer),
+            counter: Some(Money(counter)),
+            counters: 1,
+        }
+    }
+
+    #[test]
+    fn a_buyer_takes_a_counter_it_can_pay_and_otherwise_meets_it_halfway_or_walks() {
+        let k = UtilityKnobs::default();
+        assert_eq!(
+            buyer_answer(&talk(1000, 700, 900), 10_000, &k),
+            Some(Money(900))
+        );
+        assert_eq!(
+            buyer_answer(&talk(1000, 700, 1200), 10_000, &k),
+            Some(Money(850)),
+            "halfway from its offer towards its walk-away price"
+        );
+        assert_eq!(
+            buyer_answer(&talk(1000, 995, 1200), 10_000, &k),
+            None,
+            "no real move left: it walks away"
+        );
+        assert_eq!(
+            buyer_answer(&talk(1000, 700, 900), 800, &k),
+            Some(Money(750)),
+            "never past what it can spend"
+        );
+    }
+
+    #[test]
+    fn a_seller_counters_at_its_valuation_then_concedes_but_never_under_its_floor() {
+        let k = UtilityKnobs::default();
+        let terms = SellingTerms {
+            floor: Money(800),
+            ceiling: Money(1000),
+        };
+        let first = seller_counter(None, Money(700), &terms, &k);
+        assert_eq!(first, Money(1000));
+        let second = seller_counter(Some(first), Money(700), &terms, &k);
+        assert_eq!(second, Money(850));
+        assert_eq!(
+            seller_counter(Some(second), Money(100), &terms, &k),
+            Money(800)
+        );
+    }
+
+    #[test]
+    fn a_player_nobody_listed_can_still_be_bought() {
+        let cfg = WorldGenConfig::default();
+        let mut sold_unlisted = 0;
+        for seed in [41, 9, 17] {
+            let (mut world, _schedule, start) = generate(seed, &cfg);
+            unbalance_squads(&mut world);
+            let outcome = resolve_window(
+                &world,
+                start,
+                seed,
+                0,
+                &DevKnobs::default(),
+                &ValueKnobs::default(),
+                &UtilityKnobs::default(),
+                &MarketKnobs::default(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &ScoutKnobs::default(),
+            );
+            assert!(outcome.rounds_used <= MAX_ROUNDS);
+            let view = WindowView::new(
+                &world,
+                start,
+                seed,
+                &DevKnobs::default(),
+                &ValueKnobs::default(),
+                &UtilityKnobs::default(),
+                &ScoutKnobs::default(),
+                &BTreeMap::new(),
+            );
+            let policy = UtilityPolicy::default();
+            for t in &outcome.transfers {
+                let Some(seller) = t.from else { continue };
+                let listed = policy
+                    .listings(&view.observe(&world, seller))
+                    .iter()
+                    .any(|&(p, _)| p == t.player);
+                sold_unlisted += usize::from(!listed);
+            }
+        }
+        assert!(sold_unlisted > 0, "only listed players changed hands");
+    }
+
     #[test]
     fn a_player_moves_at_most_once_in_a_window() {
         let cfg = WorldGenConfig::default();
@@ -1213,6 +1505,7 @@ mod tests {
             from: None,
             role: Role::Gk,
             price: Money(50_000_000), // far beyond the club's cash
+            max_price: None,
         }];
 
         let outcome = resolve_window(
