@@ -369,6 +369,13 @@ impl UtilityPolicy {
         self.need_filled(obs, c).is_some()
     }
 
+    /// Whether a club would offer `m` a new contract (§7.1): his projected
+    /// ability is within `renew_worth_margin` of the club's target. Its
+    /// failure is also what lists an expiring player (§6).
+    pub fn worth_renewing(&self, m: &SquadMember, reputation: u8) -> bool {
+        (m.projected_ca as f64) >= self.target_ca(reputation) - self.knobs.renew_worth_margin
+    }
+
     /// A negative balance, or wages committed beyond the budget (§6).
     pub fn in_financial_difficulty(obs: &ClubObservation) -> bool {
         obs.balance.0 < 0 || obs.committed_wages.0 > obs.wage_budget.0
@@ -509,7 +516,6 @@ impl UtilityPolicy {
         if obs.squad.len() <= self.knobs.squad_min {
             return Vec::new();
         }
-        let target = self.target_ca(obs.reputation);
         let pressure = self.squad_pressure(obs.squad.len());
         let pressure_quota =
             (pressure * self.knobs.squad_pressure_max_listings as f64).round() as usize;
@@ -534,7 +540,7 @@ impl UtilityPolicy {
                 let surplus_to_depth = count > template;
                 let expiring_and_declining = m.years_left_on_contract
                     <= self.knobs.expiring_within_years
-                    && (m.projected_ca as f64) < target - self.knobs.renew_worth_margin;
+                    && !self.worth_renewing(m, obs.reputation);
                 if surplus_to_depth {
                     return Some((m, ListTrigger::Surplus));
                 }
@@ -662,6 +668,21 @@ pub fn asking_price(value: Money, knobs: &UtilityKnobs) -> Money {
     Money((value.0 as f64 * knobs.asking_markup).round() as i64)
 }
 
+/// What `player` costs in fees: his owner's ask on `value`, or nothing for
+/// a free agent (`TRANSFER_MODEL.md` §7.1). The one place a posted price is
+/// decided; `value` is consulted only for a player under contract.
+pub fn posted_ask(
+    world: &World,
+    player: PlayerId,
+    value: impl FnOnce() -> Option<Money>,
+    knobs: &UtilityKnobs,
+) -> Money {
+    if world.club_of(player).is_none() {
+        return Money(0);
+    }
+    value().map_or(Money(0), |v| asking_price(v, knobs))
+}
+
 /// What one club can see of the market's players (`AGENT_MODEL.md` §5): the
 /// world as it sees it, its valuation of a player under that view, and the
 /// posted price list every club shares.
@@ -684,7 +705,7 @@ pub fn observe(
 ) -> ClubObservation {
     let asks: BTreeMap<PlayerId, Money> = valuations
         .iter()
-        .map(|(&pid, &value)| (pid, asking_price(value, knobs)))
+        .map(|(&pid, &value)| (pid, posted_ask(world, pid, || Some(value), knobs)))
         .collect();
     let market = MarketSight {
         seen: world,
@@ -694,28 +715,15 @@ pub fn observe(
     observe_as(world, club, today, &market, dev, knobs)
 }
 
-/// Build a `ClubObservation` (§6.1: reading `World` happens here, at the
-/// edge — the seam `ClubPolicy` itself never crosses). Squads, contracts and
-/// money are read from `world`; what a player *is* — attributes, and so role,
-/// ability and projection — is read through `market`, the club's own fogged
-/// view, frozen for the window (§2.7).
-///
-/// Only a candidate `within_means` is appraised: valuing a player is the
-/// expensive part of an observation, and a club has no use for an opinion on
-/// one it cannot pay for. Such a candidate carries `value: Money(0)`.
-pub fn observe_as(
+/// One club's view of its own squad (§6.1): every member's decision-relevant
+/// features, read through `seen`, the club's own sighting of its players.
+pub(crate) fn squad_members(
     world: &World,
+    seen: &World,
     club: ClubId,
     today: GameDate,
-    market: &MarketSight,
     dev: &DevKnobs,
-    knobs: &UtilityKnobs,
-) -> ClubObservation {
-    let MarketSight {
-        seen,
-        appraise,
-        asks,
-    } = *market;
+) -> Vec<SquadMember> {
     let c = world.club(club);
     // One batched projection for the whole squad (`valuation::project_ca_batch`)
     // rather than one `project_ca` call per member: the knob-derived
@@ -730,8 +738,7 @@ pub fn observe_as(
         SUCCESSION_HORIZON_YEARS,
         dev,
     );
-    let squad: Vec<SquadMember> = c
-        .players
+    c.players
         .iter()
         .map(|&pid| {
             let p = world.player(pid);
@@ -757,7 +764,33 @@ pub fn observe_as(
                 years_left_on_contract,
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Build a `ClubObservation` (§6.1: reading `World` happens here, at the
+/// edge — the seam `ClubPolicy` itself never crosses). Squads, contracts and
+/// money are read from `world`; what a player *is* — attributes, and so role,
+/// ability and projection — is read through `market`, the club's own fogged
+/// view, frozen for the window (§2.7).
+///
+/// Only a candidate `within_means` is appraised: valuing a player is the
+/// expensive part of an observation, and a club has no use for an opinion on
+/// one it cannot pay for. Such a candidate carries `value: Money(0)`.
+pub fn observe_as(
+    world: &World,
+    club: ClubId,
+    today: GameDate,
+    market: &MarketSight,
+    dev: &DevKnobs,
+    knobs: &UtilityKnobs,
+) -> ClubObservation {
+    let MarketSight {
+        seen,
+        appraise,
+        asks,
+    } = *market;
+    let c = world.club(club);
+    let squad = squad_members(world, seen, club, today, dev);
 
     let committed_wages: i64 = squad.iter().map(|m| m.wage.0).sum();
     let squad_set: BTreeSet<PlayerId> = c.players.iter().copied().collect();

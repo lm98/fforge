@@ -563,6 +563,40 @@ changes.
 dates, and `commands::step` emits the resulting events. The transfer market is a *tick*, like
 development and finance, not a new interaction mode.
 
+### 7.1 Contracts run out
+
+Through Phase 4 a contract had an expiry date and nothing ever read it: no player was renewed, none
+was released, and the only free agents were the ones §8.3 imagined. The events for both,
+`ContractRenewed` and `PlayerReleased`, have been in the schema since §4 and were never emitted.
+
+At every window, after the summer pool events and before the clearing loop, in `ClubId` then
+`PlayerId` order:
+
+1. **Renewal.** Each club looks at every player with `expiring_within_years` or less left and
+   offers to renew the ones worth renewing: projected ability within `renew_worth_margin` of the
+   club's target. This is the same test whose failure makes §6's expiring trigger list a player,
+   written once (`UtilityPolicy::worth_renewing`). The offered wage is the higher of the player's
+   current wage and `wage_for_quality` at his ability, and the club offers only if that fits its
+   wage budget. The player accepts with §5's consent probability against his own club's
+   reputation, so a good player at a small club may run his contract down. The new term is
+   `new_contract_years` from the window's close. One draw per player considered, offered or not,
+   from `CONTRACT_STREAM_NS | window_index`.
+2. **Expiry.** Every player whose contract ends on or before the window's close leaves his club
+   (`PlayerReleased`) and is a free agent in the clearing loop that follows.
+3. **A free transfer carries no fee.** A free agent's asking price is zero, so the buyer pays only
+   his wage. It was his full worth, paid to nobody, which made free agency a worse deal than a
+   transfer.
+
+The human's club renews by the built-in rule, since no screen yet lets the human decide; this is a
+filed gap (`BACKLOG.md` §5), not a design choice. A human who wants a player gone can list him.
+
+*Predictions, written before the run* (`bin/market`, 24 seeds × 15 seasons, fogged, against
+§11.1's bands and the reading taken just before this change): players released rises from zero to
+20–60 a season; the free share of arrivals rises from zero into 20–45%; arrivals per club per
+season rise from about 1.2 to 2–4, still under §11.1's 4–8 band; mean contract years left in the
+late seasons rises into 1.8–3.5; mean tenure falls but stays above its band; the free-agent pool
+stays bounded, since an unsigned veteran retires after a season (§8.2).
+
 ---
 
 ## 8. The player pool needs both ends
@@ -930,6 +964,61 @@ guards. A curve that has come loose from the design should fail; a knob nudged b
 
 Read §2.6 before interpreting the concentration rows: under v1's perfect information they are an
 **upper bound**, not a prediction.
+
+### 11.1 The bands re-derived from real leagues
+
+The table above was written before the market had a reading to compare with, and its one
+quantitative band, two to five transfers per club per window, was later met by a market that
+counted every hop of a player passed down the league as a transfer (`BACKLOG.md` §4.8). With the
+hops and flips gone the market reads 0.60, and the question is what it should read.
+
+**What a real league shows.** The 20 Premier League clubs completed 156 permanent signings in the
+2026 summer window, loans excluded, about 7.8 per club. About two thirds of a summer's signings
+carry a fee and a third are free (2022). The winter window is far smaller. Average squad tenure is
+3.1 years in the Premier League, 3.0 in the Bundesliga and 2.9 in La Liga (CIES, 2022). The share
+of a squad recruited within the year, academy graduates excluded, is 28% in the Premier League and
+35–45% in most other top divisions; that figure counts loans.
+
+**Why it cannot be copied.** fforge is a closed league: twenty clubs, their academies and a pool
+of free agents. A real club buys from abroad and from lower divisions, and about half of all
+fee-paying transfers into the big five come from clubs outside them. Every transfer in fforge is
+between two of its own clubs, so its volume is a turnover the league has to generate internally.
+The band is therefore set on squad turnover, the structural quantity, and volume follows from it.
+
+| Metric | Band | Derivation |
+|---|---|---|
+| Permanent arrivals per club per season, fee or free | **4–8** (2–4 a window) | real recruitment of 28–45% of a squad a year, less the loan share, on a 24-man template |
+| Of which free | **20–45%** | a third in the Premier League |
+| Mean squad tenure, late seasons | **2.3–3.8 years** | 2.9–3.1 in the top three leagues, widened for a 20-club sample |
+| Mean contract years remaining, squad players | **1.8–3.5** | no league-wide figure; regulars at top English clubs had about 3.2 left (2018), and a squad includes the expiring |
+| Signings resold within a year | **under 20%** | judgement, not data: a club that sells most of what it buys is not managing a squad |
+| Players reaching free agency per season | **non-zero** | without it the free share above is impossible |
+
+The last two are not sourced. The concentration, inflation, solvency and pool-shape rows of the
+table above stand as written; no source was found that would replace them.
+
+**The market against them, before any of §7.1 or the later sections** (`bin/market`, 24 seeds × 15
+seasons, fogged, per-seed sd in brackets):
+
+| Metric | Band | Reading |
+|---|---|---|
+| Arrivals per club per season | 4–8 | **1.20** (0.09) |
+| Of which free | 20–45% | **0%** |
+| Mean squad tenure, late seasons | 2.3–3.8 years | **8.63** (0.16) |
+| Mean contract years remaining | 1.8–3.5 | **0.32** (0.03) |
+| Signings resold within a year | under 20% | 19.0% (2.8) |
+| Players reaching free agency per season | non-zero | **0** |
+
+Four of six are out of band, and two by construction: no contract is ever renewed or ends, so by
+the late seasons nearly every contract in the league has silently run out and most players have
+been at one club for the whole run. §7.1 is the change that addresses it.
+
+Sources: [PSRwatch, Premier League summer 2026 review](https://psrwatch.com/insights/premier-league-summer-2026-transfer-window-review);
+[Premier League clubs shatter summer spending record, 2022](https://www.malaymail.com/news/sports/2022/08/26/premier-league-clubs-shatter-summer-spending-record/24811);
+[CIES Football Observatory, demographic profiling (squad tenure)](https://football-observatory.com/IMG/sites/mr/mr79/en/);
+[CIES, team demographics in 48 leagues (new signings)](https://football-observatory.com/IMG/sites/mr/mr89/en/);
+[CIES, remaining contract duration, 2018](https://football-observatory.com/IMG/sites/b5wp/2017/222/en/);
+[CIES Monthly Report 77, big-5 transfers](https://football-observatory.com/IMG/sites/mr/mr77/en/).
 
 ---
 

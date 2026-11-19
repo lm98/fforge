@@ -308,6 +308,17 @@ pub struct MarketTelemetry {
     /// Day of the last transfer or release seen: how far each signing has
     /// been followed.
     last_day: i64,
+
+    // --- squad turnover (§11.1) ---
+    game_start_day: i64,
+    /// When each player joined the club he is at; a player missing here has
+    /// been there since the game began.
+    joined: BTreeMap<PlayerId, i64>,
+    free_arrivals: u32,
+    releases: u32,
+    renewals: u32,
+    tenure_by_season: Vec<f64>,
+    contract_years_by_season: Vec<f64>,
 }
 
 /// One fee-paying transfer seen from the buyer's side (`AGENT_MODEL.md`
@@ -394,8 +405,19 @@ impl Signing {
 impl EventObserver for MarketTelemetry {
     fn on_event(&mut self, event: &Event) {
         match event {
+            Event::GameStarted { start_date, .. } => {
+                self.game_start_day = start_date.days;
+            }
             Event::SeasonStarted { .. } => {
                 self.season += 1;
+            }
+            Event::YouthIntake { date, players, .. } => {
+                for p in players {
+                    self.joined.insert(p.id, date.days);
+                }
+            }
+            Event::ContractRenewed { .. } => {
+                self.renewals += 1;
             }
             Event::TransferCompleted {
                 date,
@@ -411,6 +433,10 @@ impl EventObserver for MarketTelemetry {
                     .or_default()
                     .push(fee.0);
                 self.last_day = date.days;
+                self.joined.insert(*player, date.days);
+                if from.is_none() {
+                    self.free_arrivals += 1;
+                }
                 self.close_signing(*player, *date, Some(fee.0));
                 if from.is_some() && fee.0 > 0 {
                     self.open_signings.insert(
@@ -428,6 +454,7 @@ impl EventObserver for MarketTelemetry {
             }
             Event::PlayerReleased { date, player, .. } => {
                 self.last_day = date.days;
+                self.releases += 1;
                 self.close_signing(*player, *date, None);
             }
             _ => {}
@@ -496,6 +523,26 @@ impl MarketTelemetry {
         value_knobs: &ValueKnobs,
         dev_knobs: &DevKnobs,
     ) {
+        let rostered: Vec<PlayerId> = world
+            .clubs
+            .values()
+            .flat_map(|c| c.players.clone())
+            .collect();
+        let tenures: Vec<f64> = rostered
+            .iter()
+            .map(|pid| {
+                let since = self.joined.get(pid).copied().unwrap_or(self.game_start_day);
+                (today.days - since) as f64 / DAYS_PER_YEAR as f64
+            })
+            .collect();
+        self.tenure_by_season.push(mean_finite(&tenures));
+        let years_left: Vec<f64> = rostered
+            .iter()
+            .filter_map(|&pid| world.player(pid).contract)
+            .map(|c| (c.expires.days - today.days).max(0) as f64 / DAYS_PER_YEAR as f64)
+            .collect();
+        self.contract_years_by_season.push(mean_finite(&years_left));
+
         let table = league_table(world, schedule, results);
         let points: Vec<f64> = table.iter().map(|r| r.points() as f64).collect();
         self.gini_by_season.push(gini(&points));
@@ -630,6 +677,13 @@ pub struct MarketReport {
     /// the metric the §9 residual actually described: *every* club ratcheted
     /// to the ceiling, not one perpetually-full outlier.
     share_clubs_majority_pinned: Vec<f64>,
+    /// §11.1's turnover rows, one value per seed.
+    arrivals_per_club_season: Vec<f64>,
+    free_share: Vec<f64>,
+    tenure_late: Vec<f64>,
+    contract_years_late: Vec<f64>,
+    releases_per_season: Vec<f64>,
+    renewals_per_season: Vec<f64>,
     /// The buyer's-eye rows (`AGENT_MODEL.md` §5.6), one value per seed.
     fee_over_true_value: Vec<f64>,
     overpaid_share: Vec<f64>,
@@ -650,6 +704,26 @@ impl MarketReport {
         let num_windows = (seasons * WINDOWS_PER_SEASON) as f64;
         self.transfers_per_club_per_window
             .push(t.total_transfers as f64 / (num_windows * num_clubs as f64));
+
+        let club_seasons = (seasons * num_clubs) as f64;
+        self.arrivals_per_club_season
+            .push(t.total_transfers as f64 / club_seasons);
+        self.free_share.push(if t.total_transfers == 0 {
+            f64::NAN
+        } else {
+            t.free_arrivals as f64 / t.total_transfers as f64
+        });
+        let late = |xs: &[f64]| {
+            let tail = xs.len().saturating_sub(EARLY_LATE_WINDOW);
+            mean_finite(&xs[tail..])
+        };
+        self.tenure_late.push(late(&t.tenure_by_season));
+        self.contract_years_late
+            .push(late(&t.contract_years_by_season));
+        self.releases_per_season
+            .push(t.releases as f64 / seasons as f64);
+        self.renewals_per_season
+            .push(t.renewals as f64 / seasons as f64);
 
         let fees = t.all_fees_f64();
         self.fee_median.push(median(&fees));
@@ -870,6 +944,24 @@ impl MarketReport {
     }
     pub fn below_cap_share(&self) -> SeedSpread {
         seed_spread(&self.below_cap_share)
+    }
+    pub fn arrivals_per_club_season(&self) -> SeedSpread {
+        seed_spread(&self.arrivals_per_club_season)
+    }
+    pub fn free_share(&self) -> SeedSpread {
+        seed_spread(&self.free_share)
+    }
+    pub fn tenure_late(&self) -> SeedSpread {
+        seed_spread(&self.tenure_late)
+    }
+    pub fn contract_years_late(&self) -> SeedSpread {
+        seed_spread(&self.contract_years_late)
+    }
+    pub fn releases_per_season(&self) -> SeedSpread {
+        seed_spread(&self.releases_per_season)
+    }
+    pub fn renewals_per_season(&self) -> SeedSpread {
+        seed_spread(&self.renewals_per_season)
     }
     pub fn fee_over_true_value(&self) -> SeedSpread {
         seed_spread(&self.fee_over_true_value)
@@ -1243,6 +1335,38 @@ pub fn print_report(report: &MarketReport) {
         "Youth headcount per season-end snapshot",
         &report.youth_count_mean(),
         "new cut, no prior band",
+    );
+    println!();
+    println!("--- squad turnover (TRANSFER_MODEL.md §11.1) ---");
+    row(
+        "Arrivals per club per season",
+        &report.arrivals_per_club_season(),
+        "4-8",
+    );
+    row(
+        "Share of arrivals that are free",
+        &report.free_share(),
+        "0.20-0.45",
+    );
+    row(
+        "Mean squad tenure, late seasons",
+        &report.tenure_late(),
+        "2.3-3.8 years",
+    );
+    row(
+        "Mean contract years left, late",
+        &report.contract_years_late(),
+        "1.8-3.5",
+    );
+    row(
+        "Players released per season",
+        &report.releases_per_season(),
+        "non-zero",
+    );
+    row(
+        "Contracts renewed per season",
+        &report.renewals_per_season(),
+        "no band",
     );
     println!();
     println!("--- the buyer's eye (AGENT_MODEL.md §5.6; fee-paying signings only) ---");

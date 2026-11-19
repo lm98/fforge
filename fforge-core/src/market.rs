@@ -463,7 +463,7 @@ fn filter_affordable(
 /// buyer-reputation adequacy terms, each clamped to `[0, 1]`, multiplied. A
 /// free agent has no prior wage to protect, so the wage term is not a
 /// barrier for him.
-fn consent_probability(
+pub(crate) fn consent_probability(
     offered_wage: Money,
     current_wage: Option<Money>,
     buyer_reputation: u8,
@@ -588,17 +588,21 @@ impl<'w> WindowView<'w> {
                 })
                 .collect()
         };
-        // A free agent's price is his true worth — he knows himself.
         let asks = world
             .players
             .keys()
             .map(|&pid| {
-                let value = world
-                    .club_of(pid)
-                    .and_then(|club| perceived.get(&club))
-                    .and_then(|p| p.appraised.borrow().get(&pid).copied())
-                    .unwrap_or_else(|| truth.get(&pid).copied().unwrap_or(Money(0)));
-                (pid, club_ai::asking_price(value, utility_knobs))
+                let owner_value = || {
+                    world
+                        .club_of(pid)
+                        .and_then(|club| perceived.get(&club))
+                        .and_then(|p| p.appraised.borrow().get(&pid).copied())
+                        .or_else(|| truth.get(&pid).copied())
+                };
+                (
+                    pid,
+                    club_ai::posted_ask(world, pid, owner_value, utility_knobs),
+                )
             })
             .collect();
         WindowView {
@@ -836,6 +840,30 @@ mod tests {
                 apply_transfer_completed(world, player, Some(pair[0]), pair[1], Money(0), contract);
             }
         }
+    }
+
+    #[test]
+    fn a_free_agent_asks_no_fee() {
+        let (mut world, _schedule, start) = generate(41, &WorldGenConfig::default());
+        let club = ClubId(0);
+        let player = world.club(club).players[0];
+        crate::state::apply_player_released(&mut world, player, club);
+        let view = WindowView::new(
+            &world,
+            start,
+            41,
+            &DevKnobs::default(),
+            &ValueKnobs::default(),
+            &UtilityKnobs::default(),
+            &ScoutKnobs::default(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(view.ask(player), Money(0));
+        let signed = world.club(ClubId(1)).players[0];
+        assert!(
+            view.ask(signed).0 > 0,
+            "a contracted player still has a price"
+        );
     }
 
     #[test]

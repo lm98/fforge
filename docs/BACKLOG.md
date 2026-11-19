@@ -261,6 +261,11 @@ calibration-cost-to-value ratio in the match model. Deferred deliberately, not f
 **5.4 — [Closed — S1a.]** `MATCH_MODEL.md` §16's stale note (claiming the human side has no bench/plan UI)
 is corrected; Batch 4's G3 UI (`fforge-game/src/flows/subs.rs`) is acknowledged there.
 
+**5.5 — The human cannot decide renewals.** `TRANSFER_MODEL.md` §7.1 renews the human's expiring
+players by the built-in rule, because no screen offers the choice. The rule is sensible, but it is
+a decision made for the player. Needs a renewal list on the squad screen and a command; the seat
+rule then belongs with the two in `AGENT_MODEL.md` §3.2.
+
 ---
 
 ## 6. Phase 6 and beyond

@@ -65,6 +65,21 @@ pub(crate) fn apply_transfer_completed(
 /// `commands::dev_ticks_between`'s working-world compounding, so a transfer
 /// window resolving in the same advance sees this tick's cash flow already
 /// applied.
+pub(crate) fn apply_player_released(world: &mut World, player: PlayerId, club: ClubId) {
+    if let Some(c) = world.clubs.get_mut(&club) {
+        c.players.retain(|&p| p != player);
+    }
+    if let Some(p) = world.players.get_mut(&player) {
+        p.contract = None;
+    }
+}
+
+pub(crate) fn apply_contract_renewed(world: &mut World, player: PlayerId, contract: Contract) {
+    if let Some(p) = world.players.get_mut(&player) {
+        p.contract = Some(contract);
+    }
+}
+
 pub(crate) fn apply_finance_deltas(world: &mut World, deltas: &[(ClubId, Money)]) {
     for &(club, delta) in deltas {
         if let Some(c) = world.clubs.get_mut(&club) {
@@ -359,20 +374,13 @@ impl GameState {
                 self.unsigned_since.remove(player);
             }
             Event::PlayerReleased { player, club, date } => {
-                if let Some(c) = self.world.clubs.get_mut(club) {
-                    c.players.retain(|p| p != player);
-                }
-                if let Some(p) = self.world.players.get_mut(player) {
-                    p.contract = None;
-                }
+                apply_player_released(&mut self.world, *player, *club);
                 self.unsigned_since.insert(*player, *date);
             }
             Event::ContractRenewed {
                 player, contract, ..
             } => {
-                if let Some(p) = self.world.players.get_mut(player) {
-                    p.contract = Some(*contract);
-                }
+                apply_contract_renewed(&mut self.world, *player, *contract);
             }
             Event::YouthIntake { club, players, .. } => {
                 apply_youth_intake(&mut self.world, *club, players);

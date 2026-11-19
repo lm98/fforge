@@ -6,6 +6,7 @@
 //! never mutates state — callers apply the returned events through the fold.
 
 use crate::club_ai::{TransferDecision, UtilityKnobs};
+use crate::contracts;
 use crate::development::{self, DevKnobs, period_date, period_index};
 use crate::event::Event;
 use crate::finance::{FinanceKnobs, finance_deltas};
@@ -17,8 +18,8 @@ use crate::pool::{self, PoolKnobs};
 use crate::schedule::double_round_robin;
 use crate::scouting::ScoutKnobs;
 use crate::state::{
-    GameState, apply_finance_deltas, apply_player_retired, apply_transfer_completed,
-    apply_youth_intake, league_table,
+    GameState, apply_contract_renewed, apply_finance_deltas, apply_player_released,
+    apply_player_retired, apply_transfer_completed, apply_youth_intake, league_table,
 };
 use crate::valuation::ValueKnobs;
 use fforge_domain::{
@@ -602,6 +603,29 @@ fn transfer_window_events(
             }
             events.extend(pool_events);
         }
+
+        let contract_events = contracts::window_contract_events(
+            &work_world,
+            close_date,
+            state.seed,
+            window_index,
+            &dev_knobs,
+            &utility_knobs,
+            &market_knobs,
+            &ScoutKnobs::default(),
+        );
+        for e in &contract_events {
+            match e {
+                Event::ContractRenewed {
+                    player, contract, ..
+                } => apply_contract_renewed(&mut work_world, *player, *contract),
+                Event::PlayerReleased { player, club, .. } => {
+                    apply_player_released(&mut work_world, *player, *club);
+                }
+                _ => unreachable!("window_contract_events only renews and releases"),
+            }
+        }
+        events.extend(contract_events);
 
         let outcome = market::resolve_window(
             &work_world,
