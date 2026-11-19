@@ -221,18 +221,21 @@ were.** Each scales a player's attributes and so passes through `Knobs::s`, whic
 52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
 it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
 
-**4.8 — Half of all signings are still resold within a year** (`TRANSFER_MODEL.md` §6,
-`AGENT_MODEL.md` §5.7). It was seven in ten. Two fixes are in: a player moves once per window, and
-a club buys only against an unfilled need. What remains is probably depth signings: the cheapest
-body fills a hole, is then the first man out, and reopens it. Next step is measurement, not a
-rule: tag each `Signing` in the market harness with the need it was bought against and the trigger
-that listed it, and read the resale rate per pair.
+**4.8 — [Closed — `TRANSFER_MODEL.md` §6.]** No club kept what it bought: seven signings in ten
+were resold within a year. Three changes, each read against a written prediction, brought it to
+19%: a player moves once per window; a club buys only against an unfilled need; a full squad does
+not buy for depth. The last came from tagging every signing with the policy's own reasons, which
+showed squad pressure and depth buying undoing each other.
 
-**4.9 — The market's target bands predate its two fixes.** Volume now reads 1.68 fogged against a
-2–5 band; the top three clubs hold half the twenty best players late in a run, up from a third;
-the flop rate is zero because a club can always resell at cost (`TRANSFER_MODEL.md` §12 item 6).
-Each band in §11 was set against a market that counted flips as transfers. Re-derive them before
-tuning towards any. 4.1's closure is superseded by this item.
+**4.9 — The transfer market is now honest and quiet; its target bands are neither.** Volume reads
+0.60 transfers per club per window against a 2–5 band that was set when every flip counted. That
+is about one signing per club per season, which may be too little to play against. The top three
+clubs hold about half the twenty best players late in a run. The flop rate is zero because a club
+can always resell at cost (`TRANSFER_MODEL.md` §12 item 6). To do, in order: re-derive the §11
+bands from real leagues, as `MATCH_MODEL.md` §10 item 7 did for league spread; then decide which
+lever raises real activity. Candidates: free agents and expiring contracts (nearly absent from
+the readings), a looser `upgrade_margin`, and asking prices that differ from the buyer's
+valuation. 4.1's closure is superseded by this item.
 
 ---
 

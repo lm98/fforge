@@ -446,6 +446,74 @@ What they say:
 - **Flops still cannot happen.** A club can always resell at about what it paid, so a mistake
   costs nothing. That is the asking-price model (§12 item 6), not the buying rule.
 
+*Which signings come back, and by which door.* The market harness now asks the policy itself:
+`UtilityPolicy::need_filled` names the need a signing met and `UtilityPolicy::listings` the trigger
+a listing fired on, and `explain_window` replays each window's events to put both on every
+`Signing`. **Prediction, written before the run:** depth signings are resold more often than
+upgrades; the two paths depth → squad pressure and depth → surplus together account for more than
+half of all signings gone within a year; and under 15% of them go unexplained.
+
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged; 22,571 signings followed a year, 47.7%
+of them gone within it):
+
+| Bought as | Share of signings | Gone within a year (per-seed sd) |
+|---|---|---|
+| depth | 70.7% | 52.1% (3.9) |
+| upgrade | 26.1% | 37.7% (5.8) |
+| heir | 1.9% | 19.6% (10.4) |
+| cover | 0.1% | 3.0% |
+| unexplained | 1.3% | 36.2% |
+
+| Of signings gone within a year: bought as → left by | Share |
+|---|---|
+| depth → squad pressure | 43.2% |
+| depth → surplus | 32.0% |
+| upgrade → surplus | 16.4% |
+| upgrade → squad pressure | 3.5% |
+| anything → unexplained | 3.0% |
+| everything else | 1.9% |
+
+All three predictions hold. Depth signings are seven in ten of all signings and three in four of
+those that come back. The largest route is a closed loop between two rules of the same policy:
+squad pressure lists a player from a role sitting exactly at its template, which leaves that role
+one short, which is a depth need, which is filled by whoever is cheapest, who is then the player
+the club least wants to keep in a role sitting exactly at its template. The policy is selling to
+get smaller and buying to get back to template in the same breath. Heirs, the one kind of signing
+bought for a reason that outlasts the window, are kept four times in five.
+
+The second route, depth → surplus, is the ordinary chain working as designed but on the wrong
+player: an upgrade arrives, the role goes over template, and the depth signing is the one shed.
+Some of that is healthy turnover; how much is not separable from this reading.
+
+**A full squad does not buy for depth.** The remedy for the loop: a depth need counts only while
+the squad as a whole is under the template's total headcount (24). A squad at or over it with a
+hole in one role is over-staffed in another, and sells there first. This is tighter than "a squad
+under pressure does not buy for depth", which was the first wording: pressure starts listing at
+25, one above the template, so that rule would have left the loop turning at the boundary, one
+player out at 25 and one back in at 24. Upgrades, heirs and hard-minimum cover are unaffected.
+
+*Prediction, written before the run:* depth → squad pressure falls from 43% of resales to under
+15%; the share of signings gone within a year falls from 47.7% to 30–38%; volume falls from 1.68
+to 1.1–1.5; depth falls under 60% of signings.
+
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged, per-seed sd in brackets):
+
+| Row | Before | After | Prediction |
+|---|---|---|---|
+| Signings gone within a year | 47.7% | 19.0% (2.8) | 30–38% — **beaten** |
+| Depth → squad pressure, share of resales | 43.2% | 3.6% | under 15% — **met** |
+| Depth, share of signings | 70.7% | 12.7% | under 60% — **met** |
+| Transfers per club per window | 1.68 | 0.60 (0.05) | 1.1–1.5 — **refuted**, lower |
+| Median fee | 0.48M | 1.02M | not predicted |
+| Fee / true value, median | 0.912 | 0.888 | not predicted |
+| Clubs majority-pinned at `squad_max` | 8.3% | 4.0% | not predicted |
+
+The loop is closed. Four signings in five are now upgrades, every kind of signing is kept about
+four times in five, and what does come back mostly leaves as surplus after a later upgrade, which
+is the chain working as intended. Two thirds of the old volume was the loop: 0.60 a window is a
+little over one signing per club per season. That is under the 2–5 band, and whether it is too
+quiet to play against is `BACKLOG.md` §4.9's question, together with the band itself.
+
 **Selling is in v1.** Without it the market is one-directional — budgets deplete, squads only grow,
 nothing clears, and the harness measures a ratchet. A club lists a player when he is surplus to depth,
 expiring-within-a-year and not worth renewing, or when a standing offer exceeds `value` by a margin.

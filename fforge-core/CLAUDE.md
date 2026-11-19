@@ -83,6 +83,10 @@ Command ──step()──▶ Vec<Event> ──apply()──▶ GameState
   `value()`, so an ask above value makes the surplus negative for every buyer and nothing clears.
 - **`opp_mid_advance_mult` and `opp_penetrate_mult` each have two tenants**, Pressing and
   Mentality, and they stack. Changing either instruction moves both.
+- **`UtilityPolicy` buys only against a named need** (`need_filled`: cover, depth, upgrade,
+  heir), and a squad at or over the template's headcount has no depth need. `need()` alone is
+  positive almost everywhere and filters nothing. A new buying rule goes through `need_filled`,
+  so `fforge-harness` can still say why every transfer happened.
 - **A player moves at most once per window**, enforced in `market::resolve_window`, not in any
   policy (`TRANSFER_MODEL.md` §5 step 4). Policies are memoryless across clearing rounds; before
   this rule a signing was re-listed the round after he arrived and passed down the league.

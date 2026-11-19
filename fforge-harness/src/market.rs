@@ -43,7 +43,7 @@
 //! re-fit is a human reading these numbers and editing the knob tables
 //! (`TRANSFER_MODEL.md` §9).
 
-use fforge_core::club_ai::{ClubPolicy, UtilityKnobs, UtilityPolicy};
+use fforge_core::club_ai::{ClubPolicy, ListTrigger, Need, UtilityKnobs, UtilityPolicy};
 use fforge_core::development::DevKnobs;
 use fforge_core::event::Event;
 use fforge_core::market::WindowView;
@@ -315,9 +315,14 @@ pub struct MarketTelemetry {
 /// buyer's ownership of him ended, if it has.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Signing {
+    pub player: PlayerId,
     pub date: GameDate,
     pub fee: i64,
     pub true_value: Option<i64>,
+    /// The need the buyer's policy says he filled (`explain_window`).
+    /// `None` when it names none: the human seat's replayed plan, or a
+    /// squad that changed between the bid and the reading.
+    pub bought_as: Option<Need>,
     pub exit: Option<Exit>,
 }
 
@@ -326,6 +331,38 @@ pub struct Exit {
     pub date: GameDate,
     /// `None` when the buyer released him for nothing.
     pub resale_fee: Option<i64>,
+    /// The trigger the seller's policy listed him under, read the same way.
+    pub listed_as: Option<ListTrigger>,
+}
+
+/// How a signing left its buyer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Departure {
+    Listed(ListTrigger),
+    /// Sold, but the seller's policy names no trigger for it (see
+    /// `explain_window`).
+    SoldUnexplained,
+    Released,
+}
+
+impl Exit {
+    pub fn departure(&self) -> Departure {
+        match (self.resale_fee, self.listed_as) {
+            (None, _) => Departure::Released,
+            (Some(_), Some(trigger)) => Departure::Listed(trigger),
+            (Some(_), None) => Departure::SoldUnexplained,
+        }
+    }
+}
+
+/// Why one completed transfer happened, as the two clubs' policy explains
+/// it (`TRANSFER_MODEL.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransferReason {
+    pub player: PlayerId,
+    pub date: GameDate,
+    pub bought_as: Option<Need>,
+    pub listed_as: Option<ListTrigger>,
 }
 
 const DAYS_PER_YEAR: i64 = 365;
@@ -379,9 +416,11 @@ impl EventObserver for MarketTelemetry {
                     self.open_signings.insert(
                         *player,
                         Signing {
+                            player: *player,
                             date: *date,
                             fee: fee.0,
                             true_value: self.true_values.get(player).map(|m| m.0),
+                            bought_as: None,
                             exit: None,
                         },
                     );
@@ -404,9 +443,36 @@ impl MarketTelemetry {
         self.true_values = values;
     }
 
+    /// Attach the policy's reasons to the signing a transfer opened and to
+    /// the one it closed. Called after the window's events have been seen.
+    pub fn note_reasons(&mut self, reasons: &[TransferReason]) {
+        for r in reasons {
+            if let Some(opened) = self
+                .open_signings
+                .get_mut(&r.player)
+                .filter(|s| s.date == r.date)
+            {
+                opened.bought_as = r.bought_as;
+            }
+            if let Some(exit) = self
+                .signings
+                .iter_mut()
+                .rev()
+                .filter(|s| s.player == r.player)
+                .find_map(|s| s.exit.as_mut().filter(|e| e.date == r.date))
+            {
+                exit.listed_as = r.listed_as;
+            }
+        }
+    }
+
     fn close_signing(&mut self, player: PlayerId, date: GameDate, resale_fee: Option<i64>) {
         if let Some(mut signing) = self.open_signings.remove(&player) {
-            signing.exit = Some(Exit { date, resale_fee });
+            signing.exit = Some(Exit {
+                date,
+                resale_fee,
+                listed_as: None,
+            });
             self.signings.push(signing);
         }
     }
@@ -571,6 +637,12 @@ pub struct MarketReport {
     resale_fee_ratio: Vec<f64>,
     resold_same_window: Vec<f64>,
     star_flop_rate: Vec<f64>,
+    /// Per need a signing was bought against: one `(followed a year, gone
+    /// within it)` pair per seed.
+    resale_by_need: BTreeMap<Option<Need>, Vec<(u32, u32)>>,
+    /// Signings gone within a year, pooled over seeds, by the need they
+    /// were bought against and how they left.
+    resale_paths: BTreeMap<(Option<Need>, Departure), u32>,
 }
 
 impl MarketReport {
@@ -702,6 +774,22 @@ impl MarketReport {
             })
             .collect();
         self.resale_fee_ratio.push(median(&resale_ratios));
+
+        let mut by_need: BTreeMap<Option<Need>, (u32, u32)> = BTreeMap::new();
+        for s in &a_year {
+            let tally = by_need.entry(s.bought_as).or_default();
+            tally.0 += 1;
+            if let Some(exit) = s.exited_within(DAYS_PER_YEAR) {
+                tally.1 += 1;
+                *self
+                    .resale_paths
+                    .entry((s.bought_as, exit.departure()))
+                    .or_default() += 1;
+            }
+        }
+        for (need, tally) in by_need {
+            self.resale_by_need.entry(need).or_default().push(tally);
+        }
         self.resold_same_window.push(share(
             t.signings()
                 .filter(|s| s.exit.is_some_and(|e| e.date == s.date))
@@ -871,6 +959,84 @@ fn submit_player_clubs_ai_equivalent_plan(
         .expect("submit player_club's AI-equivalent transfer plan");
 }
 
+/// Ask the policy why each transfer of one window happened. `before` is the
+/// state as the matchday began and `events` everything that matchday
+/// recorded. The events are folded onto a copy of `before` one at a time,
+/// so each transfer is explained against the squads as they stood when it
+/// completed; the window's picture of what each club believes is frozen at
+/// the first transfer, as `market::resolve_window` freezes it.
+///
+/// The policy decides on the squads at the start of a clearing round and
+/// this reads them mid-round, so a reason can come back `None` where an
+/// earlier transfer in the same round already filled the need or cleared
+/// the surplus.
+pub fn explain_window(
+    before: &GameState,
+    events: &[Event],
+    value_knobs: &ValueKnobs,
+    dev_knobs: &DevKnobs,
+    utility_knobs: &UtilityKnobs,
+) -> Vec<TransferReason> {
+    let policy = UtilityPolicy::new(*utility_knobs);
+    let Some(first) = events
+        .iter()
+        .position(|e| matches!(e, Event::TransferCompleted { .. }))
+    else {
+        return Vec::new();
+    };
+    let mut scratch = before.clone();
+    for event in &events[..first] {
+        scratch.apply(event);
+    }
+    let frozen = scratch.world.clone();
+    let Event::TransferCompleted { date: today, .. } = events[first] else {
+        unreachable!("position() found a transfer here");
+    };
+    let view = WindowView::new(
+        &frozen,
+        today,
+        before.seed,
+        dev_knobs,
+        value_knobs,
+        utility_knobs,
+        &ScoutKnobs::default(),
+        &before.recent_ratings,
+    );
+
+    let mut reasons = Vec::new();
+    for event in &events[first..] {
+        if let Event::TransferCompleted {
+            date,
+            player,
+            from,
+            to,
+            ..
+        } = event
+        {
+            let buyer = view.observe(&scratch.world, *to);
+            let bought_as = buyer
+                .candidates
+                .iter()
+                .find(|c| c.player == *player)
+                .and_then(|c| policy.need_filled(&buyer, c));
+            let listed_as = from.and_then(|seller| {
+                policy
+                    .listings(&view.observe(&scratch.world, seller))
+                    .into_iter()
+                    .find_map(|(p, trigger)| (p == *player).then_some(trigger))
+            });
+            reasons.push(TransferReason {
+                player: *player,
+                date: *date,
+                bought_as,
+                listed_as,
+            });
+        }
+        scratch.apply(event);
+    }
+    reasons
+}
+
 /// Trace one world seed across `seasons` full seasons, driving the *real*
 /// command pipeline (worldgen → matches → development → finance → pool →
 /// market, all via `Session`/`Command::AdvanceMatchday` /
@@ -906,9 +1072,16 @@ fn trace_seed(seed: u64, seasons: usize, cfg: &WorldGenConfig) -> MarketTelemetr
                 &dev_knobs,
                 &utility_knobs,
             );
-            session
+            let before =
+                window_will_close_on_next_advance(&session.state).then(|| session.state.clone());
+            let events = session
                 .execute(Command::AdvanceMatchday, &mut [&mut telemetry])
                 .expect("advance matchday");
+            if let Some(before) = before {
+                let reasons =
+                    explain_window(&before, events, &value_knobs, &dev_knobs, &utility_knobs);
+                telemetry.note_reasons(&reasons);
+            }
         }
         telemetry.record_season_end(
             &session.state.world,
@@ -1103,6 +1276,78 @@ pub fn print_report(report: &MarketReport) {
         &report.star_flop_rate(),
         "the flop rate",
     );
+    print_resale_reasons(report);
+}
+
+fn need_label(need: Option<Need>) -> &'static str {
+    match need {
+        Some(Need::Cover) => "cover",
+        Some(Need::Depth) => "depth",
+        Some(Need::Upgrade) => "upgrade",
+        Some(Need::Heir) => "heir",
+        None => "unexplained",
+    }
+}
+
+fn departure_label(departure: Departure) -> &'static str {
+    match departure {
+        Departure::Listed(ListTrigger::Surplus) => "surplus",
+        Departure::Listed(ListTrigger::Expiring) => "expiring",
+        Departure::Listed(ListTrigger::SquadPressure) => "pressure",
+        Departure::Listed(ListTrigger::Distress) => "distress",
+        Departure::SoldUnexplained => "unexplained",
+        Departure::Released => "released",
+    }
+}
+
+/// `BACKLOG.md` §4.8: which purchases come back onto the market, and by
+/// which door.
+fn print_resale_reasons(report: &MarketReport) {
+    println!();
+    println!("--- signings by the need they were bought against (followed a year) ---");
+    let all: u32 = report
+        .resale_by_need
+        .values()
+        .flatten()
+        .map(|&(followed, _)| followed)
+        .sum();
+    println!(
+        "{:<12} {:>9} {:>8}   {:>16}",
+        "bought as", "signings", "share", "gone in a year"
+    );
+    for (&need, per_seed) in &report.resale_by_need {
+        let followed: u32 = per_seed.iter().map(|&(f, _)| f).sum();
+        let rates: Vec<f64> = per_seed
+            .iter()
+            .filter(|&&(f, _)| f > 0)
+            .map(|&(f, gone)| gone as f64 / f as f64)
+            .collect();
+        let spread = seed_spread(&rates);
+        println!(
+            "{:<12} {:>9} {:>7.1}%   {:>6.1}% (sd {:.1}, {} seeds)",
+            need_label(need),
+            followed,
+            100.0 * followed as f64 / all.max(1) as f64,
+            100.0 * spread.mean,
+            100.0 * spread.sd,
+            spread.n
+        );
+    }
+
+    println!();
+    println!("--- signings gone within a year: bought as -> how they left (% of all such) ---");
+    let gone: u32 = report.resale_paths.values().sum();
+    let mut paths: Vec<(&(Option<Need>, Departure), &u32)> = report.resale_paths.iter().collect();
+    paths.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (&(need, departure), &count) in paths {
+        println!(
+            "{:<12} -> {:<12} {:>7} {:>6.1}%",
+            need_label(need),
+            departure_label(departure),
+            count,
+            100.0 * count as f64 / gone.max(1) as f64
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1145,7 +1390,8 @@ mod tests {
             first.exit,
             Some(Exit {
                 date: GameDate { days: 300 },
-                resale_fee: Some(40)
+                resale_fee: Some(40),
+                listed_as: None,
             })
         );
         assert!(first.exited_within(DAYS_PER_YEAR).is_some());
@@ -1163,6 +1409,35 @@ mod tests {
 
         let still_there = signings.iter().find(|s| s.exit.is_none()).unwrap();
         assert!(!still_there.written_off_within(i64::MAX));
+    }
+
+    #[test]
+    fn reasons_attach_to_the_signing_opened_and_the_one_closed() {
+        let mut t = MarketTelemetry::default();
+        t.on_event(&bought(7, 100, 100));
+        t.note_reasons(&[TransferReason {
+            player: PlayerId(7),
+            date: GameDate { days: 100 },
+            bought_as: Some(Need::Depth),
+            listed_as: None,
+        }]);
+        t.on_event(&bought(7, 300, 90));
+        t.note_reasons(&[TransferReason {
+            player: PlayerId(7),
+            date: GameDate { days: 300 },
+            bought_as: Some(Need::Upgrade),
+            listed_as: Some(ListTrigger::SquadPressure),
+        }]);
+
+        let first = t.signings().find(|s| s.date.days == 100).unwrap();
+        assert_eq!(first.bought_as, Some(Need::Depth));
+        assert_eq!(
+            first.exit.map(|e| e.departure()),
+            Some(Departure::Listed(ListTrigger::SquadPressure))
+        );
+        let second = t.signings().find(|s| s.date.days == 300).unwrap();
+        assert_eq!(second.bought_as, Some(Need::Upgrade));
+        assert_eq!(second.exit, None);
     }
 
     #[test]

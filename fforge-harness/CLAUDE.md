@@ -8,7 +8,7 @@ depends on `fforge-core`; nothing depends on it.
 |---|---|---|---|
 | `match_engine` | `StreamTelemetry` over match traces; `LeagueSpread` over a season's table and margins; head-to-head and squad-conditional tactics probes. `play_opening_season` is the one season loop | `MATCH_MODEL.md` §8.1, §10, `TACTICS_MODEL.md` §5, §8 | `bin/calibrate` |
 | `career_arc` | career arcs (peak ages, PA attainment, veteran decline, wonderkid flops) and the PA-recoverability fits Phase 5's fog-of-war depends on | `DEVELOPMENT_MODEL.md` §6, §8 | `bin/career_arc` |
-| `market` | `MarketTelemetry`: competitive balance, financial health, transfer volume, and the buyer's eye (each `Signing` followed until the buyer lets the player go) | `TRANSFER_MODEL.md` §11, `AGENT_MODEL.md` §5.7 | `bin/market` |
+| `market` | `MarketTelemetry`: competitive balance, financial health, transfer volume, and the buyer's eye (each `Signing` followed until the buyer lets the player go, tagged by `explain_window` with the policy's own reason for buying and for listing him) | `TRANSFER_MODEL.md` §11, `AGENT_MODEL.md` §5.7 | `bin/market` |
 
 ## Rules
 

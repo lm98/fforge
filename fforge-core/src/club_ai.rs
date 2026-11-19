@@ -224,6 +224,33 @@ impl Default for UtilityKnobs {
     }
 }
 
+/// Why a club would sign a candidate (`TRANSFER_MODEL.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Need {
+    /// A role under its hard minimum (today, goalkeepers).
+    Cover,
+    /// A role under its template headcount.
+    Depth,
+    /// Better than a starter who is under the club's target.
+    Upgrade,
+    /// Younger than a declining starter and already better than what he
+    /// is projected to become.
+    Heir,
+}
+
+/// Why a club would list one of its own players (`TRANSFER_MODEL.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ListTrigger {
+    /// His role is over its template headcount.
+    Surplus,
+    /// His contract is running out and he is not worth renewing.
+    Expiring,
+    /// The squad is near its ceiling and his role is exactly at template.
+    SquadPressure,
+    /// The club is in financial difficulty and he is among its best paid.
+    Distress,
+}
+
 /// The v1 club decision policy (`TRANSFER_MODEL.md` §6): a utility-based
 /// buy/sell policy over a `ClubObservation`, with the §6 stabilizers as hard
 /// constraints rather than utility terms.
@@ -296,19 +323,27 @@ impl UtilityPolicy {
             .map_or(0, |&(_, c)| c)
     }
 
-    /// Whether signing `c` would fill a need (§6): cover a role under its
-    /// template headcount, improve on a starter who is under the club's
-    /// target, or succeed one projected to fall under it. `need` ranks the
+    fn template_size() -> usize {
+        SQUAD_TEMPLATE.iter().map(|&(_, c)| c).sum()
+    }
+
+    /// The need signing `c` would fill, if any (§6). `need` ranks the
     /// candidates this admits; on its own it is positive almost everywhere
     /// and admits nearly all of them.
-    pub fn fills_need(&self, obs: &ClubObservation, c: &Candidate) -> bool {
+    pub fn need_filled(&self, obs: &ClubObservation, c: &Candidate) -> Option<Need> {
+        if self.hard_minimum_violations(obs).contains(&c.role) {
+            return Some(Need::Cover);
+        }
         let held = obs
             .squad
             .iter()
             .filter(|m| m.natural_role == c.natural_role)
             .count();
-        if held < Self::template_count(c.natural_role) {
-            return true;
+        // A full squad does not buy for depth (§6): with a hole in one
+        // role it is over-staffed in another, and sells there first.
+        let squad_is_short = obs.squad.len() < Self::template_size();
+        if squad_is_short && held < Self::template_count(c.natural_role) {
+            return Some(Need::Depth);
         }
         let Some(starter) = obs
             .squad
@@ -316,16 +351,22 @@ impl UtilityPolicy {
             .filter(|m| m.role == c.role)
             .max_by_key(|m| m.current_ca)
         else {
-            return true;
+            return squad_is_short.then_some(Need::Depth);
         };
         let target = self.target_ca(obs.reputation);
         let beats = |incumbent: u8| c.ca >= incumbent.saturating_add(self.knobs.upgrade_margin);
-        let upgrade = (starter.current_ca as f64) < target && beats(starter.current_ca);
+        if (starter.current_ca as f64) < target && beats(starter.current_ca) {
+            return Some(Need::Upgrade);
+        }
         let heir = starter.projected_ca < starter.current_ca
             && (starter.projected_ca as f64) < target
             && c.age < starter.age
             && beats(starter.projected_ca);
-        upgrade || heir
+        heir.then_some(Need::Heir)
+    }
+
+    pub fn fills_need(&self, obs: &ClubObservation, c: &Candidate) -> bool {
+        self.need_filled(obs, c).is_some()
     }
 
     /// A negative balance, or wages committed beyond the budget (§6).
@@ -464,7 +505,7 @@ impl UtilityPolicy {
     /// window rather than every at-template role at once the instant
     /// pressure engages — approached and relieved over successive windows,
     /// not purged in one.
-    fn sell_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision> {
+    pub fn listings(&self, obs: &ClubObservation) -> Vec<(PlayerId, ListTrigger)> {
         if obs.squad.len() <= self.knobs.squad_min {
             return Vec::new();
         }
@@ -478,10 +519,9 @@ impl UtilityPolicy {
         }
         let mut gk_count = counts.get(&Role::Gk).copied().unwrap_or(0);
 
-        // `bool` tags whether a member is expendable only through the
-        // squad-pressure quota (never through a genuine §6 trigger) — the
-        // quota below caps only those, never the real triggers.
-        let mut expendable: Vec<(&SquadMember, bool)> = obs
+        // The squad-pressure quota caps only `SquadPressure` listings,
+        // never the two genuine §6 triggers.
+        let mut expendable: Vec<(&SquadMember, ListTrigger)> = obs
             .squad
             .iter()
             .filter_map(|m| {
@@ -495,8 +535,11 @@ impl UtilityPolicy {
                 let expiring_and_declining = m.years_left_on_contract
                     <= self.knobs.expiring_within_years
                     && (m.projected_ca as f64) < target - self.knobs.renew_worth_margin;
-                if surplus_to_depth || expiring_and_declining {
-                    return Some((m, false));
+                if surplus_to_depth {
+                    return Some((m, ListTrigger::Surplus));
+                }
+                if expiring_and_declining {
+                    return Some((m, ListTrigger::Expiring));
                 }
                 // GK is excluded from pressure-only eligibility: its
                 // template (3) sits only one above `min_goalkeepers` (2), so
@@ -505,7 +548,7 @@ impl UtilityPolicy {
                 // already flags as a *consequence* of pinning, not a
                 // separate problem pressure should go looking to cause.
                 let at_template = template > 0 && count == template && m.natural_role != Role::Gk;
-                at_template.then_some((m, true))
+                at_template.then_some((m, ListTrigger::SquadPressure))
             })
             .collect();
         // The player the club least wants to keep first: the lower of what
@@ -517,7 +560,8 @@ impl UtilityPolicy {
         let mut decisions = Vec::new();
         let mut remaining = obs.squad.len();
         let mut pressure_used = 0usize;
-        for (m, pressure_only) in expendable {
+        for (m, trigger) in expendable {
+            let pressure_only = trigger == ListTrigger::SquadPressure;
             if remaining <= self.knobs.squad_min {
                 break;
             }
@@ -530,7 +574,7 @@ impl UtilityPolicy {
                 }
                 gk_count -= 1;
             }
-            decisions.push(TransferDecision::List { player: m.player });
+            decisions.push((m.player, trigger));
             remaining -= 1;
             if pressure_only {
                 pressure_used += 1;
@@ -538,13 +582,7 @@ impl UtilityPolicy {
         }
 
         if Self::in_financial_difficulty(obs) {
-            let listed: BTreeSet<PlayerId> = decisions
-                .iter()
-                .filter_map(|d| match d {
-                    TransferDecision::List { player } => Some(*player),
-                    _ => None,
-                })
-                .collect();
+            let listed: BTreeSet<PlayerId> = decisions.iter().map(|&(p, _)| p).collect();
             let mut by_wage: Vec<&SquadMember> = obs
                 .squad
                 .iter()
@@ -564,12 +602,19 @@ impl UtilityPolicy {
                     }
                     gk_count -= 1;
                 }
-                decisions.push(TransferDecision::List { player: m.player });
+                decisions.push((m.player, ListTrigger::Distress));
                 remaining -= 1;
                 distress_used += 1;
             }
         }
         decisions
+    }
+
+    fn sell_decisions(&self, obs: &ClubObservation) -> Vec<TransferDecision> {
+        self.listings(obs)
+            .into_iter()
+            .map(|(player, _)| TransferDecision::List { player })
+            .collect()
     }
 }
 
@@ -902,6 +947,30 @@ mod tests {
         let mut older = striker(target - 10 + margin);
         older.age = 33;
         assert!(!policy.fills_need(&ageing, &older), "an heir is younger");
+    }
+
+    #[test]
+    fn a_full_squad_does_not_buy_for_depth() {
+        let policy = UtilityPolicy::default();
+        let striker = candidate(9001, None, Role::St, 1, 5_000_000, 1_000_000, 100_000);
+
+        // One striker short, and one centre-back over: a full squad with a
+        // hole in it.
+        let mut lopsided = baseline_observation();
+        let gone = lopsided
+            .squad
+            .iter()
+            .position(|m| m.natural_role == Role::St)
+            .unwrap();
+        lopsided.squad.remove(gone);
+        lopsided
+            .squad
+            .push(member(9500, Role::Cb, Role::Cb, 65, 65));
+        assert_eq!(policy.need_filled(&lopsided, &striker), None);
+
+        // The same hole once the spare centre-back has gone.
+        lopsided.squad.pop();
+        assert_eq!(policy.need_filled(&lopsided, &striker), Some(Need::Depth));
     }
 
     #[test]
