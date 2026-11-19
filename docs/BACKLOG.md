@@ -221,21 +221,22 @@ were.** Each scales a player's attributes and so passes through `Knobs::s`, whic
 52. None was re-fitted. Whether rotation and fitness now matter enough to be a decision is unread;
 it needs the real-season harness of 4.3, since `bin/calibrate` runs at the condition identity.
 
-**4.8 — [Closed — `TRANSFER_MODEL.md` §6.]** No club kept what it bought: seven signings in ten
-were resold within a year. Three changes, each read against a written prediction, brought it to
-19%: a player moves once per window; a club buys only against an unfilled need; a full squad does
-not buy for depth. The last came from tagging every signing with the policy's own reasons, which
-showed squad pressure and depth buying undoing each other.
+**4.8 — Reopened: negotiation brought the resale carousel back** (`TRANSFER_MODEL.md` §5.1). It
+was closed at 19% resold within a year, after the one-move rule, the need test and the full-squad
+rule. Contracts and the thin line took it to 34%, and negotiation to 63%. Three quarters of those
+resales are players their club never listed: one who is not an irreplaceable starter sells to any
+offer at his club's valuation, the overrating bidder makes that offer, and the hole he leaves is a
+depth signing that sells the same way. Proposed remedy, written in §5.1 and not yet applied: a club
+sells an unlisted player only if it has a suitable alternative for him (inside the squad, or on
+the market for less than the offer), the test it now applies only to its starter. Write the
+prediction first; `bin/market` prints the routes to read it against.
 
-**4.9 — The transfer market is now honest and quiet; its target bands are neither.** Volume reads
-0.60 transfers per club per window against a 2–5 band that was set when every flip counted. That
-is about one signing per club per season, which may be too little to play against. The top three
-clubs hold about half the twenty best players late in a run. The flop rate is zero because a club
-can always resell at cost (`TRANSFER_MODEL.md` §12 item 6). To do, in order: re-derive the §11
-bands from real leagues, as `MATCH_MODEL.md` §10 item 7 did for league spread; then decide which
-lever raises real activity. Candidates: free agents and expiring contracts (nearly absent from
-the readings), a looser `upgrade_margin`, and asking prices that differ from the buyer's
-valuation. 4.1's closure is superseded by this item.
+**4.9 — The market against the bands of `TRANSFER_MODEL.md` §11.1.** Re-derived from real
+leagues. With contracts, the thin line and negotiation all in, arrivals read 10.8 per club per
+season against 4–8, tenure 2.0 years against 2.3–3.8, the free share 20% at the floor of 20–45%,
+contract years left 1.8 at the floor of 1.8–3.5, and resale within a year 63% against under 20%.
+Contracts alone put four of those six in band; negotiation overshoots, through 4.8. The flop rate
+is still near zero, because a player can always be sold on at about what he cost.
 
 ---
 

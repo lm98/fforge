@@ -405,6 +405,35 @@ went for 0.95; resale within a year stays under 25%; a club that cannot keep its
 him only to a replacement it can buy or to financial difficulty, so the points-Gini does not rise;
 the window takes no more than twice as long to resolve.
 
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged, per-seed sd in brackets; "before" is the
+thin-line run of §6, the same tree without negotiation, run alongside it):
+
+| Row | Before | After | Prediction | Band (§11.1) |
+|---|---|---|---|---|
+| Arrivals per club per season | 6.43 | 10.76 (0.39) | +1 or more — confirmed, and **overshoots** | 4–8 |
+| Median fee | 0.35M | 1.69M | falls — **refuted** | — |
+| Signings resold within a year | 34.2% | **63.4%** (1.6) | under 25% — **refuted** | under 20% |
+| Points-Gini, late | 0.134 | 0.125 | does not rise — confirmed | stable |
+| Time to run the harness | 835 s | 1048 s | at most twice — confirmed, 1.26× | — |
+| Mean tenure, late | 3.38 | 1.99 | not predicted | 2.3–3.8 |
+| Free share of arrivals | 41.1% | 20.4% | not predicted | 20–45% |
+| Fee / true value, median | 0.913 | 0.976 | not predicted | — |
+| Share paying above true value | 28.0% | 43.7% | not predicted | — |
+| Top-3 share of the top-20 players, late | 0.35 | 0.25 | not predicted | bounded |
+
+**Negotiation brought the carousel back.** 77% of the signings resold within a year left as
+players their club had not listed. An unlisted player who is not his club's irreplaceable starter
+sells to any offer that reaches the club's own valuation, and under fog the club bidding for him
+is the one that rates him highest, so such an offer is common. Each sale opens a hole, and depth
+signings rise from 26% to 51% of all signings, which are then sold the same way. The median fee
+rises rather than falls because those sales are at full valuation, not at a listed discount.
+
+The likely remedy is one the seller factors of this section already name and the implementation
+applies only to starters: a club sells a player it did not list only if it has a suitable
+alternative for him, inside the squad or on the market for less than the offer. Extending that
+test from the starter to every unlisted player is `BACKLOG.md` §4.8's next step; it has not been
+applied or measured.
+
 ---
 
 ## 6. Club decision policy
@@ -496,6 +525,22 @@ player better than a starter who already meets his club's target is expensive.
 1 to 3; the share of signings resold within a year stays under 25%, because the new needs are
 standing needs rather than the depth loop of §6; the median fee rises, since (ii) buys players
 better than a starter; and `NewReserve` signings are younger than any other kind.
+
+*Reading* (`bin/market`, 24 seeds × 15 seasons, fogged, per-seed sd in brackets; "before" is
+§7.1's reading, and the run is the thin line alone, without §5.1's negotiation):
+
+| Row | Before | After | Prediction |
+|---|---|---|---|
+| Arrivals per club per season | 5.61 | 6.43 (0.24) | +1 to +3 — **refuted**, +0.83 |
+| Signings resold within a year | 25.6% | 34.2% (2.8) | under 25% — **refuted** |
+| Median fee | 0.17M | 0.35M | rises — **confirmed** |
+| New reserves are the youngest signings | — | not read | the harness keeps no age per need |
+| Free share of arrivals | 48.1% | 41.1% | not predicted; now in band |
+
+New reserves are 22.5% of all signings, and 43.9% of them are gone within a year, most often as
+surplus (23% of all resales). Why is not read here. One candidate is fog: a club's estimate of its
+own players' potential is redrawn each season, so a line it judged thin can read thin again with
+the new reserve in it. The stronger-starter path stays rare, 41 signings in 26,000.
 
 **A club in financial difficulty sells to get out of it.** Difficulty is a negative balance or
 committed wages over the wage budget. Such a club lists up to `distress_listings` of its
