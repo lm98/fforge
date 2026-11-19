@@ -266,6 +266,13 @@ players by the built-in rule, because no screen offers the choice. The rule is s
 a decision made for the player. Needs a renewal list on the squad screen and a command; the seat
 rule then belongs with the two in `AGENT_MODEL.md` §3.2.
 
+**5.6 — Player consent to a transfer never weighs his wage.** `market::resolve_window` calls
+`consent_probability(fee, current_wage, ..)`, whose first parameter is the *offered wage*. A fee
+is many times any wage, so the wage term is always satisfied and a player never refuses a move for
+money; only the buyer's reputation can stop him (`TRANSFER_MODEL.md` §5 step 3). Renewals
+(`contracts`) pass the real wage. The fix is one argument, the contract wage the move would carry,
+but it changes every window's consent draws, so it needs its own prediction and reading.
+
 ---
 
 ## 6. Phase 6 and beyond
